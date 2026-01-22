@@ -1,0 +1,87 @@
+# Namespace com injeção automática do Istio
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: hello
+  labels:
+    istio-injection: enabled
+---
+# Deployment da aplicação
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hello-app
+  namespace: hello
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: hello
+  template:
+    metadata:
+      labels:
+        app: hello
+    spec:
+      containers:
+      - name: hello
+        image: hashicorp/http-echo:latest
+        args:
+        - "-text=Hello from Kubernetes + Istio!"
+        - "-listen=:8080"
+        ports:
+        - containerPort: 8080
+        resources:
+          limits:
+            memory: "64Mi"
+            cpu: "100m"
+---
+# Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: hello-service
+  namespace: hello
+spec:
+  selector:
+    app: hello
+  ports:
+  - port: 8080
+    targetPort: 8080
+---
+# Istio Gateway
+apiVersion: networking.istio.io/v1
+kind: Gateway
+metadata:
+  name: hello-gateway
+  namespace: hello
+spec:
+  selector:
+    istio: ingressgateway
+  servers:
+  - port:
+      number: 80
+      name: http
+      protocol: HTTP
+    hosts:
+    - "*"
+---
+# Istio VirtualService
+apiVersion: networking.istio.io/v1
+kind: VirtualService
+metadata:
+  name: hello-vs
+  namespace: hello
+spec:
+  hosts:
+  - "*"
+  gateways:
+  - hello-gateway
+  http:
+  - match:
+    - uri:
+        prefix: /
+    route:
+    - destination:
+        host: hello-service
+        port:
+          number: 8080

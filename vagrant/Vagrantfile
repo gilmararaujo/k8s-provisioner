@@ -1,0 +1,227 @@
+require 'yaml'
+settings = YAML.load_file(File.join(File.dirname(__FILE__), 'settings.yaml'))
+
+# Mapeamento de nomes para exibição no VirtualBox
+DISPLAY_NAMES = {
+  "storage" => "Storage",
+  "controlplane" => "Master",
+  "node01" => "Node01",
+  "node02" => "Node02"
+}
+
+# IP do servidor NFS
+NFS_SERVER_IP = "192.168.201.20"
+
+Vagrant.configure("2") do |config|
+  config.vm.box = settings['box_name']
+  config.vm.box_check_update = true
+
+  settings['vm'].each do |vm_config|
+    vm_display_name = DISPLAY_NAMES[vm_config['name']] || vm_config['name']
+    vm_role = vm_config['role'] || 'worker'
+
+    config.vm.define vm_config['name'], primary: (vm_config['name'] == "controlplane") do |vm|
+      vm.vm.hostname = vm_config['name']
+      vm.vm.network "private_network", ip: vm_config['ip']
+
+      # Synced folders (apenas para VMs Kubernetes)
+      if vm_role != "storage"
+        vm.vm.synced_folder ".", "/vagrant", type: "virtualbox"
+        vm.vm.synced_folder "..", "/opt/k8s-provisioner", type: "virtualbox"
+      end
+
+      vm.vm.provider "virtualbox" do |vb|
+        vb.name   = vm_display_name
+        vb.memory = vm_config['memory']
+        vb.cpus   = vm_config['cpus']
+        vb.gui    = false
+        vb.customize ["modifyvm", :id, "--nicpromisc2", "allow-all"]
+      end
+
+      # Garantir modo promíscuo após VM iniciar (up, reload, resume)
+      [:up, :reload, :resume].each do |action|
+        vm.trigger.after action do |trigger|
+          trigger.name = "Enable promiscuous mode for #{vm_display_name}"
+          trigger.run = { inline: "VBoxManage controlvm '#{vm_display_name}' nicpromisc2 allow-all" }
+          trigger.on_error = :continue
+        end
+      end
+
+      # Provisionamento base: /etc/hosts e ferramentas
+      vm.vm.provision "shell", inline: <<-SHELL
+        set -e
+        apt-get update -y
+        apt-get install -y curl netcat-openbsd nfs-common vim bash-completion
+
+        # /etc/hosts
+        echo "192.168.201.20 storage" >> /etc/hosts
+        echo "192.168.201.10 controlplane" >> /etc/hosts
+        echo "192.168.201.11 node01" >> /etc/hosts
+        echo "192.168.201.12 node02" >> /etc/hosts
+
+        # Configurar vim para YAML/Kubernetes
+        cat > /etc/vim/vimrc.local <<'VIMRC'
+" Kubernetes/YAML friendly vim configuration
+syntax on
+set tabstop=2
+set shiftwidth=2
+set expandtab
+set autoindent
+set smartindent
+set number
+set cursorline
+set paste
+filetype plugin indent on
+autocmd FileType yaml setlocal ts=2 sts=2 sw=2 expandtab
+VIMRC
+
+        # Copiar para usuário vagrant
+        mkdir -p /home/vagrant
+        cp /etc/vim/vimrc.local /home/vagrant/.vimrc
+        chown vagrant:vagrant /home/vagrant/.vimrc
+
+        # Copiar para root
+        cp /etc/vim/vimrc.local /root/.vimrc
+      SHELL
+
+      # Provisionamento específico por role
+      case vm_role
+      when "storage"
+        vm.vm.provision "shell", inline: <<-SHELL
+          set -e
+          echo "=== Configurando NFS Server ==="
+
+          # Instalar NFS server
+          apt-get install -y nfs-kernel-server
+
+          # Criar diretórios de export
+          mkdir -p /exports/k8s-volumes
+          mkdir -p /exports/k8s-volumes/pv01
+          mkdir -p /exports/k8s-volumes/pv02
+          mkdir -p /exports/k8s-volumes/pv03
+          chmod -R 777 /exports
+
+          # Configurar exports
+          cat > /etc/exports <<EOF
+/exports/k8s-volumes 192.168.201.0/24(rw,sync,no_subtree_check,no_root_squash)
+EOF
+
+          # Reiniciar NFS
+          exportfs -ra
+          systemctl restart nfs-kernel-server
+          systemctl enable nfs-kernel-server
+
+          echo "=== NFS Server configurado ==="
+          echo "Exports:"
+          exportfs -v
+        SHELL
+
+      when "controlplane", "worker"
+        # Montar NFS nos nodes Kubernetes
+        vm.vm.provision "shell", inline: <<-SHELL
+          set -e
+          echo "=== Montando NFS ==="
+
+          # Aguardar NFS server estar disponível
+          for i in {1..30}; do
+            if showmount -e #{NFS_SERVER_IP} &>/dev/null; then
+              echo "NFS server disponível!"
+              break
+            fi
+            echo "Aguardando NFS server... ($i/30)"
+            sleep 5
+          done
+
+          # Criar ponto de montagem
+          mkdir -p /mnt/nfs-storage
+
+          # Montar NFS
+          mount -t nfs #{NFS_SERVER_IP}:/exports/k8s-volumes /mnt/nfs-storage
+
+          # Adicionar ao fstab para montar no boot
+          echo "#{NFS_SERVER_IP}:/exports/k8s-volumes /mnt/nfs-storage nfs defaults 0 0" >> /etc/fstab
+
+          echo "=== NFS montado em /mnt/nfs-storage ==="
+          df -h /mnt/nfs-storage
+        SHELL
+
+        # Provisionamento Kubernetes com binário Go
+        vm.vm.provision "shell", inline: <<-SHELL
+          set -e
+          cp /opt/k8s-provisioner/build/k8s-provisioner-linux-arm64 /usr/local/bin/k8s-provisioner
+          chmod +x /usr/local/bin/k8s-provisioner
+          mkdir -p /etc/k8s-provisioner
+          cp /opt/k8s-provisioner/config.yaml /etc/k8s-provisioner/config.yaml
+          k8s-provisioner provision all -c /etc/k8s-provisioner/config.yaml -v
+        SHELL
+
+        # Configurar kubectl autocomplete e aliases
+        vm.vm.provision "shell", inline: <<-SHELL
+          set -e
+          echo "=== Configurando kubectl autocomplete e aliases ==="
+
+          # Configuração para usuário vagrant
+          cat >> /home/vagrant/.bashrc <<'BASHRC'
+
+# Kubectl autocomplete
+source <(kubectl completion bash)
+
+# Aliases
+alias k=kubectl
+alias kgp='kubectl get pods'
+alias kgs='kubectl get svc'
+alias kgn='kubectl get nodes'
+alias kga='kubectl get all'
+alias kgaa='kubectl get all -A'
+alias kd='kubectl describe'
+alias kl='kubectl logs'
+alias kx='kubectl exec -it'
+alias ka='kubectl apply -f'
+alias kdel='kubectl delete -f'
+
+# Autocomplete para alias k
+complete -o default -F __start_kubectl k
+
+# Namespace rápido
+alias kn='kubectl config set-context --current --namespace'
+
+# Dry-run helper
+export do='--dry-run=client -o yaml'
+BASHRC
+          chown vagrant:vagrant /home/vagrant/.bashrc
+
+          # Mesma configuração para root
+          cat >> /root/.bashrc <<'BASHRC'
+
+# Kubectl autocomplete
+source <(kubectl completion bash)
+
+# Aliases
+alias k=kubectl
+alias kgp='kubectl get pods'
+alias kgs='kubectl get svc'
+alias kgn='kubectl get nodes'
+alias kga='kubectl get all'
+alias kgaa='kubectl get all -A'
+alias kd='kubectl describe'
+alias kl='kubectl logs'
+alias kx='kubectl exec -it'
+alias ka='kubectl apply -f'
+alias kdel='kubectl delete -f'
+
+# Autocomplete para alias k
+complete -o default -F __start_kubectl k
+
+# Namespace rápido
+alias kn='kubectl config set-context --current --namespace'
+
+# Dry-run helper
+export do='--dry-run=client -o yaml'
+BASHRC
+
+          echo "=== Autocomplete e aliases configurados ==="
+        SHELL
+      end
+    end
+  end
+end

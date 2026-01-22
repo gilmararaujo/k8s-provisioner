@@ -1,0 +1,29 @@
+# Build artifacts
+/build/
+*.exe
+dist/
+out/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Go
+vendor/
+
+# Vagrant
+.vagrant/
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+*.bak

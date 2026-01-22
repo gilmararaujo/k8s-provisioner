@@ -1,0 +1,89 @@
+# Namespace com injeção automática do Istio
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: podinfo
+  labels:
+    istio-injection: enabled
+---
+# Deployment do Podinfo
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: podinfo
+  namespace: podinfo
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: podinfo
+  template:
+    metadata:
+      labels:
+        app: podinfo
+    spec:
+      containers:
+      - name: podinfo
+        image: stefanprodan/podinfo:latest
+        ports:
+        - containerPort: 9898
+          name: http
+        env:
+        - name: PODINFO_UI_COLOR
+          value: "#34577c"
+        - name: PODINFO_UI_MESSAGE
+          value: "Hello from Kubernetes + Istio on Mac Silicon!"
+        resources:
+          limits:
+            memory: "128Mi"
+            cpu: "200m"
+---
+# Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: podinfo
+  namespace: podinfo
+spec:
+  selector:
+    app: podinfo
+  ports:
+  - port: 80
+    targetPort: 9898
+---
+# Istio Gateway
+apiVersion: networking.istio.io/v1
+kind: Gateway
+metadata:
+  name: podinfo-gateway
+  namespace: podinfo
+spec:
+  selector:
+    istio: ingressgateway
+  servers:
+  - port:
+      number: 80
+      name: http
+      protocol: HTTP
+    hosts:
+    - "podinfo.local"
+---
+# Istio VirtualService
+apiVersion: networking.istio.io/v1
+kind: VirtualService
+metadata:
+  name: podinfo
+  namespace: podinfo
+spec:
+  hosts:
+  - "podinfo.local"
+  - "podinfo.podinfo.svc.cluster.local"
+  gateways:
+  - podinfo-gateway
+  - mesh
+  http:
+  - route:
+    - destination:
+        host: podinfo
+        port:
+          number: 80

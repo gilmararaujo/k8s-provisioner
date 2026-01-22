@@ -1,0 +1,170 @@
+# ===========================================
+# Exemplo: PV + PVC + Deployment com NFS + Istio
+# ===========================================
+#
+# Storage VM: 192.168.201.20
+# NFS Path: /exports/k8s-volumes
+# Acesso: http://<INGRESS_IP>/
+# ===========================================
+
+# Namespace com injeção Istio
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: nfs-demo
+  labels:
+    istio-injection: enabled
+---
+# PV 1 - 1Gi
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: nfs-pv01
+  labels:
+    storage: nfs
+spec:
+  storageClassName: nfs
+  capacity:
+    storage: 1Gi
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  nfs:
+    server: 192.168.201.20
+    path: /exports/k8s-volumes/pv01
+---
+# PV 2 - 2Gi
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: nfs-pv02
+  labels:
+    storage: nfs
+spec:
+  storageClassName: nfs
+  capacity:
+    storage: 2Gi
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  nfs:
+    server: 192.168.201.20
+    path: /exports/k8s-volumes/pv02
+---
+# PV 3 - 5Gi
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: nfs-pv03
+  labels:
+    storage: nfs
+spec:
+  storageClassName: nfs
+  capacity:
+    storage: 5Gi
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  nfs:
+    server: 192.168.201.20
+    path: /exports/k8s-volumes/pv03
+---
+# PVC solicitando 1Gi
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: app-data-pvc
+  namespace: nfs-demo
+spec:
+  storageClassName: nfs
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 1Gi
+---
+# Deployment usando o PVC
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-nfs
+  namespace: nfs-demo
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: nginx-nfs
+  template:
+    metadata:
+      labels:
+        app: nginx-nfs
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:alpine
+        ports:
+        - containerPort: 80
+        volumeMounts:
+        - name: web-data
+          mountPath: /usr/share/nginx/html
+      initContainers:
+      - name: init-content
+        image: busybox
+        command: ['sh', '-c', 'echo "<h1>NFS Storage + Istio</h1><p>Hostname: $(hostname)</p><p>Data: $(date)</p><p>Volume montado via NFS!</p>" > /data/index.html']
+        volumeMounts:
+        - name: web-data
+          mountPath: /data
+      volumes:
+      - name: web-data
+        persistentVolumeClaim:
+          claimName: app-data-pvc
+---
+# Service ClusterIP (Istio vai rotear)
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-nfs
+  namespace: nfs-demo
+spec:
+  selector:
+    app: nginx-nfs
+  ports:
+  - port: 80
+    targetPort: 80
+---
+# Istio Gateway
+apiVersion: networking.istio.io/v1
+kind: Gateway
+metadata:
+  name: nfs-demo-gateway
+  namespace: nfs-demo
+spec:
+  selector:
+    istio: ingressgateway
+  servers:
+  - port:
+      number: 80
+      name: http
+      protocol: HTTP
+    hosts:
+    - "nginx-pvc.local"
+---
+# Istio VirtualService
+apiVersion: networking.istio.io/v1
+kind: VirtualService
+metadata:
+  name: nginx-nfs
+  namespace: nfs-demo
+spec:
+  hosts:
+  - "nginx-pvc.local"
+  - "nginx-nfs.nfs-demo.svc.cluster.local"
+  gateways:
+  - nfs-demo-gateway
+  - mesh
+  http:
+  - route:
+    - destination:
+        host: nginx-nfs
+        port:
+          number: 80
