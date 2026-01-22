@@ -1,0 +1,32 @@
+cluster:
+  name: test-cluster
+  pod_cidr: "10.244.0.0/16"
+  service_cidr: "10.96.0.0/12"
+
+versions:
+  kubernetes: "v1.31.0"
+  crio: "v1.31.0"
+  calico: "v3.28.0"
+  metallb: "v0.14.5"
+  istio: "1.22.0"
+
+network:
+  interface: "eth0"
+  controlplane_ip: "192.168.56.10"
+  metallb_range: "192.168.56.200-192.168.56.250"
+
+nodes:
+  - name: master01
+    ip: "192.168.56.10"
+    role: controlplane
+  - name: worker01
+    ip: "192.168.56.11"
+    role: worker
+  - name: worker02
+    ip: "192.168.56.12"
+    role: worker
+
+components:
+  cni: calico
+  load_balancer: metallb
+  service_mesh: istio
