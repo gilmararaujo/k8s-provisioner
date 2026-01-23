@@ -15,6 +15,7 @@ Kubernetes cluster provisioner written in Go for lab environments. Supports macO
 | Storage | NFS Server |
 | Metrics | Metrics Server |
 | Monitoring | Prometheus + Grafana |
+| Logging | Loki + Promtail |
 
 ## Prerequisites
 
@@ -360,15 +361,105 @@ kubectl port-forward -n monitoring svc/prometheus 9090:9090
 
 ### Recommended Dashboards
 
-Import these dashboards from grafana.com:
+Import dashboards from grafana.com: **Dashboards** → **Import** → Enter ID → **Load**
 
-| Dashboard | ID | Description |
-|-----------|-----|-------------|
-| Node Exporter Full | 1860 | Detailed host metrics |
-| Kubernetes Cluster | 6417 | Cluster overview |
-| Kubernetes Pods | 6336 | Pod metrics |
+#### Kubernetes Dashboards
 
-See `examples/monitoring-access.md` for more details.
+| ID | Dashboard | Description |
+|----|-----------|-------------|
+| `15760` | Kubernetes / Views / Global | Cluster overview |
+| `15757` | Kubernetes / Views / Namespaces | Per namespace metrics |
+| `15759` | Kubernetes / Views / Pods | Pod details |
+| `10000` | Kubernetes Cluster | Complete cluster view |
+| `12740` | Kubernetes Monitoring | General monitoring |
+
+#### Node Dashboards
+
+| ID | Dashboard | Description |
+|----|-----------|-------------|
+| `1860` | Node Exporter Full | Detailed host metrics |
+
+#### Java/JVM Dashboards
+
+| ID | Dashboard | Description |
+|----|-----------|-------------|
+| `4701` | JVM Micrometer | Spring Boot with Micrometer |
+| `8563` | JVM Dashboard | JMX Exporter metrics |
+| `11955` | JVM Metrics | Heap, GC, Threads |
+| `14430` | JVM Overview | Complete JVM view |
+
+> **Note:** Java apps need to expose metrics via [Micrometer](https://micrometer.io/) or [JMX Exporter](https://github.com/prometheus/jmx_exporter)
+
+#### Go Dashboards
+
+| ID | Dashboard | Description |
+|----|-----------|-------------|
+| `10826` | Go Processes | Go runtime metrics |
+| `6671` | Go Metrics | Goroutines, GC, Memory |
+| `14061` | Go Runtime | Detailed runtime |
+
+> **Note:** Go apps need to expose metrics via [prometheus/client_golang](https://github.com/prometheus/client_golang)
+
+## Logging Stack (Loki)
+
+The cluster includes Loki for log aggregation.
+
+### Components
+
+| Component | Description |
+|-----------|-------------|
+| Loki | Log aggregation and storage |
+| Promtail | Log collector (DaemonSet on all nodes) |
+
+### Accessing Logs
+
+Logs are accessed via Grafana:
+
+1. Open **http://grafana.local**
+2. Go to **Explore** (left sidebar)
+3. Select **Loki** as datasource
+
+### LogQL Query Examples
+
+```logql
+# All logs from a namespace
+{namespace="default"}
+
+# Logs from kube-system
+{namespace="kube-system"}
+
+# Logs from specific pods
+{pod=~"nginx.*"}
+
+# Filter by container
+{container="app"}
+
+# Search for errors
+{namespace="default"} |= "error"
+
+# Search for errors (case insensitive)
+{namespace="default"} |~ "(?i)error"
+
+# Exclude patterns
+{namespace="default"} != "health"
+
+# Multiple filters
+{namespace="default", container="app"} |= "error" != "timeout"
+
+# Parse JSON logs
+{namespace="default"} | json | level="error"
+
+# Count errors per pod
+sum by (pod) (count_over_time({namespace="default"} |= "error" [5m]))
+```
+
+### Recommended Log Dashboards
+
+| ID | Dashboard | Description |
+|----|-----------|-------------|
+| `13639` | Loki Dashboard | General log overview |
+| `12611` | Loki & Promtail | Logs with Promtail stats |
+| `15141` | Loki Logs | Simple log viewer |
 
 ## Test Applications
 
