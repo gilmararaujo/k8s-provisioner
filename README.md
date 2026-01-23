@@ -521,14 +521,22 @@ The project uses [GitFlow](https://nvie.com/posts/a-successful-git-branching-mod
 ### Workflow
 
 ```
-feature/new-feature
+feature/my-feature
+        │
+        ▼ (PR)
+    develop
+        │
+        ▼ (PR)
+      main ──────► auto tag + release
         │
         ▼
-    develop ──────► release/v1.0.0 ──────► main
-        ▲                                    │
-        │                                    ▼
-        └─────────────── hotfix/fix ◄────── tag v1.0.0
+   hotfix/fix (merge back to develop)
 ```
+
+**Flow:**
+1. `feature/*` → PR to `develop`
+2. `develop` → PR to `main`
+3. Merge to `main` → **automatic tag and release** (reads `VERSION` file)
 
 ### Creating a Feature
 
