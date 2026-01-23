@@ -234,6 +234,13 @@ func (p *Provisioner) InitControlPlane() error {
 		if err := monitoringInstaller.Install(); err != nil {
 			return err
 		}
+
+		// Install Loki for log aggregation
+		fmt.Println("\n>>> Installing Loki Stack...")
+		lokiInstaller := installer.NewLoki(cfg, p.exec)
+		if err := lokiInstaller.Install(); err != nil {
+			return err
+		}
 	}
 
 	// Generate join command
