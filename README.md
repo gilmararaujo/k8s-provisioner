@@ -546,31 +546,31 @@ git commit -m "Add my feature"
 git push origin feature/my-feature
 ```
 
-### Creating a Release
+### Creating a Release (Automated)
 
-```bash
-# Create release branch from develop
-git checkout develop
-git pull origin develop
-git checkout -b release/v1.0.0
+Releases are created automatically when PRs are merged to `main`:
 
-# Update version, fix bugs...
-git add .
-git commit -m "Prepare release v1.0.0"
+1. **Create feature branch** and update `VERSION` file:
+   ```bash
+   git checkout develop
+   git checkout -b feature/my-feature
 
-# Merge to main
-git checkout main
-git merge release/v1.0.0
+   # Make changes...
+   echo "1.3.0" > VERSION
+   git add .
+   git commit -m "Add feature and bump version to 1.3.0"
+   git push origin feature/my-feature
+   ```
 
-# Create tag (triggers automatic release)
-git tag -a v1.0.0 -m "Release v1.0.0"
-git push origin main --tags
+2. **Create PR** feature → develop, then merge
 
-# Merge back to develop
-git checkout develop
-git merge release/v1.0.0
-git push origin develop
-```
+3. **Create PR** develop → main, then merge
+
+4. **Automatic release** - GitHub Actions will:
+   - Read version from `VERSION` file
+   - Create tag `v1.3.0`
+   - Build binaries for all platforms
+   - Create GitHub Release with artifacts
 
 ### Creating a Hotfix
 
@@ -598,20 +598,16 @@ git push origin develop
 
 ### Automatic Releases
 
-When you push a tag starting with `v`, GitHub Actions automatically:
+When code is merged to `main`, GitHub Actions automatically:
 
-1. Runs tests
-2. Builds binaries for all platforms
-3. Generates checksums
-4. Creates a GitHub Release with all artifacts
+1. Reads version from `VERSION` file
+2. Creates git tag if it doesn't exist
+3. Runs tests
+4. Builds binaries for all platforms
+5. Generates checksums
+6. Creates a GitHub Release with all artifacts
 
-```bash
-# Just create and push the tag
-git tag -a v1.0.0 -m "Release v1.0.0"
-git push origin v1.0.0
-
-# GitHub Actions does the rest!
-```
+**No manual tagging required!** Just update the `VERSION` file in your feature branch.
 
 ### Version Format
 
