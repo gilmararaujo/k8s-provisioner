@@ -1,0 +1,19 @@
+linters:
+  enable:
+    - gosec
+    - errcheck
+    - govet
+
+linters-settings:
+  gosec:
+    excludes:
+      # Subprocess with variable - vboxManage path is determined by code, not user input
+      - G204
+      # File path as variable - utility functions that need dynamic paths
+      - G304
+      # File permissions 0644 - acceptable for config/script files in lab environment
+      - G302
+      - G306
+
+issues:
+  exclude-use-default: false
