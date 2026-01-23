@@ -189,9 +189,9 @@ func (p *Provisioner) InitControlPlane() error {
 		}
 	}
 
-	// Remove control-plane taint
+	// Remove control-plane taint (ignore error - taint may not exist)
 	fmt.Println("\n>>> Removing control-plane taint...")
-	p.exec.RunShell("kubectl taint nodes controlplane node-role.kubernetes.io/control-plane:NoSchedule- 2>/dev/null || true")
+	_, _ = p.exec.RunShell("kubectl taint nodes controlplane node-role.kubernetes.io/control-plane:NoSchedule- 2>/dev/null || true")
 
 	// Install CNI
 	fmt.Println("\n>>> Installing Calico CNI...")
@@ -202,7 +202,9 @@ func (p *Provisioner) InitControlPlane() error {
 
 	// Wait for node to be ready
 	fmt.Println("\n>>> Waiting for node to be ready...")
-	p.waitForNode("controlplane", 5*time.Minute)
+	if err := p.waitForNode("controlplane", 5*time.Minute); err != nil {
+		return err
+	}
 
 	// Install MetalLB
 	fmt.Println("\n>>> Installing MetalLB...")
