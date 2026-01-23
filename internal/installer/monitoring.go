@@ -256,7 +256,7 @@ metadata:
   name: grafana
   namespace: monitoring
 spec:
-  type: LoadBalancer
+  type: ClusterIP
   ports:
   - port: 3000
     targetPort: 3000
@@ -582,16 +582,16 @@ func (m *Monitoring) printAccessInfo() {
 	fmt.Println("\n========================================")
 	fmt.Println("Monitoring Stack Access Information")
 	fmt.Println("========================================")
-	fmt.Println("\nGrafana:")
-	fmt.Println("  URL: http://<GRAFANA_LB_IP>:3000")
-	fmt.Println("  User: admin")
-	fmt.Println("  Password: admin123")
-	fmt.Println("\nGet Grafana LoadBalancer IP:")
-	fmt.Println("  kubectl get svc -n monitoring grafana -o jsonpath='{.status.loadBalancer.ingress[0].ip}'")
-	fmt.Println("\nIf using Istio, add to /etc/hosts:")
-	fmt.Println("  <INGRESS_IP> grafana.local")
-	fmt.Println("  Then access: http://grafana.local")
-	fmt.Println("\nPrometheus (internal):")
+	fmt.Println("\nGrafana (via Istio Ingress):")
+	fmt.Println("  1. Get Istio Ingress IP:")
+	fmt.Println("     INGRESS_IP=$(kubectl get svc -n istio-system istio-ingressgateway -o jsonpath='{.status.loadBalancer.ingress[0].ip}')")
+	fmt.Println("  2. Add to /etc/hosts:")
+	fmt.Println("     echo \"$INGRESS_IP grafana.local\" | sudo tee -a /etc/hosts")
+	fmt.Println("  3. Access: http://grafana.local")
+	fmt.Println("\n  Credentials:")
+	fmt.Println("    User: admin")
+	fmt.Println("    Password: admin123")
+	fmt.Println("\nPrometheus (port-forward):")
 	fmt.Println("  kubectl port-forward -n monitoring svc/prometheus 9090:9090")
 	fmt.Println("  Then access: http://localhost:9090")
 	fmt.Println("========================================")

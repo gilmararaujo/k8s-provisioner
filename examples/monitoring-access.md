@@ -12,15 +12,9 @@
 
 ## Accessing Grafana
 
-### Option 1: LoadBalancer IP (recommended)
+Grafana is exposed via Istio Ingress Gateway.
 
-```bash
-# Get Grafana LoadBalancer IP
-GRAFANA_IP=$(kubectl get svc -n monitoring grafana -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
-echo "Grafana URL: http://$GRAFANA_IP:3000"
-```
-
-### Option 2: Via Istio Ingress
+### Via Istio Ingress (recommended)
 
 ```bash
 # Get Istio Ingress IP
@@ -33,7 +27,7 @@ echo "$INGRESS_IP grafana.local" | sudo tee -a /etc/hosts
 open http://grafana.local
 ```
 
-### Option 3: Port Forward
+### Via Port Forward (alternative)
 
 ```bash
 kubectl port-forward -n monitoring svc/grafana 3000:3000
