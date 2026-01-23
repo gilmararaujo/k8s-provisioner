@@ -304,13 +304,17 @@ The cluster includes a full monitoring stack with Prometheus and Grafana.
 
 ### Accessing Grafana
 
-```bash
-# Get Grafana LoadBalancer IP
-GRAFANA_IP=$(kubectl get svc -n monitoring grafana -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
-echo "Grafana URL: http://$GRAFANA_IP:3000"
+Grafana is exposed via Istio Ingress Gateway:
 
-# Or via Istio (add to /etc/hosts)
+```bash
+# Get Istio Ingress IP
+INGRESS_IP=$(kubectl get svc -n istio-system istio-ingressgateway -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+
+# Add to /etc/hosts
 echo "$INGRESS_IP grafana.local" | sudo tee -a /etc/hosts
+
+# Access
+open http://grafana.local
 ```
 
 **Credentials:**
@@ -521,14 +525,22 @@ The project uses [GitFlow](https://nvie.com/posts/a-successful-git-branching-mod
 ### Workflow
 
 ```
-feature/new-feature
+feature/my-feature
+        │
+        ▼ (PR)
+    develop
+        │
+        ▼ (PR)
+      main ──────► auto tag + release
         │
         ▼
-    develop ──────► release/v1.0.0 ──────► main
-        ▲                                    │
-        │                                    ▼
-        └─────────────── hotfix/fix ◄────── tag v1.0.0
+   hotfix/fix (merge back to develop)
 ```
+
+**Flow:**
+1. `feature/*` → PR to `develop`
+2. `develop` → PR to `main`
+3. Merge to `main` → **automatic tag and release** (reads `VERSION` file)
 
 ### Creating a Feature
 
