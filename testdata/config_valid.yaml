@@ -15,6 +15,10 @@ network:
   controlplane_ip: "192.168.56.10"
   metallb_range: "192.168.56.200-192.168.56.250"
 
+storage:
+  nfs_server: "192.168.56.20"
+  nfs_path: "/exports/k8s-volumes"
+
 nodes:
   - name: master01
     ip: "192.168.56.10"

@@ -10,6 +10,7 @@ type Config struct {
 	Cluster    ClusterConfig    `yaml:"cluster"`
 	Versions   VersionsConfig   `yaml:"versions"`
 	Network    NetworkConfig    `yaml:"network"`
+	Storage    StorageConfig    `yaml:"storage"`
 	Nodes      []NodeConfig     `yaml:"nodes"`
 	Components ComponentsConfig `yaml:"components"`
 }
@@ -32,6 +33,11 @@ type NetworkConfig struct {
 	Interface      string `yaml:"interface"`
 	ControlPlaneIP string `yaml:"controlplane_ip"`
 	MetalLBRange   string `yaml:"metallb_range"`
+}
+
+type StorageConfig struct {
+	NFSServer string `yaml:"nfs_server"`
+	NFSPath   string `yaml:"nfs_path"`
 }
 
 type NodeConfig struct {
