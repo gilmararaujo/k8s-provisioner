@@ -14,6 +14,48 @@ Kubernetes cluster provisioner written in Go for lab environments. Supports macO
 | Service Mesh | Istio 1.28.2 |
 | Storage | NFS Server |
 
+## Prerequisites
+
+| Tool | Version | Installation |
+|------|---------|--------------|
+| VirtualBox | 7.0+ | [Download](https://www.virtualbox.org/wiki/Downloads) |
+| Vagrant | 2.4+ | [Download](https://developer.hashicorp.com/vagrant/downloads) |
+| kubectl | 1.32+ | [Install Guide](https://kubernetes.io/docs/tasks/tools/) |
+| Go | 1.22+ | [Download](https://go.dev/dl/) (only for building) |
+
+### macOS (Homebrew)
+
+```bash
+brew install --cask virtualbox vagrant
+brew install kubectl go
+```
+
+### Ubuntu/Debian
+
+```bash
+# VirtualBox
+sudo apt install virtualbox
+
+# Vagrant
+wget https://releases.hashicorp.com/vagrant/2.4.3/vagrant_2.4.3-1_amd64.deb
+sudo dpkg -i vagrant_2.4.3-1_amd64.deb
+
+# kubectl
+curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+sudo install kubectl /usr/local/bin/
+
+# Go
+sudo snap install go --classic
+```
+
+### Windows
+
+Use [Chocolatey](https://chocolatey.org/):
+
+```powershell
+choco install virtualbox vagrant kubernetes-cli golang
+```
+
 ## Architecture
 
 ```
