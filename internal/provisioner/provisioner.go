@@ -220,6 +220,13 @@ func (p *Provisioner) InitControlPlane() error {
 		return err
 	}
 
+	// Install Metrics Server
+	fmt.Println("\n>>> Installing Metrics Server...")
+	metricsInstaller := installer.NewMetricsServer(cfg, p.exec)
+	if err := metricsInstaller.Install(); err != nil {
+		return err
+	}
+
 	// Install Monitoring Stack (if enabled)
 	if cfg.Components.Monitoring == "prometheus-stack" {
 		fmt.Println("\n>>> Installing Monitoring Stack...")
