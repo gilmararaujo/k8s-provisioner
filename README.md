@@ -13,6 +13,7 @@ Kubernetes cluster provisioner written in Go for lab environments. Supports macO
 | LoadBalancer | MetalLB 0.14.8 |
 | Service Mesh | Istio 1.28.2 |
 | Storage | NFS Server |
+| Metrics | Metrics Server |
 | Monitoring | Prometheus + Grafana |
 
 ## Prerequisites
@@ -286,6 +287,35 @@ echo "$INGRESS_IP nginx-pvc.local" | sudo tee -a /etc/hosts
 
 # Test
 curl http://nginx-pvc.local
+```
+
+## Metrics Server
+
+The cluster includes Metrics Server for resource monitoring.
+
+### Usage
+
+```bash
+# View node resources
+kubectl top nodes
+
+# View pod resources
+kubectl top pods
+
+# View pods in all namespaces
+kubectl top pods -A
+```
+
+### HPA (Horizontal Pod Autoscaler)
+
+Metrics Server enables HPA for automatic scaling:
+
+```bash
+# Create HPA for a deployment
+kubectl autoscale deployment my-app --cpu-percent=50 --min=1 --max=10
+
+# Check HPA status
+kubectl get hpa
 ```
 
 ## Monitoring Stack
