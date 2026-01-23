@@ -13,8 +13,8 @@ func TestFileExists_True(t *testing.T) {
 	// Create a temporary file
 	tmpFile, err := os.CreateTemp("", "test_file_*.txt")
 	require.NoError(t, err)
-	defer os.Remove(tmpFile.Name())
-	tmpFile.Close()
+	defer func() { _ = os.Remove(tmpFile.Name()) }()
+	_ = tmpFile.Close()
 
 	exists := FileExists(tmpFile.Name())
 
@@ -31,7 +31,7 @@ func TestFileExists_Directory(t *testing.T) {
 	// Create a temporary directory
 	tmpDir, err := os.MkdirTemp("", "test_dir_*")
 	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	exists := FileExists(tmpDir)
 
@@ -42,7 +42,7 @@ func TestWriteFile_Success(t *testing.T) {
 	// Create a temporary directory
 	tmpDir, err := os.MkdirTemp("", "test_write_*")
 	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	filePath := filepath.Join(tmpDir, "test.txt")
 	content := "Hello, World!"
@@ -61,7 +61,7 @@ func TestWriteFile_Overwrite(t *testing.T) {
 	// Create a temporary directory
 	tmpDir, err := os.MkdirTemp("", "test_write_*")
 	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	filePath := filepath.Join(tmpDir, "test.txt")
 
@@ -90,7 +90,7 @@ func TestAppendToFile_Success(t *testing.T) {
 	// Create a temporary directory
 	tmpDir, err := os.MkdirTemp("", "test_append_*")
 	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	filePath := filepath.Join(tmpDir, "test.txt")
 
@@ -112,7 +112,7 @@ func TestAppendToFile_CreateNew(t *testing.T) {
 	// Create a temporary directory
 	tmpDir, err := os.MkdirTemp("", "test_append_*")
 	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	filePath := filepath.Join(tmpDir, "new_file.txt")
 	content := "New content"
@@ -131,7 +131,7 @@ func TestAppendToFile_Multiple(t *testing.T) {
 	// Create a temporary directory
 	tmpDir, err := os.MkdirTemp("", "test_append_*")
 	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	filePath := filepath.Join(tmpDir, "test.txt")
 
