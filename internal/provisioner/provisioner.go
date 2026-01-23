@@ -220,6 +220,15 @@ func (p *Provisioner) InitControlPlane() error {
 		return err
 	}
 
+	// Install Monitoring Stack (if enabled)
+	if cfg.Components.Monitoring == "prometheus-stack" {
+		fmt.Println("\n>>> Installing Monitoring Stack...")
+		monitoringInstaller := installer.NewMonitoring(cfg, p.exec)
+		if err := monitoringInstaller.Install(); err != nil {
+			return err
+		}
+	}
+
 	// Generate join command
 	fmt.Println("\n>>> Generating join command...")
 	if _, err := p.exec.RunShell("kubeadm token create --print-join-command > /vagrant/join-command.sh"); err != nil {
