@@ -13,6 +13,7 @@ Kubernetes cluster provisioner written in Go for lab environments. Supports macO
 | LoadBalancer | MetalLB 0.14.8 |
 | Service Mesh | Istio 1.28.2 |
 | Storage | NFS Server |
+| Monitoring | Prometheus + Grafana |
 
 ## Prerequisites
 
@@ -286,6 +287,54 @@ echo "$INGRESS_IP nginx-pvc.local" | sudo tee -a /etc/hosts
 # Test
 curl http://nginx-pvc.local
 ```
+
+## Monitoring Stack
+
+The cluster includes a full monitoring stack with Prometheus and Grafana.
+
+### Components
+
+| Component | Description |
+|-----------|-------------|
+| Prometheus Operator | Manages Prometheus instances |
+| Prometheus | Metrics collection and storage |
+| Grafana | Visualization and dashboards |
+| Node Exporter | Host metrics (CPU, memory, disk) |
+| kube-state-metrics | Kubernetes object metrics |
+
+### Accessing Grafana
+
+```bash
+# Get Grafana LoadBalancer IP
+GRAFANA_IP=$(kubectl get svc -n monitoring grafana -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+echo "Grafana URL: http://$GRAFANA_IP:3000"
+
+# Or via Istio (add to /etc/hosts)
+echo "$INGRESS_IP grafana.local" | sudo tee -a /etc/hosts
+```
+
+**Credentials:**
+- Username: `admin`
+- Password: `admin123`
+
+### Accessing Prometheus
+
+```bash
+kubectl port-forward -n monitoring svc/prometheus 9090:9090
+# Access: http://localhost:9090
+```
+
+### Recommended Dashboards
+
+Import these dashboards from grafana.com:
+
+| Dashboard | ID | Description |
+|-----------|-----|-------------|
+| Node Exporter Full | 1860 | Detailed host metrics |
+| Kubernetes Cluster | 6417 | Cluster overview |
+| Kubernetes Pods | 6336 | Pod metrics |
+
+See `examples/monitoring-access.md` for more details.
 
 ## Test Applications
 

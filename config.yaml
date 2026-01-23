@@ -38,3 +38,4 @@ components:
   cni: "calico"
   load_balancer: "metallb"
   service_mesh: "istio"
+  monitoring: "prometheus-stack"  # Options: prometheus-stack, none

@@ -44,6 +44,7 @@ type ComponentsConfig struct {
 	CNI          string `yaml:"cni"`
 	LoadBalancer string `yaml:"load_balancer"`
 	ServiceMesh  string `yaml:"service_mesh"`
+	Monitoring   string `yaml:"monitoring"`
 }
 
 func Load(path string) (*Config, error) {
