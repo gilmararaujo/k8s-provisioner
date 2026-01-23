@@ -83,6 +83,8 @@ data:
         final_sleep: 0s
       chunk_idle_period: 5m
       chunk_retain_period: 30s
+      wal:
+        dir: /data/loki/wal
     schema_config:
       configs:
         - from: 2020-05-15
@@ -117,6 +119,10 @@ spec:
       labels:
         app: loki
     spec:
+      securityContext:
+        fsGroup: 10001
+        runAsGroup: 10001
+        runAsUser: 10001
       containers:
       - name: loki
         image: grafana/loki:2.9.0
