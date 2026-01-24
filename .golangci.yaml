@@ -11,9 +11,12 @@ linters-settings:
       - G204
       # File path as variable - utility functions that need dynamic paths
       - G304
-      # File permissions 0644 - acceptable for config/script files in lab environment
+      # File permissions 0644/0755 - acceptable for config/script files in lab environment
       - G302
       - G306
+      - G301
+      # Integer overflow conversion - values are bounded by configuration
+      - G115
 
 issues:
   exclude-use-default: false

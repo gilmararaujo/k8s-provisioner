@@ -188,6 +188,67 @@ k8s-provisioner vbox list       # List all VirtualBox VMs
 
 MetalLB uses Layer 2 mode (ARP) to announce LoadBalancer IPs. VirtualBox by default blocks ARP traffic between VMs and the host. Enabling promiscuous mode allows the host to receive ARP responses from MetalLB, making LoadBalancer IPs accessible from the host machine.
 
+### User Management (runs on host)
+
+Create and manage Kubernetes users with X.509 certificate-based authentication.
+
+```bash
+# Create user with cluster-wide view access
+k8s-provisioner user create joao --cluster-role view
+
+# Create user with edit access to a specific namespace
+k8s-provisioner user create maria --namespace dev --cluster-role edit
+
+# Create user in a group with admin access
+k8s-provisioner user create pedro --group developers --cluster-role admin
+
+# Create user with custom certificate expiration (default: 365 days)
+k8s-provisioner user create ana --cluster-role view --expiration 30
+
+# Create a developer role in a namespace
+k8s-provisioner user create-role developer --namespace dev
+
+# Assign user to a custom role
+k8s-provisioner user create carlos --namespace dev --role developer
+
+# List all users
+k8s-provisioner user list
+
+# Delete a user
+k8s-provisioner user delete joao
+```
+
+**What gets created:**
+- RSA private key (`~/.k8s-users/<username>/<username>.key`)
+- X.509 certificate (`~/.k8s-users/<username>/<username>.crt`)
+- Kubeconfig file (`~/.k8s-users/<username>/<username>.kubeconfig`)
+- RBAC bindings (ClusterRoleBinding or RoleBinding)
+
+**Using the generated kubeconfig:**
+
+```bash
+# Option 1: Direct use
+kubectl --kubeconfig=~/.k8s-users/joao/joao.kubeconfig get pods
+
+# Option 2: Export KUBECONFIG
+export KUBECONFIG=~/.k8s-users/joao/joao.kubeconfig
+kubectl get pods
+
+# Option 3: Merge with existing config
+KUBECONFIG=~/.kube/config:~/.k8s-users/joao/joao.kubeconfig kubectl config view --flatten > ~/.kube/config-merged
+mv ~/.kube/config-merged ~/.kube/config
+kubectl config use-context joao@k8s-lab
+```
+
+**Built-in ClusterRoles:**
+
+| ClusterRole | Permissions |
+|-------------|-------------|
+| `view` | Read-only access to most resources |
+| `edit` | Read/write access (no RBAC) |
+| `admin` | Full access within namespace |
+| `cluster-admin` | Full cluster access |
+
 ## Configuration
 
 ### config.yaml
