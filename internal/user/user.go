@@ -6,7 +6,6 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"crypto/x509/pkix"
-	"encoding/base64"
 	"encoding/pem"
 	"fmt"
 	"os"
@@ -599,14 +598,4 @@ func GetDefaultDeveloperRules() []rbac.PolicyRule {
 			Verbs:     []string{"get", "list", "watch", "create", "update", "patch", "delete"},
 		},
 	}
-}
-
-// EncodeToBase64 encodes bytes to base64 string
-func EncodeToBase64(data []byte) string {
-	return base64.StdEncoding.EncodeToString(data)
-}
-
-// DecodeFromBase64 decodes base64 string to bytes
-func DecodeFromBase64(data string) ([]byte, error) {
-	return base64.StdEncoding.DecodeString(data)
 }
