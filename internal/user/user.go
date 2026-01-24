@@ -60,7 +60,7 @@ func (m *Manager) CreateUser(cfg UserConfig) error {
 
 	// Create output directory
 	userDir := filepath.Join(m.outputDir, cfg.Username)
-	if err := os.MkdirAll(userDir, 0755); err != nil {
+	if err := os.MkdirAll(userDir, 0750); err != nil {
 		return fmt.Errorf("failed to create user directory: %w", err)
 	}
 
@@ -195,7 +195,8 @@ func (m *Manager) submitCSR(name string, csrPEM []byte, expirationDays int) erro
 	_ = m.clientset.CertificatesV1().CertificateSigningRequests().Delete(
 		context.TODO(), name, metav1.DeleteOptions{})
 
-	expiration := int32(expirationDays * 24 * 60 * 60) // days to seconds
+	expirationSeconds := expirationDays * 24 * 60 * 60 // days to seconds
+	expiration := int32(expirationSeconds)             // #nosec G115
 
 	csr := &certificates.CertificateSigningRequest{
 		ObjectMeta: metav1.ObjectMeta{
@@ -457,7 +458,7 @@ func (m *Manager) DeleteUser(username string) error {
 	userDir := filepath.Join(m.outputDir, username)
 	if _, err := os.Stat(userDir); err == nil {
 		fmt.Printf("  Deleting local files: %s\n", userDir)
-		os.RemoveAll(userDir)
+		_ = os.RemoveAll(userDir)
 	}
 
 	fmt.Println("User deleted successfully!")

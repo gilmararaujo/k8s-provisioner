@@ -7,7 +7,6 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/techiescamp/k8s-provisioner/internal/user"
-	rbac "k8s.io/api/rbac/v1"
 )
 
 var (
@@ -180,14 +179,3 @@ func runUserCreateRole(cmd *cobra.Command, args []string) error {
 	return manager.CreateRole(roleName, userNamespace, rules)
 }
 
-// Helper function to create custom roles
-func createCustomRole(manager *user.Manager, name, namespace string, apiGroups, resources, verbs []string) error {
-	rules := []rbac.PolicyRule{
-		{
-			APIGroups: apiGroups,
-			Resources: resources,
-			Verbs:     verbs,
-		},
-	}
-	return manager.CreateRole(name, namespace, rules)
-}
