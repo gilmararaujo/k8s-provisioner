@@ -11,10 +11,10 @@ import (
 
 type Istio struct {
 	config *config.Config
-	exec   *executor.Executor
+	exec   executor.CommandExecutor
 }
 
-func NewIstio(cfg *config.Config, exec *executor.Executor) *Istio {
+func NewIstio(cfg *config.Config, exec executor.CommandExecutor) *Istio {
 	return &Istio{config: cfg, exec: exec}
 }
 

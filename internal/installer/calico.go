@@ -10,10 +10,10 @@ import (
 
 type Calico struct {
 	config *config.Config
-	exec   *executor.Executor
+	exec   executor.CommandExecutor
 }
 
-func NewCalico(cfg *config.Config, exec *executor.Executor) *Calico {
+func NewCalico(cfg *config.Config, exec executor.CommandExecutor) *Calico {
 	return &Calico{config: cfg, exec: exec}
 }
 
