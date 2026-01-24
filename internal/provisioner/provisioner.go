@@ -12,7 +12,7 @@ import (
 
 type Provisioner struct {
 	config  *config.Config
-	exec    *executor.Executor
+	exec    executor.CommandExecutor
 	verbose bool
 }
 

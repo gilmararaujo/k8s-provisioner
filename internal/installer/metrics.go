@@ -10,10 +10,10 @@ import (
 
 type MetricsServer struct {
 	config *config.Config
-	exec   *executor.Executor
+	exec   executor.CommandExecutor
 }
 
-func NewMetricsServer(cfg *config.Config, exec *executor.Executor) *MetricsServer {
+func NewMetricsServer(cfg *config.Config, exec executor.CommandExecutor) *MetricsServer {
 	return &MetricsServer{config: cfg, exec: exec}
 }
 
