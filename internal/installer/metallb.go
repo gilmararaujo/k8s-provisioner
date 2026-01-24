@@ -10,10 +10,10 @@ import (
 
 type MetalLB struct {
 	config *config.Config
-	exec   *executor.Executor
+	exec   executor.CommandExecutor
 }
 
-func NewMetalLB(cfg *config.Config, exec *executor.Executor) *MetalLB {
+func NewMetalLB(cfg *config.Config, exec executor.CommandExecutor) *MetalLB {
 	return &MetalLB{config: cfg, exec: exec}
 }
 

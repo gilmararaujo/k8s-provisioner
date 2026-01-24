@@ -8,9 +8,21 @@ import (
 	"strings"
 )
 
+// CommandExecutor defines command execution operations
+type CommandExecutor interface {
+	Run(name string, args ...string) (string, error)
+	RunWithOutput(name string, args ...string) error
+	RunShell(command string) (string, error)
+	RunShellWithOutput(command string) error
+}
+
+// Executor implements CommandExecutor
 type Executor struct {
 	Verbose bool
 }
+
+// Compile-time verification that Executor implements CommandExecutor
+var _ CommandExecutor = (*Executor)(nil)
 
 func New(verbose bool) *Executor {
 	return &Executor{Verbose: verbose}

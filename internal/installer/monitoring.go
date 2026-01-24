@@ -10,10 +10,10 @@ import (
 
 type Monitoring struct {
 	config *config.Config
-	exec   *executor.Executor
+	exec   executor.CommandExecutor
 }
 
-func NewMonitoring(cfg *config.Config, exec *executor.Executor) *Monitoring {
+func NewMonitoring(cfg *config.Config, exec executor.CommandExecutor) *Monitoring {
 	return &Monitoring{config: cfg, exec: exec}
 }
 
