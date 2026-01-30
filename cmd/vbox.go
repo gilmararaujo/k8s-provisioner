@@ -11,18 +11,18 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// Mapeamento de VMs do lab
+// Lab VM display names
 var vmDisplayNames = []string{"Storage", "Master", "Node01", "Node02"}
 
-// getVBoxManagePath retorna o caminho do VBoxManage de acordo com o SO
+// getVBoxManagePath returns the VBoxManage path based on the OS
 func getVBoxManagePath() string {
 	switch runtime.GOOS {
 	case "windows":
-		// Caminhos comuns no Windows
+		// Common paths on Windows
 		paths := []string{
 			filepath.Join(os.Getenv("ProgramFiles"), "Oracle", "VirtualBox", "VBoxManage.exe"),
 			filepath.Join(os.Getenv("ProgramFiles(x86)"), "Oracle", "VirtualBox", "VBoxManage.exe"),
-			"VBoxManage.exe", // Se estiver no PATH
+			"VBoxManage.exe", // If in PATH
 		}
 		for _, p := range paths {
 			if _, err := exec.LookPath(p); err == nil {
@@ -31,7 +31,7 @@ func getVBoxManagePath() string {
 		}
 		return "VBoxManage.exe"
 	case "linux":
-		// No Linux geralmente está no PATH ou em /usr/bin
+		// On Linux it's usually in PATH or /usr/bin
 		if path, err := exec.LookPath("VBoxManage"); err == nil {
 			return path
 		}
@@ -60,7 +60,7 @@ Supported platforms: Windows, macOS, Linux`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		vboxManage := getVBoxManagePath()
 
-		// Verificar se VBoxManage existe
+		// Check if VBoxManage exists
 		if _, err := exec.LookPath(vboxManage); err != nil {
 			return fmt.Errorf("VBoxManage not found. Please ensure VirtualBox is installed and in your PATH")
 		}
@@ -95,7 +95,7 @@ var promiscStatusCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		vboxManage := getVBoxManagePath()
 
-		// Verificar se VBoxManage existe
+		// Check if VBoxManage exists
 		if _, err := exec.LookPath(vboxManage); err != nil {
 			return fmt.Errorf("VBoxManage not found. Please ensure VirtualBox is installed and in your PATH")
 		}
@@ -123,7 +123,7 @@ var listVMsCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		vboxManage := getVBoxManagePath()
 
-		// Verificar se VBoxManage existe
+		// Check if VBoxManage exists
 		if _, err := exec.LookPath(vboxManage); err != nil {
 			return fmt.Errorf("VBoxManage not found. Please ensure VirtualBox is installed and in your PATH")
 		}

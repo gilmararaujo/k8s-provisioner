@@ -10,6 +10,13 @@ import (
 	"github.com/techiescamp/k8s-provisioner/internal/installer"
 )
 
+// Timeout constants for provisioner operations
+const (
+	NodeReadyTimeout      = 5 * time.Minute
+	APIServerReadyTimeout = 5 * time.Minute
+	DefaultPollInterval   = 10 * time.Second
+)
+
 type Provisioner struct {
 	config  *config.Config
 	exec    executor.CommandExecutor
@@ -202,7 +209,7 @@ func (p *Provisioner) InitControlPlane() error {
 
 	// Wait for node to be ready
 	fmt.Println("\n>>> Waiting for node to be ready...")
-	if err := p.waitForNode("controlplane", 5*time.Minute); err != nil {
+	if err := p.waitForNode("controlplane", NodeReadyTimeout); err != nil {
 		return err
 	}
 
@@ -261,7 +268,7 @@ func (p *Provisioner) JoinWorker() error {
 
 	// Wait for join command file or API server
 	fmt.Println("\n>>> Waiting for control plane...")
-	if err := p.waitForAPIServer(cfg.Network.ControlPlaneIP, 5*time.Minute); err != nil {
+	if err := p.waitForAPIServer(cfg.Network.ControlPlaneIP, APIServerReadyTimeout); err != nil {
 		return err
 	}
 
@@ -295,7 +302,7 @@ func (p *Provisioner) waitForNode(name string, timeout time.Duration) error {
 		if err == nil && out == "True" {
 			return nil
 		}
-		time.Sleep(10 * time.Second)
+		time.Sleep(DefaultPollInterval)
 	}
 	return fmt.Errorf("timeout waiting for node %s", name)
 }
@@ -308,7 +315,7 @@ func (p *Provisioner) waitForAPIServer(ip string, timeout time.Duration) error {
 			return nil
 		}
 		fmt.Printf("Waiting for API server at %s:6443...\n", ip)
-		time.Sleep(10 * time.Second)
+		time.Sleep(DefaultPollInterval)
 	}
 	return fmt.Errorf("timeout waiting for API server at %s:6443", ip)
 }

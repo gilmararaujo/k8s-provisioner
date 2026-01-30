@@ -9,8 +9,8 @@ DISPLAY_NAMES = {
   "node02" => "Node02"
 }
 
-# IP do servidor NFS
-NFS_SERVER_IP = "192.168.201.20"
+# NFS Server IP
+NFS_SERVER_IP = "192.168.56.20"
 
 Vagrant.configure("2") do |config|
   config.vm.box = settings['box_name']
@@ -66,10 +66,10 @@ Vagrant.configure("2") do |config|
         apt-get install -y curl netcat-openbsd nfs-common vim bash-completion
 
         # /etc/hosts
-        echo "192.168.201.20 storage" >> /etc/hosts
-        echo "192.168.201.10 controlplane" >> /etc/hosts
-        echo "192.168.201.11 node01" >> /etc/hosts
-        echo "192.168.201.12 node02" >> /etc/hosts
+        echo "192.168.56.20 storage" >> /etc/hosts
+        echo "192.168.56.10 controlplane" >> /etc/hosts
+        echo "192.168.56.11 node01" >> /etc/hosts
+        echo "192.168.56.12 node02" >> /etc/hosts
 
         # Configurar vim para YAML/Kubernetes
         cat > /etc/vim/vimrc.local <<'VIMRC'
@@ -115,7 +115,7 @@ VIMRC
 
           # Configurar exports
           cat > /etc/exports <<EOF
-/exports/k8s-volumes 192.168.201.0/24(rw,sync,no_subtree_check,no_root_squash)
+/exports/k8s-volumes 192.168.56.0/24(rw,sync,no_subtree_check,no_root_squash)
 EOF
 
           # Reiniciar NFS

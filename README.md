@@ -64,12 +64,12 @@ choco install virtualbox vagrant kubernetes-cli golang
 ```
 +------------------+     +------------------+     +------------------+
 |     Storage      |     |   ControlPlane   |     |     Node01       |
-|  192.168.201.20  |     |  192.168.201.10  |     |  192.168.201.11  |
+|  192.168.56.20   |     |  192.168.56.10   |     |  192.168.56.11   |
 |    NFS Server    |     |     Master       |     |     Worker       |
 +------------------+     +------------------+     +------------------+
                                                   +------------------+
                                                   |     Node02       |
-                                                  |  192.168.201.12  |
+                                                  |  192.168.56.12   |
                                                   |     Worker       |
                                                   +------------------+
 ```
@@ -155,7 +155,7 @@ vagrant up
 vagrant ssh controlplane -c 'sudo cat /etc/kubernetes/admin.conf' > ~/.kube/config-lab
 
 # Adjust server IP
-sed -i '' 's/127.0.0.1/192.168.201.10/' ~/.kube/config-lab
+sed -i '' 's/127.0.0.1/192.168.56.10/' ~/.kube/config-lab
 
 # Use the config
 export KUBECONFIG=~/.kube/config-lab
@@ -268,25 +268,22 @@ versions:
 
 network:
   interface: "eth1"
-  controlplane_ip: "192.168.201.10"
-  metallb_range: "192.168.201.200-192.168.201.250"
+  controlplane_ip: "192.168.56.10"
+  metallb_range: "192.168.56.200-192.168.56.250"
 
 storage:
-  nfs_server: "192.168.201.20"
+  nfs_server: "storage"  # Uses hostname from /etc/hosts
   nfs_path: "/exports/k8s-volumes"
 
+# Node definitions - IPs should match vagrant/settings.yaml
 nodes:
   - name: "storage"
-    ip: "192.168.201.20"
     role: "storage"
   - name: "controlplane"
-    ip: "192.168.201.10"
     role: "controlplane"
   - name: "node01"
-    ip: "192.168.201.11"
     role: "worker"
   - name: "node02"
-    ip: "192.168.201.12"
     role: "worker"
 ```
 
@@ -295,23 +292,25 @@ nodes:
 ```yaml
 box_name: "bento/debian-12"
 vm:
+# Storage VM (NFS Server) - must be created first
 - name: "storage"
-  ip: "192.168.201.20"
+  ip: "192.168.56.20"
   memory: "2048"
   cpus: "1"
   role: "storage"
+# Kubernetes VMs
 - name: "controlplane"
-  ip: "192.168.201.10"
+  ip: "192.168.56.10"
   memory: "4096"
   cpus: "2"
   role: "controlplane"
 - name: "node01"
-  ip: "192.168.201.11"
+  ip: "192.168.56.11"
   memory: "4096"
   cpus: "2"
   role: "worker"
 - name: "node02"
-  ip: "192.168.201.12"
+  ip: "192.168.56.12"
   memory: "4096"
   cpus: "2"
   role: "worker"
@@ -648,7 +647,7 @@ vagrant ssh storage -c 'systemctl status nfs-kernel-server'
 vagrant ssh storage -c 'exportfs -v'
 
 # Test mount from node
-vagrant ssh node01 -c 'showmount -e 192.168.201.20'
+vagrant ssh node01 -c 'showmount -e 192.168.56.20'
 ```
 
 ### Check VirtualBox VMs

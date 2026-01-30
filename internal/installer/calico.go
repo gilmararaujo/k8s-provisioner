@@ -29,7 +29,7 @@ func (c *Calico) Install() error {
 
 	// Wait for CRDs
 	fmt.Println("Waiting for Tigera CRDs...")
-	time.Sleep(20 * time.Second)
+	time.Sleep(CRDInitialDelay)
 
 	// Create Calico installation
 	installation := fmt.Sprintf(`apiVersion: operator.tigera.io/v1
@@ -61,7 +61,7 @@ spec: {}`, c.config.Cluster.PodCIDR)
 
 	// Wait for Calico to be ready
 	fmt.Println("Waiting for Calico to be ready...")
-	return c.waitForReady(5 * time.Minute)
+	return c.waitForReady(DefaultReadyTimeout)
 }
 
 func (c *Calico) waitForReady(timeout time.Duration) error {
@@ -73,7 +73,7 @@ func (c *Calico) waitForReady(timeout time.Duration) error {
 			return nil
 		}
 		fmt.Println("Waiting for Calico pods...")
-		time.Sleep(15 * time.Second)
+		time.Sleep(LongPollInterval)
 	}
 	// Don't fail, just warn
 	fmt.Println("Warning: Calico pods may still be starting")

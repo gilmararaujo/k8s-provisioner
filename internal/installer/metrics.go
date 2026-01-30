@@ -33,7 +33,7 @@ func (m *MetricsServer) Install() error {
 
 	// Wait for metrics-server to be ready
 	fmt.Println("Waiting for Metrics Server to be ready...")
-	if err := m.waitForReady(3 * time.Minute); err != nil {
+	if err := m.waitForReady(ShortReadyTimeout); err != nil {
 		return err
 	}
 
@@ -50,7 +50,7 @@ func (m *MetricsServer) waitForReady(timeout time.Duration) error {
 			return nil
 		}
 		fmt.Println("Waiting for Metrics Server deployment...")
-		time.Sleep(10 * time.Second)
+		time.Sleep(DefaultPollInterval)
 	}
 	fmt.Println("Warning: Metrics Server may still be starting")
 	return nil
