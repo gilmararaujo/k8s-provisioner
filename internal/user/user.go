@@ -21,6 +21,12 @@ import (
 	"k8s.io/client-go/tools/clientcmd/api"
 )
 
+// Timeout constants for user operations
+const (
+	CertificateWaitTimeout = 30 * time.Second
+	CertificatePollInterval = 1 * time.Second
+)
+
 type Manager struct {
 	clientset  *kubernetes.Clientset
 	kubeconfig string
@@ -105,7 +111,7 @@ func (m *Manager) CreateUser(cfg UserConfig) error {
 
 	// Step 5: Wait and get certificate
 	fmt.Println("  Waiting for certificate...")
-	certPEM, err := m.waitForCertificate(csrName, 30*time.Second)
+	certPEM, err := m.waitForCertificate(csrName, CertificateWaitTimeout)
 	if err != nil {
 		return err
 	}
@@ -258,7 +264,7 @@ func (m *Manager) waitForCertificate(name string, timeout time.Duration) ([]byte
 			return csr.Status.Certificate, nil
 		}
 
-		time.Sleep(1 * time.Second)
+		time.Sleep(CertificatePollInterval)
 	}
 
 	return nil, fmt.Errorf("timeout waiting for certificate")

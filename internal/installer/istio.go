@@ -48,7 +48,7 @@ func (i *Istio) Install() error {
 
 	// Wait for Istio to be ready
 	fmt.Println("Waiting for Istio to be ready...")
-	if err := i.waitForReady(5 * time.Minute); err != nil {
+	if err := i.waitForReady(DefaultReadyTimeout); err != nil {
 		return err
 	}
 
@@ -81,7 +81,7 @@ func (i *Istio) waitForReady(timeout time.Duration) error {
 			}
 		}
 		fmt.Println("Waiting for Istio pods...")
-		time.Sleep(15 * time.Second)
+		time.Sleep(LongPollInterval)
 	}
 	// Don't fail, just warn
 	fmt.Println("Warning: Istio pods may still be starting")

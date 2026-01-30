@@ -14,7 +14,7 @@ var (
 	cfg     *config.Config
 )
 
-// Comandos que não precisam de config
+// Commands that don't require config
 var noConfigCommands = map[string]bool{
 	"version": true,
 	"vbox":    true,
@@ -36,9 +36,9 @@ for learning and lab environments. It automates the installation of:
 - MetalLB (LoadBalancer)
 - Istio (Service Mesh)`,
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-		// Pular carregamento de config para comandos que não precisam
+		// Skip config loading for commands that don't need it
 		if noConfigCommands[cmd.Name()] {
-			// Tentar carregar config, mas não falhar se não existir
+			// Try to load config, but don't fail if it doesn't exist
 			cfg, _ = config.Load(cfgFile)
 			return nil
 		}

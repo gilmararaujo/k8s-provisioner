@@ -13,25 +13,22 @@ versions:
 
 network:
   interface: "eth1"
-  controlplane_ip: "192.168.201.10"
-  metallb_range: "192.168.201.200-192.168.201.250"
+  controlplane_ip: "192.168.56.10"
+  metallb_range: "192.168.56.200-192.168.56.250"
 
 storage:
-  nfs_server: "192.168.201.20"
+  nfs_server: "storage"  # Uses hostname from /etc/hosts
   nfs_path: "/exports/k8s-volumes"
 
+# Node definitions - IPs should match vagrant/settings.yaml
 nodes:
   - name: "storage"
-    ip: "192.168.201.20"
     role: "storage"
   - name: "controlplane"
-    ip: "192.168.201.10"
     role: "controlplane"
   - name: "node01"
-    ip: "192.168.201.11"
     role: "worker"
   - name: "node02"
-    ip: "192.168.201.12"
     role: "worker"
 
 components:

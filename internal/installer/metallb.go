@@ -29,13 +29,13 @@ func (m *MetalLB) Install() error {
 
 	// Wait for MetalLB controller to be ready
 	fmt.Println("Waiting for MetalLB controller...")
-	if err := m.waitForReady(5 * time.Minute); err != nil {
+	if err := m.waitForReady(DefaultReadyTimeout); err != nil {
 		return err
 	}
 
 	// Wait for webhook to stabilize
 	fmt.Println("Waiting for MetalLB webhook to stabilize...")
-	time.Sleep(30 * time.Second)
+	time.Sleep(MetalLBConfigureDelay)
 
 	// Configure IPAddressPool and L2Advertisement
 	return m.configure()
@@ -74,7 +74,7 @@ spec:
 			return nil
 		}
 		fmt.Printf("Attempt %d/15 failed, waiting for webhook... (retry in 10s)\n", i)
-		time.Sleep(10 * time.Second)
+		time.Sleep(DefaultPollInterval)
 	}
 
 	return fmt.Errorf("failed to configure MetalLB after 15 attempts")
@@ -89,7 +89,7 @@ func (m *MetalLB) waitForReady(timeout time.Duration) error {
 			return nil
 		}
 		fmt.Println("Waiting for MetalLB controller...")
-		time.Sleep(10 * time.Second)
+		time.Sleep(DefaultPollInterval)
 	}
 	// Don't fail, continue with configuration
 	fmt.Println("Warning: MetalLB controller may still be starting")

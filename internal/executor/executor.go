@@ -109,12 +109,10 @@ func AppendToFile(path, content string) error {
 	if err != nil {
 		return err
 	}
+	defer f.Close()
 
-	_, writeErr := f.WriteString(content)
-	closeErr := f.Close()
-
-	if writeErr != nil {
-		return writeErr
+	if _, err := f.WriteString(content); err != nil {
+		return err
 	}
-	return closeErr
+	return nil
 }

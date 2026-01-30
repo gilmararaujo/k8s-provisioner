@@ -5,14 +5,14 @@ import (
 	"runtime"
 )
 
-// Variáveis injetadas em tempo de build via -ldflags
+// Variables injected at build time via -ldflags
 var (
 	Version   = "dev"
 	GitCommit = "unknown"
 	BuildDate = "unknown"
 )
 
-// Info retorna informações completas da versão
+// Info returns complete version information
 type Info struct {
 	Version   string `json:"version"`
 	GitCommit string `json:"gitCommit"`
@@ -21,7 +21,7 @@ type Info struct {
 	Platform  string `json:"platform"`
 }
 
-// Get retorna as informações de versão
+// Get returns version information
 func Get() Info {
 	return Info{
 		Version:   Version,
@@ -32,7 +32,7 @@ func Get() Info {
 	}
 }
 
-// String retorna a versão formatada
+// String returns a formatted version string
 func (i Info) String() string {
 	return fmt.Sprintf(`k8s-provisioner %s
   Git Commit: %s
@@ -47,7 +47,7 @@ func (i Info) String() string {
 	)
 }
 
-// Short retorna apenas a versão
+// Short returns only the version
 func (i Info) Short() string {
 	return i.Version
 }

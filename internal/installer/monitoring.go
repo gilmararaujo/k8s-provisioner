@@ -39,7 +39,7 @@ func (m *Monitoring) Install() error {
 
 	// Wait for CRDs to be established
 	fmt.Println("Waiting for CRDs to be established...")
-	time.Sleep(15 * time.Second)
+	time.Sleep(MonitoringInitDelay)
 
 	// Install Prometheus instance
 	fmt.Println("Installing Prometheus...")
@@ -67,7 +67,7 @@ func (m *Monitoring) Install() error {
 
 	// Wait for all components to be ready
 	fmt.Println("Waiting for monitoring stack to be ready...")
-	if err := m.waitForReady(5 * time.Minute); err != nil {
+	if err := m.waitForReady(DefaultReadyTimeout); err != nil {
 		return err
 	}
 
@@ -169,7 +169,7 @@ func (m *Monitoring) installPrometheusOperator() error {
 		if err == nil && out == "Running" {
 			return nil
 		}
-		time.Sleep(5 * time.Second)
+		time.Sleep(ShortPollInterval)
 	}
 
 	return nil
@@ -635,7 +635,7 @@ func (m *Monitoring) waitForReady(timeout time.Duration) error {
 		out, _ := m.exec.RunShell("kubectl get pods -n monitoring -l app.kubernetes.io/name=prometheus-operator -o jsonpath='{.items[0].status.phase}' 2>/dev/null")
 		if out != "Running" {
 			fmt.Println("Waiting for Prometheus Operator...")
-			time.Sleep(10 * time.Second)
+			time.Sleep(DefaultPollInterval)
 			continue
 		}
 
@@ -643,7 +643,7 @@ func (m *Monitoring) waitForReady(timeout time.Duration) error {
 		out, _ = m.exec.RunShell("kubectl get pods -n monitoring -l app=grafana -o jsonpath='{.items[0].status.phase}' 2>/dev/null")
 		if out != "Running" {
 			fmt.Println("Waiting for Grafana...")
-			time.Sleep(10 * time.Second)
+			time.Sleep(DefaultPollInterval)
 			continue
 		}
 
