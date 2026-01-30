@@ -104,12 +104,16 @@ func WriteFile(path, content string) error {
 }
 
 // AppendToFile appends content to a file
-func AppendToFile(path, content string) error {
+func AppendToFile(path, content string) (err error) {
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() {
+		if closeErr := f.Close(); closeErr != nil && err == nil {
+			err = closeErr
+		}
+	}()
 
 	if _, err := f.WriteString(content); err != nil {
 		return err
