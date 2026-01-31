@@ -1,0 +1,31 @@
+name: Auto PR to Main
+
+on:
+  push:
+    branches:
+      - develop
+
+jobs:
+  create-pr:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Create Pull Request
+        uses: repo-sync/pull-request@v2
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          source_branch: develop
+          destination_branch: main
+          pr_title: "Merge develop into main"
+          pr_body: |
+            Automated PR to merge develop into main.
+
+            **Triggered by:** ${{ github.actor }}
+            **Commit:** ${{ github.sha }}
+          pr_label: "automated-pr,release"
+          pr_allow_empty: false
