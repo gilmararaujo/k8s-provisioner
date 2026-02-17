@@ -24,10 +24,21 @@ func (m *MetricsServer) Install() error {
 	// Using --kubelet-insecure-tls for lab environments (self-signed certs)
 	metricsServerURL := "https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml"
 
-	// Download and patch for insecure TLS (required for lab environments)
-	patchCmd := fmt.Sprintf(`curl -sL %s | sed 's/args:/args:\n        - --kubelet-insecure-tls/' | kubectl apply -f -`, metricsServerURL)
+	// Download the manifest first
+	if _, err := m.exec.RunShell(fmt.Sprintf("curl -sL %s -o /tmp/metrics-server.yaml", metricsServerURL)); err != nil {
+		return fmt.Errorf("failed to download metrics-server manifest: %w", err)
+	}
 
+	// Patch for insecure TLS (required for lab environments with self-signed certs)
+	// Add --kubelet-insecure-tls argument to the metrics-server container args
+	// Using sed with actual newline via bash $'...' syntax
+	patchCmd := `sed -i '/- --metric-resolution=/i\        - --kubelet-insecure-tls' /tmp/metrics-server.yaml`
 	if _, err := m.exec.RunShell(patchCmd); err != nil {
+		return fmt.Errorf("failed to patch metrics-server manifest: %w", err)
+	}
+
+	// Apply the patched manifest
+	if _, err := m.exec.RunShell("kubectl apply -f /tmp/metrics-server.yaml"); err != nil {
 		return err
 	}
 

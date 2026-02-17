@@ -16,6 +16,12 @@ type Config struct {
 	Storage    StorageConfig    `yaml:"storage"`
 	Nodes      []NodeConfig     `yaml:"nodes"`
 	Components ComponentsConfig `yaml:"components"`
+	KarporAI   KarporAIConfig   `yaml:"karpor_ai"`
+	Ollama     OllamaConfig     `yaml:"ollama"`
+}
+
+type OllamaConfig struct {
+	APIKey string `yaml:"api_key"` // Ollama cloud API key (from https://ollama.com/settings/keys)
 }
 
 type ClusterConfig struct {
@@ -30,6 +36,7 @@ type VersionsConfig struct {
 	Calico     string `yaml:"calico"`
 	MetalLB    string `yaml:"metallb"`
 	Istio      string `yaml:"istio"`
+	Karpor     string `yaml:"karpor"`
 }
 
 type NetworkConfig struct {
@@ -39,8 +46,9 @@ type NetworkConfig struct {
 }
 
 type StorageConfig struct {
-	NFSServer string `yaml:"nfs_server"`
-	NFSPath   string `yaml:"nfs_path"`
+	NFSServer      string `yaml:"nfs_server"`
+	NFSPath        string `yaml:"nfs_path"`
+	DefaultDynamic bool   `yaml:"default_dynamic"` // If true, nfs-dynamic is the default StorageClass
 }
 
 type NodeConfig struct {
@@ -55,6 +63,15 @@ type ComponentsConfig struct {
 	ServiceMesh  string `yaml:"service_mesh"`
 	Monitoring   string `yaml:"monitoring"`
 	Logging      string `yaml:"logging"`
+	Karpor       string `yaml:"karpor"`
+}
+
+type KarporAIConfig struct {
+	Enabled   bool   `yaml:"enabled"`
+	Backend   string `yaml:"backend"`
+	AuthToken string `yaml:"auth_token"`
+	BaseURL   string `yaml:"base_url"`
+	Model     string `yaml:"model"`
 }
 
 func Load(path string) (*Config, error) {

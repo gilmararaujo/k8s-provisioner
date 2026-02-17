@@ -111,6 +111,9 @@ VIMRC
           mkdir -p /exports/k8s-volumes/pv01
           mkdir -p /exports/k8s-volumes/pv02
           mkdir -p /exports/k8s-volumes/pv03
+          mkdir -p /exports/k8s-volumes/karpor-etcd
+          mkdir -p /exports/k8s-volumes/karpor-elasticsearch
+          mkdir -p /exports/k8s-volumes/ollama
           chmod -R 777 /exports
 
           # Configurar exports
@@ -166,6 +169,59 @@ EOF
           cp /opt/k8s-provisioner/config.yaml /etc/k8s-provisioner/config.yaml
           k8s-provisioner provision all -c /etc/k8s-provisioner/config.yaml -v
         SHELL
+
+        # Label node01 for AI workloads after joining (only if Karpor AI is enabled)
+        if vm_config['name'] == "node01"
+          vm.vm.provision "shell", inline: <<-SHELL
+            # Check if Ollama namespace exists (means Karpor AI with Ollama is enabled)
+            apt-get install -y sshpass
+
+            if sshpass -p 'vagrant' ssh -o StrictHostKeyChecking=no vagrant@192.168.56.10 'sudo kubectl get namespace ollama' 2>/dev/null; then
+              echo "=== Karpor AI with Ollama detected ==="
+
+              echo "=== Labeling node01 for AI workloads ==="
+              sshpass -p 'vagrant' ssh -o StrictHostKeyChecking=no vagrant@192.168.56.10 'sudo kubectl label node node01 workload/ai=true --overwrite'
+
+              echo "=== Restarting Ollama to move to node01 ==="
+              sshpass -p 'vagrant' ssh -o StrictHostKeyChecking=no vagrant@192.168.56.10 'sudo kubectl rollout restart deployment/ollama -n ollama'
+
+              echo "=== Waiting for Ollama pod to be ready ==="
+              for i in {1..60}; do
+                if sshpass -p 'vagrant' ssh -o StrictHostKeyChecking=no vagrant@192.168.56.10 'sudo kubectl wait --for=condition=Ready pods -l app=ollama -n ollama --timeout=10s' 2>/dev/null; then
+                  echo "Ollama pod is ready!"
+                  break
+                fi
+                echo "Waiting for Ollama pod... ($i/60)"
+                sleep 5
+              done
+
+              echo "=== Waiting for Ollama model to be available ==="
+              for i in {1..60}; do
+                if sshpass -p 'vagrant' ssh -o StrictHostKeyChecking=no vagrant@192.168.56.10 'sudo kubectl exec -n ollama deployment/ollama -- ollama list 2>/dev/null | grep -q llama'; then
+                  echo "Ollama model is ready!"
+                  break
+                fi
+                echo "Waiting for model... ($i/60)"
+                sleep 5
+              done
+
+              echo "=== Restarting Karpor server to reconnect AI ==="
+              sshpass -p 'vagrant' ssh -o StrictHostKeyChecking=no vagrant@192.168.56.10 'sudo kubectl rollout restart deployment/karpor-server -n karpor'
+
+              echo "=== Waiting for Karpor server to be ready ==="
+              for i in {1..30}; do
+                if sshpass -p 'vagrant' ssh -o StrictHostKeyChecking=no vagrant@192.168.56.10 'sudo kubectl wait --for=condition=Ready pods -l app.kubernetes.io/component=karpor-server -n karpor --timeout=10s' 2>/dev/null; then
+                  echo "Karpor server is ready! AI should be functional."
+                  break
+                fi
+                echo "Waiting for Karpor server... ($i/30)"
+                sleep 5
+              done
+            else
+              echo "=== Ollama not installed, skipping AI configuration ==="
+            fi
+          SHELL
+        end
 
         # Configurar kubectl autocomplete e aliases
         vm.vm.provision "shell", inline: <<-SHELL

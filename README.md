@@ -12,10 +12,12 @@ Kubernetes cluster provisioner written in Go for lab environments. Supports macO
 | CNI | Calico 3.28.0 |
 | LoadBalancer | MetalLB 0.14.8 |
 | Service Mesh | Istio 1.28.2 |
-| Storage | NFS Server |
+| Storage | NFS Server + Dynamic Provisioner |
 | Metrics | Metrics Server |
 | Monitoring | Prometheus + Grafana |
 | Logging | Loki + Promtail |
+| Kubernetes Explorer | Karpor 0.7.6 |
+| AI Backend | Ollama (local/cloud) |
 
 ## Prerequisites
 
@@ -272,8 +274,9 @@ network:
   metallb_range: "192.168.56.200-192.168.56.250"
 
 storage:
-  nfs_server: "storage"  # Uses hostname from /etc/hosts
+  nfs_server: "storage"       # Uses hostname from /etc/hosts
   nfs_path: "/exports/k8s-volumes"
+  default_dynamic: true       # nfs-dynamic as default StorageClass
 
 # Node definitions - IPs should match vagrant/settings.yaml
 nodes:
@@ -285,6 +288,24 @@ nodes:
     role: "worker"
   - name: "node02"
     role: "worker"
+
+components:
+  cni: "calico"
+  load_balancer: "metallb"
+  service_mesh: "istio"
+  monitoring: "prometheus-stack"  # Options: prometheus-stack, none
+  logging: "loki"                 # Options: loki, none
+  karpor: "enabled"               # Options: enabled, none
+
+# Karpor AI configuration (optional)
+karpor_ai:
+  enabled: true
+  backend: "ollama"           # Options: openai, azureopenai, huggingface, ollama
+  model: "llama3.2:3b"        # Local model (or minimax-m2.5:cloud for cloud)
+
+# Ollama cloud API key (only for :cloud models)
+ollama:
+  api_key: ""                 # Get from https://ollama.com/settings/keys
 ```
 
 ### vagrant/settings.yaml
@@ -295,18 +316,18 @@ vm:
 # Storage VM (NFS Server) - must be created first
 - name: "storage"
   ip: "192.168.56.20"
-  memory: "2048"
+  memory: "1024"
   cpus: "1"
   role: "storage"
 # Kubernetes VMs
 - name: "controlplane"
   ip: "192.168.56.10"
-  memory: "4096"
-  cpus: "2"
+  memory: "6144"    # Extra for monitoring stack
+  cpus: "4"
   role: "controlplane"
 - name: "node01"
   ip: "192.168.56.11"
-  memory: "4096"
+  memory: "8192"    # Extra for AI workloads (Ollama)
   cpus: "2"
   role: "worker"
 - name: "node02"
@@ -318,36 +339,81 @@ vm:
 
 ## NFS Storage
 
-The cluster includes a dedicated NFS server for persistent volumes.
+The cluster includes a dedicated NFS server with dynamic and static provisioning support.
 
-### NFS Exports
+### StorageClasses
 
+| StorageClass | Provisioning | Use Case |
+|--------------|--------------|----------|
+| `nfs-dynamic` | Automatic | PVCs auto-create PVs (recommended) |
+| `nfs-static` | Manual | Pre-created PVs with specific paths |
+
+### Dynamic Provisioning (Recommended)
+
+Just create a PVC - the PV is created automatically:
+
+```yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: my-data
+spec:
+  storageClassName: nfs-dynamic
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 1Gi
 ```
-/exports/k8s-volumes/pv01  (1Gi)
-/exports/k8s-volumes/pv02  (2Gi)
-/exports/k8s-volumes/pv03  (5Gi)
-```
-
-### Using PV/PVC
 
 ```bash
-# Deploy the example
+kubectl apply -f my-pvc.yaml
+kubectl get pvc  # PV created automatically!
+```
+
+### Static Provisioning
+
+For specific NFS paths, create PV first:
+
+```yaml
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: my-pv
+spec:
+  storageClassName: nfs-static
+  capacity:
+    storage: 5Gi
+  accessModes:
+    - ReadWriteMany
+  nfs:
+    server: 192.168.56.20
+    path: /exports/k8s-volumes/my-data
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: my-pvc
+spec:
+  storageClassName: nfs-static
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 5Gi
+```
+
+### Example Application with Storage
+
+```bash
+# Deploy example with dynamic and static storage
 kubectl apply -f examples/nfs-pv-pvc.yaml
 
 # Check resources
 kubectl get pv
-kubectl get pvc -n nfs-demo
-kubectl get pods -n nfs-demo
-
-# Access via Istio Ingress
-INGRESS_IP=$(kubectl get svc -n istio-system istio-ingressgateway \
-  -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
-
-# Add to /etc/hosts
-echo "$INGRESS_IP nginx-pvc.local" | sudo tee -a /etc/hosts
-
-# Test
-curl http://nginx-pvc.local
+kubectl get pvc -A
+kubectl get pods -n dynamic-demo
+kubectl get pods -n static-demo
 ```
 
 ## Metrics Server
@@ -521,6 +587,140 @@ sum by (pod) (count_over_time({namespace="default"} |= "error" [5m]))
 | `12611` | Loki & Promtail | Logs with Promtail stats |
 | `15141` | Loki Logs | Simple log viewer |
 
+## Karpor (Kubernetes Explorer)
+
+Karpor is a Kubernetes Explorer that provides intelligent search and AI-powered analysis.
+
+> **Note:** Karpor requires extra resources (~1.5 CPU, ~2GB RAM). To disable it, set in `config.yaml`:
+> ```yaml
+> components:
+>   karpor: "none"  # Options: enabled, none
+> ```
+
+### Features
+
+- **Resource Search**: Find resources across the cluster with powerful queries
+- **AI Analysis**: Natural language insights about your resources (powered by Ollama)
+- **Dependency View**: Visualize relationships between resources
+
+### Accessing Karpor
+
+```bash
+# Get Istio Ingress IP
+INGRESS_IP=$(kubectl get svc -n istio-system istio-ingressgateway -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+
+# Add to /etc/hosts
+echo "$INGRESS_IP karpor.local" | sudo tee -a /etc/hosts
+
+# Access
+open http://karpor.local
+```
+
+### Search Examples
+
+```
+kind:Deployment                    # All deployments
+namespace:monitoring kind:Pod      # Pods in monitoring namespace
+label:app=nginx                    # Resources with label app=nginx
+name:*api*                         # Resources with "api" in name
+```
+
+### Check Karpor Status
+
+```bash
+kubectl get pods -n karpor
+kubectl logs -n karpor -l app.kubernetes.io/component=karpor-server
+```
+
+## Ollama (AI Backend)
+
+Ollama provides AI capabilities for Karpor, supporting both local and cloud models.
+
+> **Note:** Ollama is only installed when Karpor AI is enabled. To disable:
+> ```yaml
+> karpor_ai:
+>   enabled: false  # Disables Ollama installation
+> ```
+
+### Local Models (Default)
+
+Local models run inside the cluster on node01:
+
+```yaml
+# config.yaml
+karpor_ai:
+  enabled: true
+  backend: "ollama"
+  model: "llama3.2:3b"   # Runs locally (~4GB RAM)
+
+ollama:
+  api_key: ""            # Not needed for local models
+```
+
+**Available local models:**
+
+| Model | RAM | Quality | Speed |
+|-------|-----|---------|-------|
+| `llama3.2:1b` | ~2GB | Basic | Very fast |
+| `llama3.2:3b` | ~4GB | Good | Fast |
+| `qwen2.5-coder:7b` | ~8GB | Excellent for code | Moderate |
+| `llama3.1:8b` | ~10GB | Excellent | Slower |
+
+### Cloud Models (Optional)
+
+Cloud models offer better performance without GPU requirements:
+
+1. Create account at https://ollama.com/signup
+2. Generate API key at https://ollama.com/settings/keys
+3. Configure:
+
+```yaml
+# config.yaml
+karpor_ai:
+  enabled: true
+  backend: "ollama"
+  model: "minimax-m2.5:cloud"   # Cloud model
+
+ollama:
+  api_key: "olka_your_key_here"  # Required for cloud models
+```
+
+**Available cloud models:**
+
+| Model | Description |
+|-------|-------------|
+| `minimax-m2.5:cloud` | Top performer, comparable to Claude Opus |
+| `qwen3-coder:480b-cloud` | Excellent for code analysis |
+| `glm-4.7:cloud` | Good general purpose |
+
+### Check Ollama Status
+
+```bash
+# Check pods
+kubectl get pods -n ollama
+
+# Check if model is loaded
+kubectl exec -n ollama deployment/ollama -- ollama list
+
+# Check logs
+kubectl logs -n ollama deployment/ollama
+
+# Test AI endpoint
+kubectl exec -n ollama deployment/ollama -- curl -s localhost:11434/api/tags
+```
+
+### Switching Models
+
+To change the model after installation:
+
+```bash
+# Pull new model
+kubectl exec -n ollama deployment/ollama -- ollama pull llama3.1:8b
+
+# Restart Karpor to use new model
+kubectl rollout restart deployment/karpor-server -n karpor
+```
+
 ## Test Applications
 
 ### Podinfo App
@@ -681,13 +881,15 @@ The `clean.sh` script will:
 
 ## Resource Requirements
 
-| VM | Memory | CPUs | Disk |
-|----|--------|------|------|
-| Storage | 2 GB | 1 | 10 GB |
-| ControlPlane | 4 GB | 2 | 20 GB |
-| Node01 | 4 GB | 2 | 20 GB |
-| Node02 | 4 GB | 2 | 20 GB |
-| **Total** | **14 GB** | **7** | **70 GB** |
+| VM | Memory | CPUs | Disk | Purpose |
+|----|--------|------|------|---------|
+| Storage | 1 GB | 1 | 10 GB | NFS Server |
+| ControlPlane | 6 GB | 4 | 20 GB | K8s Master + Monitoring |
+| Node01 | 8 GB | 2 | 20 GB | Worker + AI Workloads |
+| Node02 | 4 GB | 2 | 20 GB | Worker |
+| **Total** | **19 GB** | **9** | **70 GB** | |
+
+> **Note:** Node01 has extra memory for Ollama AI workloads (model loading requires ~4GB for llama3.2:3b)
 
 ## GitFlow & CI/CD
 

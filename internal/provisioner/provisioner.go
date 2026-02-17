@@ -234,6 +234,13 @@ func (p *Provisioner) InitControlPlane() error {
 		return err
 	}
 
+	// Install NFS Provisioner (provides nfs-dynamic and nfs-static StorageClasses)
+	fmt.Println("\n>>> Installing NFS Storage Provisioner...")
+	nfsInstaller := installer.NewNFSProvisioner(cfg, p.exec)
+	if err := nfsInstaller.Install(); err != nil {
+		return err
+	}
+
 	// Install Monitoring Stack (if enabled)
 	if cfg.Components.Monitoring == "prometheus-stack" {
 		fmt.Println("\n>>> Installing Monitoring Stack...")
@@ -246,6 +253,24 @@ func (p *Provisioner) InitControlPlane() error {
 		fmt.Println("\n>>> Installing Loki Stack...")
 		lokiInstaller := installer.NewLoki(cfg, p.exec)
 		if err := lokiInstaller.Install(); err != nil {
+			return err
+		}
+	}
+
+	// Install Karpor (if enabled)
+	if cfg.Components.Karpor == "enabled" {
+		// Install Ollama first if AI is enabled with ollama backend
+		if cfg.KarporAI.Enabled && cfg.KarporAI.Backend == "ollama" {
+			fmt.Println("\n>>> Installing Ollama...")
+			ollamaInstaller := installer.NewOllama(cfg, p.exec)
+			if err := ollamaInstaller.Install(); err != nil {
+				return err
+			}
+		}
+
+		fmt.Println("\n>>> Installing Karpor...")
+		karporInstaller := installer.NewKarpor(cfg, p.exec)
+		if err := karporInstaller.Install(); err != nil {
 			return err
 		}
 	}
