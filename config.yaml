@@ -10,6 +10,7 @@ versions:
   calico: "3.28.0"
   metallb: "0.14.8"
   istio: "1.28.2"
+  karpor: "0.7.6"
 
 network:
   interface: "eth1"
@@ -17,8 +18,9 @@ network:
   metallb_range: "192.168.56.200-192.168.56.250"
 
 storage:
-  nfs_server: "storage"  # Uses hostname from /etc/hosts
+  nfs_server: "storage"       # Uses hostname from /etc/hosts
   nfs_path: "/exports/k8s-volumes"
+  default_dynamic: true       # If true, nfs-dynamic is the default StorageClass (auto-provisioning)
 
 # Node definitions - IPs should match vagrant/settings.yaml
 nodes:
@@ -37,3 +39,20 @@ components:
   service_mesh: "istio"
   monitoring: "prometheus-stack"  # Options: prometheus-stack, none
   logging: "loki"                 # Options: loki, none (installed with monitoring)
+  karpor: "enabled"               # Options: enabled, none (requires extra resources: ~1.5 CPU, ~2GB RAM)
+
+# Karpor AI configuration (optional)
+# When backend is "ollama", Ollama will be installed inside the cluster automatically
+karpor_ai:
+  enabled: true
+  backend: "ollama"    # Options: openai, azureopenai, huggingface, ollama
+  auth_token: ""       # API token for the AI backend (not needed for ollama local)
+  base_url: ""         # Leave empty to use internal Ollama service
+  model: "llama3.2:3b" # Local model (runs inside the cluster, ~2GB, better quality)
+
+# Ollama configuration (optional)
+# Only needed if using Ollama cloud models (e.g., minimax-m2.5:cloud)
+ollama:
+  api_key: ""          # Get from https://ollama.com/settings/keys (required for :cloud models)
+  # Cloud models available: minimax-m2.5:cloud, qwen3-coder:480b-cloud, glm-4.7:cloud
+  # To use cloud model, set karpor_ai.model to a :cloud variant above

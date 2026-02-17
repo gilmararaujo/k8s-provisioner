@@ -20,6 +20,7 @@ vendor/
 
 # Vagrant
 .vagrant/
+vagrant/id_ed25519*
 
 # Logs
 *.log

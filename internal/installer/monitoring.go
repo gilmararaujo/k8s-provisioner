@@ -71,11 +71,11 @@ func (m *Monitoring) Install() error {
 		return err
 	}
 
-	// Create Istio Gateway for Grafana if Istio is enabled
+	// Create Istio Gateways for Grafana and Prometheus if Istio is enabled
 	if m.config.Components.ServiceMesh == "istio" {
-		fmt.Println("Creating Istio Gateway for Grafana...")
-		if err := m.createGrafanaGateway(); err != nil {
-			fmt.Printf("Warning: Failed to create Grafana gateway: %v\n", err)
+		fmt.Println("Creating Istio Gateways for monitoring...")
+		if err := m.createMonitoringGateways(); err != nil {
+			fmt.Printf("Warning: Failed to create monitoring gateways: %v\n", err)
 		}
 	}
 
@@ -586,11 +586,11 @@ spec:
 	return err
 }
 
-func (m *Monitoring) createGrafanaGateway() error {
+func (m *Monitoring) createMonitoringGateways() error {
 	gateway := `apiVersion: networking.istio.io/v1
 kind: Gateway
 metadata:
-  name: grafana-gateway
+  name: monitoring-gateway
   namespace: monitoring
 spec:
   selector:
@@ -602,6 +602,7 @@ spec:
       protocol: HTTP
     hosts:
     - "grafana.local"
+    - "prometheus.local"
 ---
 apiVersion: networking.istio.io/v1
 kind: VirtualService
@@ -612,19 +613,36 @@ spec:
   hosts:
   - "grafana.local"
   gateways:
-  - grafana-gateway
+  - monitoring-gateway
   http:
   - route:
     - destination:
         host: grafana
         port:
-          number: 3000`
+          number: 3000
+---
+apiVersion: networking.istio.io/v1
+kind: VirtualService
+metadata:
+  name: prometheus
+  namespace: monitoring
+spec:
+  hosts:
+  - "prometheus.local"
+  gateways:
+  - monitoring-gateway
+  http:
+  - route:
+    - destination:
+        host: prometheus
+        port:
+          number: 9090`
 
-	if err := executor.WriteFile("/tmp/grafana-gateway.yaml", gateway); err != nil {
+	if err := executor.WriteFile("/tmp/monitoring-gateway.yaml", gateway); err != nil {
 		return err
 	}
 
-	_, err := m.exec.RunShell("kubectl apply -f /tmp/grafana-gateway.yaml")
+	_, err := m.exec.RunShell("kubectl apply -f /tmp/monitoring-gateway.yaml")
 	return err
 }
 
@@ -659,17 +677,15 @@ func (m *Monitoring) printAccessInfo() {
 	fmt.Println("\n========================================")
 	fmt.Println("Monitoring Stack Access Information")
 	fmt.Println("========================================")
-	fmt.Println("\nGrafana (via Istio Ingress):")
-	fmt.Println("  1. Get Istio Ingress IP:")
-	fmt.Println("     INGRESS_IP=$(kubectl get svc -n istio-system istio-ingressgateway -o jsonpath='{.status.loadBalancer.ingress[0].ip}')")
-	fmt.Println("  2. Add to /etc/hosts:")
-	fmt.Println("     echo \"$INGRESS_IP grafana.local\" | sudo tee -a /etc/hosts")
-	fmt.Println("  3. Access: http://grafana.local")
-	fmt.Println("\n  Credentials:")
-	fmt.Println("    User: admin")
-	fmt.Println("    Password: admin123")
-	fmt.Println("\nPrometheus (port-forward):")
-	fmt.Println("  kubectl port-forward -n monitoring svc/prometheus 9090:9090")
-	fmt.Println("  Then access: http://localhost:9090")
+	fmt.Println("\n1. Get Istio Ingress IP:")
+	fmt.Println("   INGRESS_IP=$(kubectl get svc -n istio-system istio-ingressgateway -o jsonpath='{.status.loadBalancer.ingress[0].ip}')")
+	fmt.Println("\n2. Add to /etc/hosts:")
+	fmt.Println("   echo \"$INGRESS_IP grafana.local prometheus.local\" | sudo tee -a /etc/hosts")
+	fmt.Println("\n3. Access:")
+	fmt.Println("   - Grafana:    http://grafana.local")
+	fmt.Println("   - Prometheus: http://prometheus.local")
+	fmt.Println("\nGrafana Credentials:")
+	fmt.Println("  User: admin")
+	fmt.Println("  Password: admin123")
 	fmt.Println("========================================")
 }

@@ -66,18 +66,29 @@ spec:
 		return err
 	}
 
+	// Wait for webhook to be ready
+	fmt.Println("Waiting for MetalLB webhook to be ready...")
+	for i := 1; i <= 30; i++ {
+		_, err := m.exec.RunShell("kubectl wait --for=condition=Ready pods -l component=controller -n metallb-system --timeout=10s 2>/dev/null")
+		if err == nil {
+			break
+		}
+		fmt.Printf("Waiting for controller pod... (%d/30)\n", i)
+		time.Sleep(5 * time.Second)
+	}
+
 	// Retry loop for applying config (webhook may not be ready)
-	for i := 1; i <= 15; i++ {
-		_, err := m.exec.RunShell("kubectl apply -f /tmp/metallb-config.yaml")
+	for i := 1; i <= 30; i++ {
+		_, err := m.exec.RunShell("kubectl apply -f /tmp/metallb-config.yaml 2>/dev/null")
 		if err == nil {
 			fmt.Println("MetalLB configured successfully!")
 			return nil
 		}
-		fmt.Printf("Attempt %d/15 failed, waiting for webhook... (retry in 10s)\n", i)
+		fmt.Printf("Attempt %d/30 failed, waiting for webhook... (retry in 10s)\n", i)
 		time.Sleep(DefaultPollInterval)
 	}
 
-	return fmt.Errorf("failed to configure MetalLB after 15 attempts")
+	return fmt.Errorf("failed to configure MetalLB after 30 attempts")
 }
 
 func (m *MetalLB) waitForReady(timeout time.Duration) error {
