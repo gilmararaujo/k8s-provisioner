@@ -63,7 +63,11 @@ func printVaultStatus(addr string) error {
 	if err != nil {
 		return fmt.Errorf("cannot reach Vault at %s: %w", addr, err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			fmt.Printf("Warning: failed to close response body: %v\n", err)
+		}
+	}()
 
 	var health map[string]interface{}
 	if err := json.NewDecoder(resp.Body).Decode(&health); err != nil {
@@ -104,7 +108,11 @@ func getVaultSecret(addr, token, secretPath string) error {
 	if err != nil {
 		return fmt.Errorf("request failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			fmt.Printf("Warning: failed to close response body: %v\n", err)
+		}
+	}()
 
 	var result map[string]interface{}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {

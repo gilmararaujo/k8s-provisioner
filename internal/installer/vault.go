@@ -475,7 +475,11 @@ func FetchSecret(cfg *config.Config, key string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("vault request failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			fmt.Printf("Warning: failed to close response body: %v\n", err)
+		}
+	}()
 
 	if resp.StatusCode == 404 {
 		return "", nil // secret path not found yet
