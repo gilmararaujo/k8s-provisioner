@@ -266,13 +266,11 @@ func (p *Provisioner) InitControlPlane() error {
 		return err
 	}
 
-	// Configure Vault before any component that depends on secrets (Monitoring, Karpor)
-	if cfg.Vault.Enabled && cfg.Vault.AutoInit {
-		fmt.Println("\n>>> Configuring HashiCorp Vault...")
-		vaultInstaller := installer.NewVault(cfg, p.exec)
-		if err := vaultInstaller.Install(); err != nil {
-			fmt.Printf("Warning: Vault configuration failed: %v\n", err)
-		}
+	// Install Vault on storage node (secrets management)
+	fmt.Println("\n>>> Installing Vault (secrets management)...")
+	vaultInstaller := installer.NewVaultInstaller(cfg, p.exec)
+	if err := vaultInstaller.Install(); err != nil {
+		fmt.Printf("Warning: Vault installation failed: %v\n", err)
 	}
 
 	// Install Monitoring Stack (if enabled)

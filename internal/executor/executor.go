@@ -103,6 +103,15 @@ func WriteFile(path, content string) error {
 	return os.WriteFile(path, []byte(content), 0644)
 }
 
+// ReadFileContents reads a file and returns its content as string
+func ReadFileContents(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
 // AppendToFile appends content to a file
 func AppendToFile(path, content string) (err error) {
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
