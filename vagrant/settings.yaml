@@ -1,10 +1,10 @@
 # settings.yaml
-box_name: "bento/debian-12"
+box_name: "bento/debian-13"
 vm:
 # Storage VM (NFS Server) - must be created first
 - name: "storage"
   ip: "192.168.56.20"
-  memory: "1024"
+  memory: "2048"
   cpus: "1"
   role: "storage"
 # Kubernetes VMs

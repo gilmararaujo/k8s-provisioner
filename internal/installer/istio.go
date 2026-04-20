@@ -40,9 +40,27 @@ func (i *Istio) Install() error {
 		return err
 	}
 
-	// Install Istio with default profile
+	// Install Istio with OTLP tracing extension provider pre-configured.
+	// The Telemetry resource that activates tracing is applied later by the Tempo installer,
+	// so defining the provider here causes no side-effects when tracing is disabled.
+	istioOperator := `apiVersion: install.istio.io/v1alpha1
+kind: IstioOperator
+spec:
+  profile: default
+  meshConfig:
+    enableTracing: true
+    extensionProviders:
+    - name: otel-tracing
+      opentelemetry:
+        port: 4317
+        service: otel-collector.monitoring.svc.cluster.local`
+
+	if err := executor.WriteFile("/tmp/istio-operator.yaml", istioOperator); err != nil {
+		return err
+	}
+
 	fmt.Println("Installing Istio with default profile...")
-	if err := i.exec.RunShellWithOutput("istioctl install --set profile=default -y"); err != nil {
+	if err := i.exec.RunShellWithOutput("istioctl install -f /tmp/istio-operator.yaml -y"); err != nil {
 		return err
 	}
 

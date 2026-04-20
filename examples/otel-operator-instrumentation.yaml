@@ -1,0 +1,111 @@
+# OpenTelemetry Operator — Auto-instrumentation Example
+#
+# This example shows how to add deep code-level instrumentation without changing
+# application source code. The Operator injects an init container that patches
+# the app's runtime with the OTel SDK automatically.
+#
+# Prerequisites:
+#   kubectl apply -f https://github.com/open-telemetry/opentelemetry-operator/releases/latest/download/opentelemetry-operator.yaml
+#
+# Usage:
+#   kubectl apply -f examples/otel-operator-instrumentation.yaml
+#   kubectl apply -f examples/podinfo-app.yaml  (or any app in the demo namespace)
+#
+# After deployment, open Grafana → Explore → Tempo to see traces.
+---
+# Instrumentation CR — defines how and where to instrument
+apiVersion: opentelemetry.io/v1alpha1
+kind: Instrumentation
+metadata:
+  name: auto-instrumentation
+  namespace: demo
+spec:
+  exporter:
+    endpoint: http://otel-collector.monitoring.svc:4317
+
+  propagators:
+    - tracecontext   # W3C TraceContext — standard, works across languages
+    - baggage
+    - b3             # B3 — for compatibility with Zipkin/Istio
+
+  sampler:
+    type: parentbased_traceidratio
+    argument: "1"    # 100% sampling — reduce in production (e.g. "0.1" = 10%)
+
+  # Per-language instrumentation settings
+  java:
+    image: ghcr.io/open-telemetry/opentelemetry-operator/autoinstrumentation-java:latest
+    env:
+    - name: OTEL_INSTRUMENTATION_JDBC_ENABLED
+      value: "true"
+    - name: OTEL_INSTRUMENTATION_SPRING_WEBMVC_ENABLED
+      value: "true"
+
+  nodejs:
+    image: ghcr.io/open-telemetry/opentelemetry-operator/autoinstrumentation-nodejs:latest
+
+  python:
+    image: ghcr.io/open-telemetry/opentelemetry-operator/autoinstrumentation-python:latest
+    env:
+    - name: OTEL_PYTHON_LOG_CORRELATION
+      value: "true"   # Injects traceID/spanID into log records → enables log-trace correlation
+
+  go:
+    image: ghcr.io/open-telemetry/opentelemetry-operator/autoinstrumentation-go:latest
+---
+# Demo namespace — label selects the Instrumentation CR above
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: demo
+  labels:
+    istio-injection: enabled
+---
+# Example Java app — instrumented via annotation (no code changes needed)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: java-demo
+  namespace: demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: java-demo
+  template:
+    metadata:
+      labels:
+        app: java-demo
+      annotations:
+        # This single annotation triggers OTel Operator to inject the Java agent
+        instrumentation.opentelemetry.io/inject-java: "true"
+    spec:
+      containers:
+      - name: java-demo
+        image: ghcr.io/open-telemetry/opentelemetry-operator/e2e-test-app-java:latest
+        ports:
+        - containerPort: 8080
+        env:
+        - name: OTEL_SERVICE_NAME
+          value: java-demo
+        - name: OTEL_RESOURCE_ATTRIBUTES
+          value: "deployment.environment=lab,team=platform"
+        resources:
+          requests:
+            memory: 256Mi
+            cpu: 100m
+          limits:
+            memory: 512Mi
+            cpu: 500m
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: java-demo
+  namespace: demo
+spec:
+  selector:
+    app: java-demo
+  ports:
+  - port: 80
+    targetPort: 8080
