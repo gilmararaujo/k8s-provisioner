@@ -13,13 +13,14 @@ Kubernetes cluster provisioner written in Go for lab environments. Supports macO
 | LoadBalancer | MetalLB 0.15.3 |
 | Service Mesh | Istio 1.29.2 + Kiali 2.24.0 |
 | Storage | NFS Server + Dynamic Provisioner |
-| Secrets Manager | HashiCorp Vault 2.0.0 |
+| Secrets Management | HashiCorp Vault |
 | Metrics | Metrics Server + Prometheus Operator 0.90.1 |
 | Monitoring | Prometheus + Grafana 13.0.1 + node-exporter 1.11.1 |
 | Logging | Loki 3.7.1 + Grafana Alloy 1.15.1 |
 | Tracing | Grafana Tempo 2.10.4 + OpenTelemetry Collector 0.150.0 |
-| Kubernetes Explorer | Karpor 0.6.4 (desabilitado por padrão) |
-| AI Backend | Ollama (local/cloud, desabilitado por padrão) |
+| Identity Provider | Keycloak 26.2 |
+| Kubernetes Explorer | Karpor 0.7.6 (disabled by default) |
+| AI Backend | Ollama (local/cloud, disabled by default) |
 
 ## Prerequisites
 
@@ -1480,6 +1481,185 @@ export do='--dry-run=client -o yaml'
 # Example: Create a pod YAML
 kubectl run nginx --image=nginx $do > nginx.yaml
 ```
+
+## HashiCorp Vault (Secrets Management)
+
+Vault is installed automatically on the **storage node** (`192.168.56.20`) during cluster provisioning. It stores all sensitive credentials used by the cluster components.
+
+### What Vault manages
+
+| Secret path | Key | Used by |
+|---|---|---|
+| `secret/k8s-provisioner/api-keys` | `grafana_admin_password` | Grafana login |
+| `secret/k8s-provisioner/api-keys` | `keycloak_admin_password` | Keycloak admin console |
+| `secret/k8s-provisioner/api-keys` | `keycloak_postgres_password` | PostgreSQL (Keycloak DB) |
+| `secret/k8s-provisioner/api-keys` | `keycloak_grafana_client_secret` | Grafana OAuth2 client |
+
+### Getting the Vault token
+
+The init data (root token + unseal keys) is saved automatically to both nodes during provisioning:
+
+```bash
+# On the controlplane node
+sudo cat /etc/k8s-provisioner/vault-init.json
+
+# On the storage node
+vagrant ssh storage -c 'sudo cat /etc/k8s-provisioner/vault-init.json'
+```
+
+Output example:
+```json
+{
+  "keys": [
+    "a4062b2811b...",
+    "1c8fc4973e5...",
+    "cfb91c7481a...",
+    "04d1dead7c6...",
+    "150414ae84d..."
+  ],
+  "root_token": "hvs.flcBx0hacwkSbeYK7hzSAGqk"
+}
+```
+
+### Accessing the Vault UI
+
+```bash
+# Add to /etc/hosts (on your Mac/Linux host)
+echo "192.168.56.20 vault.storage" | sudo tee -a /etc/hosts
+
+# Access
+open http://192.168.56.20:8200
+```
+
+Login with the `root_token` from `vault-init.json`.
+
+### Accessing Vault via CLI
+
+```bash
+export VAULT_ADDR=http://192.168.56.20:8200
+export VAULT_TOKEN=hvs.flcBx0hacwkSbeYK7hzSAGqk   # from vault-init.json
+
+# List secrets
+vault kv list secret/k8s-provisioner
+
+# Read a secret
+vault kv get secret/k8s-provisioner/api-keys
+
+# Update Grafana password
+vault kv patch secret/k8s-provisioner/api-keys grafana_admin_password=NewPassword123
+```
+
+> **Note:** After updating a password in Vault, restart the affected component (e.g. `kubectl rollout restart deployment/grafana -n monitoring`).
+
+### Re-sealing and unsealing
+
+Vault is automatically unsealed during provisioning. If the storage node is restarted, Vault will be sealed again. To unseal manually:
+
+```bash
+vagrant ssh storage
+
+# Unseal with 3 of the 5 keys from vault-init.json
+sudo VAULT_ADDR=http://localhost:8200 vault operator unseal <key-1>
+sudo VAULT_ADDR=http://localhost:8200 vault operator unseal <key-2>
+sudo VAULT_ADDR=http://localhost:8200 vault operator unseal <key-3>
+```
+
+### config.yaml
+
+```yaml
+vault:
+  addr: "http://192.168.56.20:8200"
+  token: ""   # Leave empty — token is auto-read from /etc/k8s-provisioner/vault-init.json
+```
+
+---
+
+## Keycloak (Identity Provider / SSO)
+
+Keycloak provides OIDC authentication for `kubectl` and Single Sign-On (SSO) for Grafana. It runs inside the Kubernetes cluster with a PostgreSQL backend.
+
+### Access
+
+```bash
+# NodePort — accessible without /etc/hosts
+open http://192.168.56.10:30080
+
+# Or via Istio Gateway (requires /etc/hosts entry)
+INGRESS_IP=$(kubectl get svc -n istio-system istio-ingressgateway -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+echo "$INGRESS_IP keycloak.local" | sudo tee -a /etc/hosts
+open http://keycloak.local
+```
+
+### Admin credentials
+
+```
+URL:      http://192.168.56.10:30080
+Username: admin
+Password: (from Vault → secret/k8s-provisioner/api-keys → keycloak_admin_password)
+```
+
+To retrieve:
+```bash
+export VAULT_ADDR=http://192.168.56.20:8200
+export VAULT_TOKEN=$(cat /etc/k8s-provisioner/vault-init.json | python3 -c "import sys,json; print(json.load(sys.stdin)['root_token'])")
+vault kv get -field=keycloak_admin_password secret/k8s-provisioner/api-keys
+```
+
+### Pre-configured realm: `k8s`
+
+| Resource | Details |
+|---|---|
+| Realm | `k8s` |
+| kubectl client | `kubectl` (public, PKCE enabled) |
+| Grafana client | `grafana` (confidential) |
+| Admin group | `k8s-admins` → `cluster-admin` RBAC |
+| Developer group | `k8s-developers` → `view` RBAC |
+| Test user (admin) | `k8sadmin` / `Admin@K8s123` |
+| Test user (dev) | `developer` / `Dev@K8s123` |
+
+### kubectl OIDC login (kubelogin)
+
+**1. Install kubelogin:**
+
+```bash
+# macOS
+brew install int128/kubelogin/kubelogin
+
+# via krew
+kubectl krew install oidc-login
+```
+
+**2. Add OIDC credentials to kubeconfig:**
+
+```bash
+kubectl config set-credentials oidc \
+  --exec-api-version=client.authentication.k8s.io/v1beta1 \
+  --exec-command=kubectl \
+  --exec-arg=oidc-login \
+  --exec-arg=get-token \
+  --exec-arg=--oidc-issuer-url=http://192.168.56.10:30080/realms/k8s \
+  --exec-arg=--oidc-client-id=kubectl \
+  --exec-arg=--oidc-use-pkce
+```
+
+**3. Login:**
+
+```bash
+# Opens browser for login
+kubectl get nodes --user=oidc
+
+# Use as default context
+kubectl config set-context --current --user=oidc
+```
+
+### Grafana SSO
+
+Grafana is configured to use Keycloak for login. Users in the `k8s-admins` group get `Admin` role; all others get `Viewer`.
+
+- Local admin login still works: `admin` / (password from Vault)
+- OIDC login button: **"Sign in with Keycloak"**
+
+---
 
 ## Troubleshooting
 
