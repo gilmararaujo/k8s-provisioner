@@ -94,7 +94,9 @@ func (v *VaultInstaller) waitForVault(timeout time.Duration) error {
 	for time.Now().Before(deadline) {
 		resp, err := http.Get(v.address + "/v1/sys/health")
 		if err == nil {
-			resp.Body.Close()
+			if closeErr := resp.Body.Close(); closeErr != nil {
+				fmt.Printf("Warning: failed to close response body: %v\n", closeErr)
+			}
 			// 200=active, 429=standby, 501=not initialized, 503=sealed — all mean API is up
 			if resp.StatusCode != 0 {
 				return nil
@@ -111,7 +113,11 @@ func (v *VaultInstaller) isInitialized() (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			fmt.Printf("Warning: failed to close response body: %v\n", err)
+		}
+	}()
 
 	var result map[string]interface{}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
@@ -423,7 +429,11 @@ func (v *VaultInstaller) vaultRequest(method, path, token string, body interface
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			fmt.Printf("Warning: failed to close response body: %v\n", err)
+		}
+	}()
 
 	respBody, _ := io.ReadAll(resp.Body)
 
