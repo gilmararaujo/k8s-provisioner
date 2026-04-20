@@ -39,6 +39,7 @@ func (p *Provisioner) InstallCommon() error {
 		{"Disabling swap", p.disableSwap},
 		{"Loading kernel modules", p.loadKernelModules},
 		{"Configuring sysctl", p.configureSysctl},
+		{"Configuring DNS", p.configureDNS},
 		{"Installing dependencies", p.installDependencies},
 		{"Installing CRI-O", p.installCRIO},
 		{"Installing Kubernetes tools", p.installKubernetesTools},
@@ -94,12 +95,29 @@ net.ipv4.ip_forward                 = 1`
 	return err
 }
 
+func (p *Provisioner) configureDNS() error {
+	// VirtualBox NAT DHCP advertises the host's home router IP as DNS, which is
+	// unreachable from inside the 10.0.2.x NAT network. Override with public resolvers,
+	// prevent dhcpcd from overwriting on renewal, and lock the file with chattr.
+	if _, err := p.exec.RunShell("chattr -i /etc/resolv.conf 2>/dev/null; rm -f /etc/resolv.conf"); err != nil {
+		return err
+	}
+	if err := executor.WriteFile("/etc/resolv.conf", "nameserver 8.8.8.8\nnameserver 1.1.1.1\n"); err != nil {
+		return err
+	}
+	if _, err := p.exec.RunShell("chattr +i /etc/resolv.conf"); err != nil {
+		return err
+	}
+	_, err := p.exec.RunShell(`grep -q 'nohook resolv.conf' /etc/dhcpcd.conf 2>/dev/null || echo 'nohook resolv.conf' >> /etc/dhcpcd.conf`)
+	return err
+}
+
 func (p *Provisioner) installDependencies() error {
 	if _, err := p.exec.RunShell("apt-get update"); err != nil {
 		return err
 	}
 
-	pkgs := "apt-transport-https ca-certificates curl gnupg software-properties-common conntrack ethtool socat"
+	pkgs := "apt-transport-https ca-certificates curl gnupg conntrack ethtool socat"
 	_, err := p.exec.RunShell(fmt.Sprintf("apt-get install -y %s", pkgs))
 	return err
 }
@@ -200,6 +218,13 @@ func (p *Provisioner) InitControlPlane() error {
 	fmt.Println("\n>>> Removing control-plane taint...")
 	_, _ = p.exec.RunShell("kubectl taint nodes controlplane node-role.kubernetes.io/control-plane:NoSchedule- 2>/dev/null || true")
 
+	// Patch CoreDNS to use explicit upstream DNS instead of reading /etc/resolv.conf,
+	// which on VirtualBox NAT nodes may contain an unreachable home-router IP.
+	fmt.Println("\n>>> Patching CoreDNS upstream DNS...")
+	if err := p.patchCoreDNS(); err != nil {
+		fmt.Printf("Warning: CoreDNS patch failed: %v\n", err)
+	}
+
 	// Install CNI
 	fmt.Println("\n>>> Installing Calico CNI...")
 	calicoInstaller := installer.NewCalico(cfg, p.exec)
@@ -241,6 +266,15 @@ func (p *Provisioner) InitControlPlane() error {
 		return err
 	}
 
+	// Configure Vault before any component that depends on secrets (Monitoring, Karpor)
+	if cfg.Vault.Enabled && cfg.Vault.AutoInit {
+		fmt.Println("\n>>> Configuring HashiCorp Vault...")
+		vaultInstaller := installer.NewVault(cfg, p.exec)
+		if err := vaultInstaller.Install(); err != nil {
+			fmt.Printf("Warning: Vault configuration failed: %v\n", err)
+		}
+	}
+
 	// Install Monitoring Stack (if enabled)
 	if cfg.Components.Monitoring == "prometheus-stack" {
 		fmt.Println("\n>>> Installing Monitoring Stack...")
@@ -254,6 +288,22 @@ func (p *Provisioner) InitControlPlane() error {
 		lokiInstaller := installer.NewLoki(cfg, p.exec)
 		if err := lokiInstaller.Install(); err != nil {
 			return err
+		}
+
+		// Install Tracing Stack (if enabled)
+		if cfg.Components.Tracing == "otel-tempo" {
+			fmt.Println("\n>>> Installing Tracing Stack (Tempo + OpenTelemetry)...")
+			tempoInstaller := installer.NewTempo(cfg, p.exec)
+			if err := tempoInstaller.Install(); err != nil {
+				fmt.Printf("Warning: Tracing stack installation failed: %v\n", err)
+			}
+		}
+
+		// Install Kiali (service mesh observability — requires Prometheus)
+		fmt.Println("\n>>> Installing Kiali...")
+		kialiInstaller := installer.NewKiali(cfg, p.exec)
+		if err := kialiInstaller.Install(); err != nil {
+			fmt.Printf("Warning: Kiali installation failed: %v\n", err)
 		}
 	}
 
@@ -343,6 +393,12 @@ func (p *Provisioner) waitForAPIServer(ip string, timeout time.Duration) error {
 		time.Sleep(DefaultPollInterval)
 	}
 	return fmt.Errorf("timeout waiting for API server at %s:6443", ip)
+}
+
+func (p *Provisioner) patchCoreDNS() error {
+	patch := `'[{"op":"replace","path":"/data/Corefile","value":".:53 {\n    errors\n    health {\n       lameduck 5s\n    }\n    ready\n    kubernetes cluster.local in-addr.arpa ip6.arpa {\n       pods insecure\n       fallthrough in-addr.arpa ip6.arpa\n       ttl 30\n    }\n    prometheus :9153\n    forward . 8.8.8.8 1.1.1.1\n    cache 30\n    loop\n    reload\n    loadbalance\n}\n"}]'`
+	_, err := p.exec.RunShell(fmt.Sprintf("kubectl patch configmap coredns -n kube-system --type=json -p %s", patch))
+	return err
 }
 
 func (p *Provisioner) printSuccess() {

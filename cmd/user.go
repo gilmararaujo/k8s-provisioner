@@ -178,4 +178,3 @@ func runUserCreateRole(cmd *cobra.Command, args []string) error {
 	rules := user.GetDefaultDeveloperRules()
 	return manager.CreateRole(roleName, userNamespace, rules)
 }
-

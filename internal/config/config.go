@@ -18,10 +18,19 @@ type Config struct {
 	Components ComponentsConfig `yaml:"components"`
 	KarporAI   KarporAIConfig   `yaml:"karpor_ai"`
 	Ollama     OllamaConfig     `yaml:"ollama"`
+	Vault      VaultConfig      `yaml:"vault"`
 }
 
 type OllamaConfig struct {
 	APIKey string `yaml:"api_key"` // Ollama cloud API key (from https://ollama.com/settings/keys)
+}
+
+type VaultConfig struct {
+	Enabled  bool   `yaml:"enabled"`
+	Address  string `yaml:"address"`   // Vault API address (http://192.168.56.20:8200)
+	Version  string `yaml:"version"`   // Vault binary version installed on storage node
+	AutoInit bool   `yaml:"auto_init"` // Initialize and unseal automatically during provisioning
+	K8sAuth  bool   `yaml:"k8s_auth"`  // Configure Kubernetes auth method
 }
 
 type ClusterConfig struct {
@@ -63,6 +72,7 @@ type ComponentsConfig struct {
 	ServiceMesh  string `yaml:"service_mesh"`
 	Monitoring   string `yaml:"monitoring"`
 	Logging      string `yaml:"logging"`
+	Tracing      string `yaml:"tracing"` // Options: otel-tempo, none
 	Karpor       string `yaml:"karpor"`
 }
 
@@ -216,6 +226,15 @@ func validateIPRange(ipRange string) error {
 func (c *Config) GetControlPlane() *NodeConfig {
 	for _, node := range c.Nodes {
 		if node.Role == "controlplane" {
+			return &node
+		}
+	}
+	return nil
+}
+
+func (c *Config) GetStorageNode() *NodeConfig {
+	for _, node := range c.Nodes {
+		if node.Role == "storage" {
 			return &node
 		}
 	}

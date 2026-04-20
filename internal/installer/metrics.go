@@ -20,25 +20,24 @@ func NewMetricsServer(cfg *config.Config, exec executor.CommandExecutor) *Metric
 func (m *MetricsServer) Install() error {
 	fmt.Println("Installing Metrics Server...")
 
-	// Install metrics-server from official manifest
-	// Using --kubelet-insecure-tls for lab environments (self-signed certs)
-	metricsServerURL := "https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml"
+	// Pin to a specific version to avoid GitHub redirect issues and ensure
+	// compatibility with Kubernetes 1.32. v0.7.2 is validated against k8s 1.32.
+	metricsServerURL := "https://github.com/kubernetes-sigs/metrics-server/releases/download/v0.7.2/components.yaml"
 
-	// Download the manifest first
-	if _, err := m.exec.RunShell(fmt.Sprintf("curl -sL %s -o /tmp/metrics-server.yaml", metricsServerURL)); err != nil {
+	if _, err := m.exec.RunShell(fmt.Sprintf("curl -fsSL %s -o /tmp/metrics-server.yaml", metricsServerURL)); err != nil {
 		return fmt.Errorf("failed to download metrics-server manifest: %w", err)
 	}
 
-	// Patch for insecure TLS (required for lab environments with self-signed certs)
-	// Add --kubelet-insecure-tls argument to the metrics-server container args
-	// Using sed with actual newline via bash $'...' syntax
+	// Inject --kubelet-insecure-tls for lab environments (self-signed kubelet certs).
+	// The pattern targets the args list in the metrics-server container spec.
 	patchCmd := `sed -i '/- --metric-resolution=/i\        - --kubelet-insecure-tls' /tmp/metrics-server.yaml`
 	if _, err := m.exec.RunShell(patchCmd); err != nil {
 		return fmt.Errorf("failed to patch metrics-server manifest: %w", err)
 	}
 
-	// Apply the patched manifest
-	if _, err := m.exec.RunShell("kubectl apply -f /tmp/metrics-server.yaml"); err != nil {
+	// --validate=false is required because the APIService object in the manifest
+	// triggers a client-side validation error in kubectl 1.32 even though it is valid.
+	if _, err := m.exec.RunShell("kubectl apply --validate=false -f /tmp/metrics-server.yaml"); err != nil {
 		return err
 	}
 

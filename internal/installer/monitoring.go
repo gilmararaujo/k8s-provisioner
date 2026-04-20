@@ -65,17 +65,27 @@ func (m *Monitoring) Install() error {
 		return err
 	}
 
+	// Install Alertmanager
+	fmt.Println("Installing Alertmanager...")
+	if err := m.installAlertmanager(); err != nil {
+		return err
+	}
+
 	// Wait for all components to be ready
 	fmt.Println("Waiting for monitoring stack to be ready...")
 	if err := m.waitForReady(DefaultReadyTimeout); err != nil {
 		return err
 	}
 
-	// Create Istio Gateways for Grafana and Prometheus if Istio is enabled
+	// Create Istio Gateways and scrape configs if Istio is enabled
 	if m.config.Components.ServiceMesh == "istio" {
 		fmt.Println("Creating Istio Gateways for monitoring...")
 		if err := m.createMonitoringGateways(); err != nil {
 			fmt.Printf("Warning: Failed to create monitoring gateways: %v\n", err)
+		}
+		fmt.Println("Creating Istio scrape targets (PodMonitor + ServiceMonitor)...")
+		if err := m.installIstioMonitoring(); err != nil {
+			fmt.Printf("Warning: Failed to create Istio monitoring resources: %v\n", err)
 		}
 	}
 
@@ -156,7 +166,7 @@ spec:
 
 func (m *Monitoring) installPrometheusOperator() error {
 	// Using prometheus-operator bundle
-	bundleURL := "https://raw.githubusercontent.com/prometheus-operator/prometheus-operator/main/bundle.yaml"
+	bundleURL := "https://raw.githubusercontent.com/prometheus-operator/prometheus-operator/v0.90.1/bundle.yaml"
 
 	// Download and modify to use monitoring namespace
 	if _, err := m.exec.RunShell(fmt.Sprintf("curl -sL %s | sed 's/namespace: default/namespace: monitoring/g' | kubectl apply --server-side -f -", bundleURL)); err != nil {
@@ -184,9 +194,7 @@ metadata:
 spec:
   replicas: 1
   serviceAccountName: prometheus
-  serviceMonitorSelector:
-    matchLabels:
-      team: frontend
+  serviceMonitorSelector: {}
   serviceMonitorNamespaceSelector: {}
   podMonitorSelector: {}
   podMonitorNamespaceSelector: {}
@@ -270,7 +278,21 @@ spec:
 }
 
 func (m *Monitoring) installGrafana() error {
+	password := m.resolveGrafanaPassword()
+
+	// Cria K8s Secret com a senha (do Vault ou fallback)
+	if err := m.createGrafanaSecret(password); err != nil {
+		return err
+	}
+
 	grafana := `apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: grafana
+  namespace: monitoring
+automountServiceAccountToken: false
+---
+apiVersion: v1
 kind: ConfigMap
 metadata:
   name: grafana-datasources
@@ -300,21 +322,42 @@ spec:
       labels:
         app: grafana
     spec:
+      serviceAccountName: grafana
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 472
+        runAsGroup: 472
+        fsGroup: 472
       containers:
       - name: grafana
-        image: grafana/grafana:latest
+        image: grafana/grafana:13.0.1
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: [ALL]
         ports:
         - containerPort: 3000
         env:
         - name: GF_SECURITY_ADMIN_USER
           value: admin
         - name: GF_SECURITY_ADMIN_PASSWORD
-          value: admin123
+          valueFrom:
+            secretKeyRef:
+              name: grafana-admin
+              key: password
         - name: GF_USERS_ALLOW_SIGN_UP
           value: "false"
         volumeMounts:
         - name: datasources
           mountPath: /etc/grafana/provisioning/datasources
+        - name: grafana-data
+          mountPath: /var/lib/grafana
+        - name: grafana-logs
+          mountPath: /var/log/grafana
+        - name: tmp
+          mountPath: /tmp
         resources:
           requests:
             memory: 256Mi
@@ -326,6 +369,12 @@ spec:
       - name: datasources
         configMap:
           name: grafana-datasources
+      - name: grafana-data
+        emptyDir: {}
+      - name: grafana-logs
+        emptyDir: {}
+      - name: tmp
+        emptyDir: {}
 ---
 apiVersion: v1
 kind: Service
@@ -348,8 +397,39 @@ spec:
 	return err
 }
 
+// resolveGrafanaPassword busca a senha do Vault se habilitado, fallback para "admin123".
+func (m *Monitoring) resolveGrafanaPassword() string {
+	if m.config.Vault.Enabled {
+		if val, err := FetchSecret(m.config, "grafana_admin_password"); err == nil && val != "" {
+			fmt.Println("Grafana password loaded from Vault")
+			return val
+		}
+	}
+	return "admin123"
+}
+
+func (m *Monitoring) createGrafanaSecret(password string) error {
+	_, _ = m.exec.RunShell("kubectl delete secret grafana-admin -n monitoring 2>/dev/null || true")
+	cmd := fmt.Sprintf(
+		"kubectl create secret generic grafana-admin -n monitoring --from-literal=password=%s",
+		password,
+	)
+	if _, err := m.exec.RunShell(cmd); err != nil {
+		return fmt.Errorf("failed to create grafana-admin secret: %w", err)
+	}
+	fmt.Println("Grafana admin secret created from Vault")
+	return nil
+}
+
 func (m *Monitoring) installNodeExporter() error {
-	nodeExporter := `apiVersion: apps/v1
+	nodeExporter := `apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: node-exporter
+  namespace: monitoring
+automountServiceAccountToken: false
+---
+apiVersion: apps/v1
 kind: DaemonSet
 metadata:
   name: node-exporter
@@ -365,11 +445,22 @@ spec:
       labels:
         app: node-exporter
     spec:
+      serviceAccountName: node-exporter
       hostNetwork: true
       hostPID: true
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
       containers:
       - name: node-exporter
-        image: prom/node-exporter:latest
+        image: prom/node-exporter:v1.11.1
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: [ALL]
         args:
         - --path.procfs=/host/proc
         - --path.sysfs=/host/sys
@@ -529,14 +620,28 @@ spec:
         app: kube-state-metrics
     spec:
       serviceAccountName: kube-state-metrics
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        fsGroup: 65534
       containers:
       - name: kube-state-metrics
-        image: registry.k8s.io/kube-state-metrics/kube-state-metrics:v2.10.1
+        image: registry.k8s.io/kube-state-metrics/kube-state-metrics:v2.18.0
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: [ALL]
         ports:
         - containerPort: 8080
           name: http-metrics
         - containerPort: 8081
           name: telemetry
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
         resources:
           requests:
             memory: 64Mi
@@ -544,6 +649,9 @@ spec:
           limits:
             memory: 256Mi
             cpu: 200m
+      volumes:
+      - name: tmp
+        emptyDir: {}
 ---
 apiVersion: v1
 kind: Service
@@ -586,6 +694,95 @@ spec:
 	return err
 }
 
+func (m *Monitoring) resolveAlertmanagerConfig() string {
+	if m.config.Vault.Enabled {
+		if val, err := FetchSecret(m.config, "alertmanager_config"); err == nil && val != "" {
+			fmt.Println("Alertmanager config loaded from Vault")
+			return val
+		}
+	}
+	return `global:
+      resolve_timeout: 5m
+    route:
+      group_by: [alertname, namespace]
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 12h
+      receiver: "null"
+    receivers:
+    - name: "null"
+    inhibit_rules: []`
+}
+
+func (m *Monitoring) installAlertmanager() error {
+	alertmanagerConfig := m.resolveAlertmanagerConfig()
+
+	alertmanager := fmt.Sprintf(`apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: alertmanager
+  namespace: monitoring
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: alertmanager-alertmanager
+  namespace: monitoring
+stringData:
+  alertmanager.yaml: |
+    %s
+---
+apiVersion: monitoring.coreos.com/v1
+kind: Alertmanager
+metadata:
+  name: alertmanager
+  namespace: monitoring
+spec:
+  replicas: 1
+  serviceAccountName: alertmanager
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65534
+    runAsGroup: 65534
+    fsGroup: 65534
+  resources:
+    requests:
+      memory: 64Mi
+      cpu: 50m
+    limits:
+      memory: 128Mi
+      cpu: 100m
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: alertmanager
+  namespace: monitoring
+  labels:
+    app: alertmanager
+spec:
+  type: ClusterIP
+  ports:
+  - name: web
+    port: 9093
+    targetPort: 9093
+  selector:
+    alertmanager: alertmanager`, alertmanagerConfig)
+
+	if err := executor.WriteFile("/tmp/alertmanager.yaml", alertmanager); err != nil {
+		return err
+	}
+
+	if _, err := m.exec.RunShell("kubectl apply -f /tmp/alertmanager.yaml"); err != nil {
+		return err
+	}
+
+	// Update Prometheus to send alerts to Alertmanager
+	_, err := m.exec.RunShell(`kubectl patch prometheus prometheus -n monitoring --type=merge -p '{"spec":{"alerting":{"alertmanagers":[{"namespace":"monitoring","name":"alertmanager-operated","port":"web"}]}}}'`)
+	return err
+}
+
 func (m *Monitoring) createMonitoringGateways() error {
 	gateway := `apiVersion: networking.istio.io/v1
 kind: Gateway
@@ -603,6 +800,7 @@ spec:
     hosts:
     - "grafana.local"
     - "prometheus.local"
+    - "alertmanager.local"
 ---
 apiVersion: networking.istio.io/v1
 kind: VirtualService
@@ -636,7 +834,24 @@ spec:
     - destination:
         host: prometheus
         port:
-          number: 9090`
+          number: 9090
+---
+apiVersion: networking.istio.io/v1
+kind: VirtualService
+metadata:
+  name: alertmanager
+  namespace: monitoring
+spec:
+  hosts:
+  - "alertmanager.local"
+  gateways:
+  - monitoring-gateway
+  http:
+  - route:
+    - destination:
+        host: alertmanager
+        port:
+          number: 9093`
 
 	if err := executor.WriteFile("/tmp/monitoring-gateway.yaml", gateway); err != nil {
 		return err
@@ -680,12 +895,70 @@ func (m *Monitoring) printAccessInfo() {
 	fmt.Println("\n1. Get Istio Ingress IP:")
 	fmt.Println("   INGRESS_IP=$(kubectl get svc -n istio-system istio-ingressgateway -o jsonpath='{.status.loadBalancer.ingress[0].ip}')")
 	fmt.Println("\n2. Add to /etc/hosts:")
-	fmt.Println("   echo \"$INGRESS_IP grafana.local prometheus.local\" | sudo tee -a /etc/hosts")
+	fmt.Println("   echo \"$INGRESS_IP grafana.local prometheus.local alertmanager.local\" | sudo tee -a /etc/hosts")
 	fmt.Println("\n3. Access:")
-	fmt.Println("   - Grafana:    http://grafana.local")
-	fmt.Println("   - Prometheus: http://prometheus.local")
+	fmt.Println("   - Grafana:      http://grafana.local")
+	fmt.Println("   - Prometheus:   http://prometheus.local")
+	fmt.Println("   - Alertmanager: http://alertmanager.local")
 	fmt.Println("\nGrafana Credentials:")
 	fmt.Println("  User: admin")
-	fmt.Println("  Password: admin123")
+	if m.config.Vault.Enabled {
+		fmt.Println("  Password: (stored in Vault)")
+		fmt.Println("  Retrieve: k8s-provisioner vault get-secret k8s-provisioner/api-keys")
+		fmt.Println("\nAlertmanager Config:")
+		fmt.Println("  Config: (stored in Vault as 'alertmanager_config')")
+		fmt.Println("  Store:  vault kv put secret/k8s-provisioner/api-keys alertmanager_config=@alertmanager.yaml")
+	} else {
+		fmt.Println("  Password: admin123")
+		fmt.Println("\nAlertmanager Config:")
+		fmt.Println("  Default receiver: null (no notifications)")
+		fmt.Println("  To configure: kubectl edit secret alertmanager-alertmanager -n monitoring")
+	}
 	fmt.Println("========================================")
+}
+
+func (m *Monitoring) installIstioMonitoring() error {
+	resources := `apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: istio-proxies
+  namespace: monitoring
+spec:
+  namespaceSelector:
+    any: true
+  selector:
+    matchExpressions:
+    - key: istio-prometheus-ignore
+      operator: DoesNotExist
+  jobLabel: envoy-stats
+  podMetricsEndpoints:
+  - path: /stats/prometheus
+    targetPort: 15090
+    interval: 15s
+    relabelings:
+    - action: keep
+      sourceLabels: [__meta_kubernetes_pod_container_name]
+      regex: "istio-proxy"
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: istiod
+  namespace: monitoring
+spec:
+  namespaceSelector:
+    matchNames:
+    - istio-system
+  selector:
+    matchLabels:
+      app: istiod
+  endpoints:
+  - port: http-monitoring
+    interval: 15s`
+
+	if err := executor.WriteFile("/tmp/istio-monitoring.yaml", resources); err != nil {
+		return err
+	}
+	_, err := m.exec.RunShell("kubectl apply -f /tmp/istio-monitoring.yaml")
+	return err
 }

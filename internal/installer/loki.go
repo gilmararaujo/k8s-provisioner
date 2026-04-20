@@ -18,27 +18,23 @@ func NewLoki(cfg *config.Config, exec executor.CommandExecutor) *Loki {
 }
 
 func (l *Loki) Install() error {
-	fmt.Println("Installing Loki Stack (Loki + Promtail)...")
+	fmt.Println("Installing Loki Stack (Loki + Grafana Alloy)...")
 
-	// Install Loki
 	fmt.Println("Installing Loki...")
 	if err := l.installLoki(); err != nil {
 		return err
 	}
 
-	// Install Promtail
-	fmt.Println("Installing Promtail...")
-	if err := l.installPromtail(); err != nil {
+	fmt.Println("Installing Grafana Alloy (log collector)...")
+	if err := l.installAlloy(); err != nil {
 		return err
 	}
 
-	// Add Loki datasource to Grafana
 	fmt.Println("Configuring Loki datasource in Grafana...")
 	if err := l.configureLokiDatasource(); err != nil {
 		fmt.Printf("Warning: Failed to configure Loki datasource: %v\n", err)
 	}
 
-	// Wait for components to be ready
 	fmt.Println("Waiting for Loki stack to be ready...")
 	if err := l.waitForReady(ShortReadyTimeout); err != nil {
 		fmt.Printf("Warning: %v\n", err)
@@ -56,12 +52,12 @@ metadata:
   name: loki-pvc
   namespace: monitoring
 spec:
-  storageClassName: nfs-storage
+  storageClassName: nfs-dynamic
   accessModes:
     - ReadWriteOnce
   resources:
     requests:
-      storage: 5Gi
+      storage: 10Gi
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -71,38 +67,55 @@ metadata:
 data:
   loki.yaml: |
     auth_enabled: false
+
     server:
       http_listen_port: 3100
-    ingester:
-      lifecycler:
-        address: 127.0.0.1
-        ring:
-          kvstore:
-            store: inmemory
-          replication_factor: 1
-        final_sleep: 0s
-      chunk_idle_period: 5m
-      chunk_retain_period: 30s
-      wal:
-        dir: /data/loki/wal
+      grpc_listen_port: 9095
+
+    common:
+      instance_addr: 127.0.0.1
+      path_prefix: /data/loki
+      storage:
+        filesystem:
+          chunks_directory: /data/loki/chunks
+          rules_directory: /data/loki/rules
+      replication_factor: 1
+      ring:
+        kvstore:
+          store: inmemory
+
+    query_range:
+      results_cache:
+        cache:
+          embedded_cache:
+            enabled: true
+            max_size_mb: 100
+
     schema_config:
       configs:
-        - from: 2020-05-15
-          store: boltdb
+        - from: 2024-01-01
+          store: tsdb
           object_store: filesystem
-          schema: v11
+          schema: v13
           index:
             prefix: index_
-            period: 168h
-    storage_config:
-      boltdb:
-        directory: /data/loki/index
-      filesystem:
-        directory: /data/loki/chunks
+            period: 24h
+
     limits_config:
-      enforce_metric_name: false
       reject_old_samples: true
       reject_old_samples_max_age: 168h
+      allow_structured_metadata: true
+      volume_enabled: true
+
+    analytics:
+      reporting_enabled: false
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: loki
+  namespace: monitoring
+automountServiceAccountToken: false
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -119,23 +132,41 @@ spec:
       labels:
         app: loki
     spec:
+      serviceAccountName: loki
       securityContext:
+        runAsNonRoot: true
         fsGroup: 10001
         runAsGroup: 10001
         runAsUser: 10001
       containers:
       - name: loki
-        image: grafana/loki:2.9.0
+        image: grafana/loki:3.7.1
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: [ALL]
         args:
         - -config.file=/etc/loki/loki.yaml
         ports:
         - containerPort: 3100
           name: http
+        - containerPort: 9095
+          name: grpc
         volumeMounts:
         - name: config
           mountPath: /etc/loki
         - name: storage
           mountPath: /data/loki
+        - name: tmp
+          mountPath: /tmp
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 3100
+          initialDelaySeconds: 15
+          periodSeconds: 10
         resources:
           requests:
             memory: 256Mi
@@ -150,6 +181,8 @@ spec:
       - name: storage
         persistentVolumeClaim:
           claimName: loki-pvc
+      - name: tmp
+        emptyDir: {}
 ---
 apiVersion: v1
 kind: Service
@@ -162,6 +195,9 @@ spec:
   - port: 3100
     targetPort: 3100
     name: http
+  - port: 9095
+    targetPort: 9095
+    name: grpc
   selector:
     app: loki`
 
@@ -173,151 +209,201 @@ spec:
 	return err
 }
 
-func (l *Loki) installPromtail() error {
-	promtail := `apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: promtail-config
-  namespace: monitoring
-data:
-  promtail.yaml: |
-    server:
-      http_listen_port: 9080
-      grpc_listen_port: 0
-    positions:
-      filename: /tmp/positions.yaml
-    clients:
-      - url: http://loki:3100/loki/api/v1/push
-    scrape_configs:
-      - job_name: kubernetes-pods
-        kubernetes_sd_configs:
-          - role: pod
-        relabel_configs:
-          - source_labels: [__meta_kubernetes_pod_node_name]
-            target_label: __host__
-          - action: labelmap
-            regex: __meta_kubernetes_pod_label_(.+)
-          - action: replace
-            source_labels: [__meta_kubernetes_namespace]
-            target_label: namespace
-          - action: replace
-            source_labels: [__meta_kubernetes_pod_name]
-            target_label: pod
-          - action: replace
-            source_labels: [__meta_kubernetes_pod_container_name]
-            target_label: container
-        pipeline_stages:
-          - docker: {}
-      - job_name: kubernetes-system
-        static_configs:
-          - targets:
-              - localhost
-            labels:
-              job: varlogs
-              __path__: /var/log/*.log
----
-apiVersion: v1
+func (l *Loki) installAlloy() error {
+	alloy := `apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: promtail
+  name: alloy
   namespace: monitoring
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: promtail
+  name: alloy
 rules:
 - apiGroups: [""]
   resources:
   - nodes
   - nodes/proxy
+  - nodes/log
   - services
   - endpoints
   - pods
-  verbs: ["get", "list", "watch"]
+  - pods/log
+  - events
+  verbs: [get, list, watch]
+- apiGroups: [apps]
+  resources: [deployments, replicasets, statefulsets, daemonsets]
+  verbs: [get, list, watch]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: promtail
+  name: alloy
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: promtail
+  name: alloy
 subjects:
 - kind: ServiceAccount
-  name: promtail
+  name: alloy
   namespace: monitoring
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: alloy-config
+  namespace: monitoring
+data:
+  config.alloy: |
+    // Discover all Kubernetes pods
+    discovery.kubernetes "pods" {
+      role = "pod"
+    }
+
+    // Relabel pod metadata into Loki labels
+    discovery.relabel "pods" {
+      targets = discovery.kubernetes.pods.targets
+
+      rule {
+        source_labels = ["__meta_kubernetes_namespace"]
+        target_label  = "namespace"
+      }
+      rule {
+        source_labels = ["__meta_kubernetes_pod_name"]
+        target_label  = "pod"
+      }
+      rule {
+        source_labels = ["__meta_kubernetes_pod_container_name"]
+        target_label  = "container"
+      }
+      rule {
+        source_labels = ["__meta_kubernetes_pod_node_name"]
+        target_label  = "node"
+      }
+      // Drop pods that are not running
+      rule {
+        source_labels = ["__meta_kubernetes_pod_phase"]
+        regex         = "Pending|Succeeded|Failed|Completed"
+        action        = "drop"
+      }
+    }
+
+    // Collect logs from discovered pods
+    loki.source.kubernetes "pods" {
+      targets    = discovery.relabel.pods.output
+      forward_to = [loki.write.default.receiver]
+    }
+
+    // Collect Kubernetes events as logs
+    loki.source.kubernetes_events "events" {
+      job_name   = "integrations/kubernetes/eventhandler"
+      log_format = "logfmt"
+      forward_to = [loki.write.default.receiver]
+    }
+
+    // Write to Loki
+    loki.write "default" {
+      endpoint {
+        url = "http://loki.monitoring.svc:3100/loki/api/v1/push"
+      }
+    }
 ---
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
-  name: promtail
+  name: alloy
   namespace: monitoring
+  labels:
+    app: alloy
 spec:
   selector:
     matchLabels:
-      app: promtail
+      app: alloy
   template:
     metadata:
       labels:
-        app: promtail
+        app: alloy
     spec:
-      serviceAccountName: promtail
+      serviceAccountName: alloy
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 473
+        runAsGroup: 473
+        fsGroup: 473
       containers:
-      - name: promtail
-        image: grafana/promtail:2.9.0
+      - name: alloy
+        image: grafana/alloy:v1.15.1
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: [ALL]
         args:
-        - -config.file=/etc/promtail/promtail.yaml
+        - run
+        - /etc/alloy/config.alloy
+        - --storage.path=/var/lib/alloy/data
+        - --server.http.listen-addr=0.0.0.0:12345
         ports:
-        - containerPort: 9080
+        - containerPort: 12345
           name: http
         volumeMounts:
         - name: config
-          mountPath: /etc/promtail
-        - name: varlog
-          mountPath: /var/log
-          readOnly: true
-        - name: varlibdockercontainers
-          mountPath: /var/lib/docker/containers
-          readOnly: true
-        - name: pods
-          mountPath: /var/log/pods
-          readOnly: true
+          mountPath: /etc/alloy
+        - name: alloy-data
+          mountPath: /var/lib/alloy/data
+        - name: tmp
+          mountPath: /tmp
+        env:
+        - name: HOSTNAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
         resources:
           requests:
             memory: 64Mi
             cpu: 50m
           limits:
-            memory: 128Mi
-            cpu: 100m
+            memory: 256Mi
+            cpu: 200m
       tolerations:
       - effect: NoSchedule
         operator: Exists
       volumes:
       - name: config
         configMap:
-          name: promtail-config
-      - name: varlog
-        hostPath:
-          path: /var/log
-      - name: varlibdockercontainers
-        hostPath:
-          path: /var/lib/docker/containers
-      - name: pods
-        hostPath:
-          path: /var/log/pods`
+          name: alloy-config
+      - name: alloy-data
+        emptyDir: {}
+      - name: tmp
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: alloy
+  namespace: monitoring
+  labels:
+    app: alloy
+spec:
+  type: ClusterIP
+  ports:
+  - port: 12345
+    targetPort: 12345
+    name: http
+  selector:
+    app: alloy`
 
-	if err := executor.WriteFile("/tmp/promtail.yaml", promtail); err != nil {
+	if err := executor.WriteFile("/tmp/alloy.yaml", alloy); err != nil {
 		return err
 	}
 
-	_, err := l.exec.RunShell("kubectl apply -f /tmp/promtail.yaml")
+	_, err := l.exec.RunShell("kubectl apply -f /tmp/alloy.yaml")
 	return err
 }
 
 func (l *Loki) configureLokiDatasource() error {
-	// Restart Grafana with updated datasources
 	datasources := `apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -329,11 +415,13 @@ data:
     datasources:
     - name: Prometheus
       type: prometheus
+      uid: prometheus-uid
       access: proxy
       url: http://prometheus:9090
       isDefault: true
     - name: Loki
       type: loki
+      uid: loki-uid
       access: proxy
       url: http://loki:3100
       isDefault: false`
@@ -346,7 +434,6 @@ data:
 		return err
 	}
 
-	// Restart Grafana to pick up new datasource
 	_, err := l.exec.RunShell("kubectl rollout restart deployment/grafana -n monitoring")
 	return err
 }
@@ -354,7 +441,6 @@ data:
 func (l *Loki) waitForReady(timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		// Check Loki
 		out, _ := l.exec.RunShell("kubectl get pods -n monitoring -l app=loki -o jsonpath='{.items[0].status.phase}' 2>/dev/null")
 		if out != "Running" {
 			fmt.Println("Waiting for Loki...")
@@ -362,10 +448,9 @@ func (l *Loki) waitForReady(timeout time.Duration) error {
 			continue
 		}
 
-		// Check Promtail (at least one running)
-		out, _ = l.exec.RunShell("kubectl get pods -n monitoring -l app=promtail -o jsonpath='{.items[0].status.phase}' 2>/dev/null")
+		out, _ = l.exec.RunShell("kubectl get pods -n monitoring -l app=alloy -o jsonpath='{.items[0].status.phase}' 2>/dev/null")
 		if out != "Running" {
-			fmt.Println("Waiting for Promtail...")
+			fmt.Println("Waiting for Alloy...")
 			time.Sleep(DefaultPollInterval)
 			continue
 		}
@@ -385,6 +470,9 @@ func (l *Loki) printAccessInfo() {
 	fmt.Println("  1. Open Grafana (http://grafana.local)")
 	fmt.Println("  2. Go to Explore (left sidebar)")
 	fmt.Println("  3. Select 'Loki' as datasource")
+	fmt.Println("\nAlloy UI (log pipeline status):")
+	fmt.Println("  kubectl port-forward -n monitoring svc/alloy 12345:12345")
+	fmt.Println("  Open: http://localhost:12345")
 	fmt.Println("\nExample LogQL queries:")
 	fmt.Println("  {namespace=\"default\"}")
 	fmt.Println("  {namespace=\"kube-system\"}")
