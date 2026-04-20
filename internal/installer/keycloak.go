@@ -29,8 +29,8 @@ func (k *Keycloak) Install() error {
 		return err
 	}
 
-	fmt.Println("Waiting for Keycloak to be ready (this may take a few minutes)...")
-	if err := k.waitForReady(8 * time.Minute); err != nil {
+	fmt.Println("Waiting for Keycloak to be ready (first start includes build step, ~3-5 min)...")
+	if err := k.waitForReady(12 * time.Minute); err != nil {
 		return fmt.Errorf("keycloak did not become ready: %w", err)
 	}
 
@@ -80,6 +80,16 @@ stringData:
   password: Admin@Keycloak123
 ---
 apiVersion: v1
+kind: Secret
+metadata:
+  name: postgres-credentials
+  namespace: keycloak
+type: Opaque
+stringData:
+  username: keycloak
+  password: Keycloak@Pg123
+---
+apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: keycloak
@@ -87,17 +97,92 @@ metadata:
 automountServiceAccountToken: false
 ---
 apiVersion: v1
-kind: PersistentVolumeClaim
+kind: ServiceAccount
 metadata:
-  name: keycloak-data
+  name: postgres
+  namespace: keycloak
+automountServiceAccountToken: false
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
   namespace: keycloak
 spec:
-  storageClassName: nfs-client
-  accessModes:
-    - ReadWriteOnce
-  resources:
-    requests:
-      storage: 2Gi
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      serviceAccountName: postgres
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        fsGroup: 999
+      containers:
+      - name: postgres
+        image: postgres:16
+        env:
+        - name: POSTGRES_DB
+          value: keycloak
+        - name: POSTGRES_USER
+          valueFrom:
+            secretKeyRef:
+              name: postgres-credentials
+              key: username
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: postgres-credentials
+              key: password
+        - name: PGDATA
+          value: /var/lib/postgresql/data/pgdata
+        ports:
+        - containerPort: 5432
+          name: postgres
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/postgresql/data
+        readinessProbe:
+          exec:
+            command: ["pg_isready", "-U", "keycloak", "-d", "keycloak"]
+          initialDelaySeconds: 10
+          periodSeconds: 5
+        resources:
+          requests:
+            memory: 256Mi
+            cpu: 100m
+          limits:
+            memory: 512Mi
+            cpu: 500m
+  volumeClaimTemplates:
+  - metadata:
+      name: data
+    spec:
+      storageClassName: nfs-client
+      accessModes: ["ReadWriteOnce"]
+      resources:
+        requests:
+          storage: 2Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: keycloak
+spec:
+  type: ClusterIP
+  ports:
+  - port: 5432
+    targetPort: 5432
+    name: postgres
+  selector:
+    app: postgres
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -119,11 +204,18 @@ spec:
         runAsNonRoot: true
         runAsUser: 1000
         fsGroup: 1000
+      initContainers:
+      - name: wait-for-postgres
+        image: busybox:1.36
+        command: ['sh', '-c', 'until nc -z postgres.keycloak.svc.cluster.local 5432; do echo waiting for postgres; sleep 3; done']
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 65534
       containers:
       - name: keycloak
         image: quay.io/keycloak/keycloak:26.2
         args:
-        - start-dev
+        - start
         env:
         - name: KEYCLOAK_ADMIN
           valueFrom:
@@ -135,6 +227,24 @@ spec:
             secretKeyRef:
               name: keycloak-admin
               key: password
+        - name: KC_DB
+          value: postgres
+        - name: KC_DB_URL
+          value: jdbc:postgresql://postgres.keycloak.svc.cluster.local:5432/keycloak
+        - name: KC_DB_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: postgres-credentials
+              key: username
+        - name: KC_DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: postgres-credentials
+              key: password
+        - name: KC_HTTP_ENABLED
+          value: "true"
+        - name: KC_HOSTNAME_STRICT
+          value: "false"
         - name: KC_HTTP_PORT
           value: "8080"
         - name: KC_HEALTH_ENABLED
@@ -143,15 +253,15 @@ spec:
         - containerPort: 8080
           name: http
         volumeMounts:
-        - name: data
-          mountPath: /opt/keycloak/data
+        - name: tmp
+          mountPath: /tmp
         readinessProbe:
           httpGet:
             path: /health/ready
             port: 8080
-          initialDelaySeconds: 30
+          initialDelaySeconds: 60
           periodSeconds: 10
-          failureThreshold: 10
+          failureThreshold: 15
         resources:
           requests:
             memory: 512Mi
@@ -160,9 +270,8 @@ spec:
             memory: 1Gi
             cpu: 1000m
       volumes:
-      - name: data
-        persistentVolumeClaim:
-          claimName: keycloak-data
+      - name: tmp
+        emptyDir: {}
 ---
 apiVersion: v1
 kind: Service
@@ -190,15 +299,28 @@ spec:
 func (k *Keycloak) waitForReady(timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 
+	// Wait for PostgreSQL
+	for time.Now().Before(deadline) {
+		out, _ := k.exec.RunShell("kubectl get pods -n keycloak -l app=postgres -o jsonpath='{.items[0].status.phase}' 2>/dev/null")
+		if out == "Running" {
+			fmt.Println("PostgreSQL is running!")
+			break
+		}
+		fmt.Println("Waiting for PostgreSQL...")
+		time.Sleep(DefaultPollInterval)
+	}
+
+	// Wait for Keycloak pod to be Running
 	for time.Now().Before(deadline) {
 		out, _ := k.exec.RunShell("kubectl get pods -n keycloak -l app=keycloak -o jsonpath='{.items[0].status.phase}' 2>/dev/null")
 		if out == "Running" {
 			break
 		}
-		fmt.Println("Waiting for Keycloak pod...")
+		fmt.Println("Waiting for Keycloak pod (includes build step)...")
 		time.Sleep(DefaultPollInterval)
 	}
 
+	// Wait for Keycloak health endpoint
 	for time.Now().Before(deadline) {
 		_, err := k.exec.RunShell("kubectl exec -n keycloak -l app=keycloak -- curl -sf http://localhost:8080/health/ready 2>/dev/null")
 		if err == nil {
