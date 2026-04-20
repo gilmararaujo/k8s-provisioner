@@ -14,6 +14,24 @@ type Karpor struct {
 	exec   executor.CommandExecutor
 }
 
+// resolveAuthToken retorna o auth token do Vault (se habilitado) ou do config.yaml.
+func (k *Karpor) resolveAuthToken() string {
+	if k.config.Vault.Enabled {
+		if val, err := FetchSecret(k.config, "karpor_auth_token"); err == nil && val != "" {
+			fmt.Println("Karpor auth token loaded from Vault")
+			return val
+		}
+		// Fallback: try ollama_api_key for cloud models
+		if val, err := FetchSecret(k.config, "ollama_api_key"); err == nil && val != "" {
+			return val
+		}
+	}
+	if k.config.KarporAI.AuthToken != "" {
+		return k.config.KarporAI.AuthToken
+	}
+	return k.config.Ollama.APIKey
+}
+
 func NewKarpor(cfg *config.Config, exec executor.CommandExecutor) *Karpor {
 	return &Karpor{config: cfg, exec: exec}
 }
@@ -94,7 +112,7 @@ metadata:
 		// For Ollama, we use "openai" backend since Ollama provides OpenAI-compatible API
 		backend := k.config.KarporAI.Backend
 		baseURL := k.config.KarporAI.BaseURL
-		authToken := k.config.KarporAI.AuthToken
+		authToken := k.resolveAuthToken()
 		model := k.config.KarporAI.Model
 
 		if backend == "ollama" {
@@ -108,10 +126,6 @@ metadata:
 				// The internal Ollama service handles authentication via OLLAMA_API_KEY
 				if baseURL == "" {
 					baseURL = "http://ollama.ollama.svc:11434"
-				}
-				// For cloud models, use API key from Ollama config if available
-				if authToken == "" && k.config.Ollama.APIKey != "" {
-					authToken = k.config.Ollama.APIKey
 				}
 				if authToken == "" {
 					authToken = "not-needed" // Chart requires a value
@@ -463,4 +477,3 @@ func (k *Karpor) printAccessInfo() {
 	}
 	fmt.Println("========================================")
 }
-

@@ -131,6 +131,78 @@ EOF
           exportfs -v
         SHELL
 
+        vm.vm.provision "shell", inline: <<-SHELL
+          set -e
+          echo "=== Instalando HashiCorp Vault ==="
+
+          VAULT_VERSION="2.0.0"
+          VM_ARCH=$(dpkg --print-architecture)
+          apt-get install -y unzip curl
+
+          curl -fsSL "https://releases.hashicorp.com/vault/${VAULT_VERSION}/vault_${VAULT_VERSION}_linux_${VM_ARCH}.zip" \
+            -o /tmp/vault.zip
+          unzip -o /tmp/vault.zip -d /usr/local/bin/
+          rm /tmp/vault.zip
+          chmod +x /usr/local/bin/vault
+          vault --version
+
+          # Usuário e diretórios
+          useradd --system --home /etc/vault.d --shell /bin/false vault 2>/dev/null || true
+          mkdir -p /etc/vault.d /opt/vault/data
+          chown -R vault:vault /opt/vault
+
+          # Configuração do Vault
+          cat > /etc/vault.d/vault.hcl <<'VAULTCONF'
+storage "file" {
+  path = "/opt/vault/data"
+}
+
+listener "tcp" {
+  address     = "0.0.0.0:8200"
+  tls_disable = 1
+}
+
+api_addr     = "http://192.168.56.20:8200"
+cluster_addr = "http://192.168.56.20:8201"
+ui           = true
+VAULTCONF
+          chown vault:vault /etc/vault.d/vault.hcl
+          chmod 640 /etc/vault.d/vault.hcl
+
+          # Systemd service
+          cat > /etc/systemd/system/vault.service <<'VAULTSERVICE'
+[Unit]
+Description=HashiCorp Vault
+Documentation=https://developer.hashicorp.com/vault/docs
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=vault
+Group=vault
+ExecStart=/usr/local/bin/vault server -config=/etc/vault.d/vault.hcl
+ExecReload=/bin/kill --signal HUP $MAINPID
+KillMode=process
+KillSignal=SIGTERM
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+LimitNOFILE=65536
+LimitMEMLOCK=infinity
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target
+VAULTSERVICE
+
+          systemctl daemon-reload
+          systemctl enable vault
+          systemctl start vault
+
+          echo "=== Vault iniciado em http://192.168.56.20:8200 ==="
+          echo "=== UI disponível em http://192.168.56.20:8200/ui ==="
+        SHELL
+
       when "controlplane", "worker"
         # Montar NFS nos nodes Kubernetes
         vm.vm.provision "shell", inline: <<-SHELL

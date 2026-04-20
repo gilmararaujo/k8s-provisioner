@@ -2,6 +2,7 @@ package installer
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/techiescamp/k8s-provisioner/internal/config"
@@ -27,9 +28,12 @@ func (c *Calico) Install() error {
 		return err
 	}
 
-	// Wait for CRDs
+	// Poll until the Tigera CRDs are registered — a fixed sleep is unreliable
+	// because the operator takes variable time to register them.
 	fmt.Println("Waiting for Tigera CRDs...")
-	time.Sleep(CRDInitialDelay)
+	if err := c.waitForTigeraCRDs(DefaultReadyTimeout); err != nil {
+		return err
+	}
 
 	// Create Calico installation
 	installation := fmt.Sprintf(`apiVersion: operator.tigera.io/v1
@@ -62,6 +66,20 @@ spec: {}`, c.config.Cluster.PodCIDR)
 	// Wait for Calico to be ready
 	fmt.Println("Waiting for Calico to be ready...")
 	return c.waitForReady(DefaultReadyTimeout)
+}
+
+func (c *Calico) waitForTigeraCRDs(timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		out, err := c.exec.RunShell("kubectl get crd installations.operator.tigera.io 2>/dev/null")
+		if err == nil && strings.Contains(out, "installations.operator.tigera.io") {
+			fmt.Println("Tigera CRDs are ready!")
+			return nil
+		}
+		fmt.Println("Waiting for Tigera CRDs to be registered...")
+		time.Sleep(LongPollInterval)
+	}
+	return fmt.Errorf("timeout waiting for Tigera CRDs")
 }
 
 func (c *Calico) waitForReady(timeout time.Duration) error {

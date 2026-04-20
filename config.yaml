@@ -5,11 +5,11 @@ cluster:
   service_cidr: "10.96.0.0/12"
 
 versions:
-  kubernetes: "1.32"
-  crio: "v1.32"
-  calico: "3.28.0"
-  metallb: "0.14.8"
-  istio: "1.28.2"
+  kubernetes: "1.34"
+  crio: "v1.34"
+  calico: "3.31.5"
+  metallb: "0.15.3"
+  istio: "1.29.2"
   karpor: "0.7.6"
 
 network:
@@ -39,12 +39,14 @@ components:
   service_mesh: "istio"
   monitoring: "prometheus-stack"  # Options: prometheus-stack, none
   logging: "loki"                 # Options: loki, none (installed with monitoring)
-  karpor: "enabled"               # Options: enabled, none (requires extra resources: ~1.5 CPU, ~2GB RAM)
+  tracing: "otel-tempo"           # Options: otel-tempo, none (requires monitoring+logging)
+  karpor: "none"                  # Options: enabled, none (requires extra resources: ~1.5 CPU, ~2GB RAM)
 
 # Karpor AI configuration (optional)
 # When backend is "ollama", Ollama will be installed inside the cluster automatically
+# Requires karpor: "enabled" above
 karpor_ai:
-  enabled: true
+  enabled: false
   backend: "ollama"    # Options: openai, azureopenai, huggingface, ollama
   auth_token: ""       # API token for the AI backend (not needed for ollama local)
   base_url: ""         # Leave empty to use internal Ollama service
@@ -52,7 +54,17 @@ karpor_ai:
 
 # Ollama configuration (optional)
 # Only needed if using Ollama cloud models (e.g., minimax-m2.5:cloud)
+# Requires karpor_ai.enabled: true and karpor_ai.backend: "ollama"
 ollama:
   api_key: ""          # Get from https://ollama.com/settings/keys (required for :cloud models)
   # Cloud models available: minimax-m2.5:cloud, qwen3-coder:480b-cloud, glm-4.7:cloud
   # To use cloud model, set karpor_ai.model to a :cloud variant above
+
+# HashiCorp Vault configuration
+# Vault runs on the storage node (192.168.56.20) outside the Kubernetes cluster
+vault:
+  enabled: true
+  address: "http://192.168.56.20:8200"   # Vault API endpoint
+  version: "2.0.0"                         # Must match version installed by Vagrantfile
+  auto_init: true                          # Initialize and unseal during provisioning
+  k8s_auth: true                           # Configure Kubernetes auth method for pod access

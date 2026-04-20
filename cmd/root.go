@@ -16,12 +16,14 @@ var (
 
 // Commands that don't require config
 var noConfigCommands = map[string]bool{
-	"version": true,
-	"vbox":    true,
-	"promisc": true,
-	"status":  true,
-	"list":    true,
-	"help":    true,
+	"version":   true,
+	"vbox":      true,
+	"promisc":   true,
+	"status":    true,
+	"list":      true,
+	"help":      true,
+	"vault":     true,
+	"init-info": true,
 }
 
 var rootCmd = &cobra.Command{

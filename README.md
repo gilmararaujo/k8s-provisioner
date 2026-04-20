@@ -6,18 +6,20 @@ Kubernetes cluster provisioner written in Go for lab environments. Supports macO
 
 | Component | Version |
 |-----------|---------|
-| OS | Debian 12 |
-| Container Runtime | CRI-O 1.32 |
-| Kubernetes | 1.32 |
-| CNI | Calico 3.28.0 |
-| LoadBalancer | MetalLB 0.14.8 |
-| Service Mesh | Istio 1.28.2 |
+| OS | Debian 13 "Trixie" |
+| Container Runtime | CRI-O 1.34 |
+| Kubernetes | 1.34 |
+| CNI | Calico 3.31.5 |
+| LoadBalancer | MetalLB 0.15.3 |
+| Service Mesh | Istio 1.29.2 + Kiali 2.24.0 |
 | Storage | NFS Server + Dynamic Provisioner |
-| Metrics | Metrics Server |
-| Monitoring | Prometheus + Grafana |
-| Logging | Loki + Promtail |
-| Kubernetes Explorer | Karpor 0.7.6 |
-| AI Backend | Ollama (local/cloud) |
+| Secrets Manager | HashiCorp Vault 2.0.0 |
+| Metrics | Metrics Server + Prometheus Operator 0.90.1 |
+| Monitoring | Prometheus + Grafana 13.0.1 + node-exporter 1.11.1 |
+| Logging | Loki 3.7.1 + Grafana Alloy 1.15.1 |
+| Tracing | Grafana Tempo 2.10.4 + OpenTelemetry Collector 0.150.0 |
+| Kubernetes Explorer | Karpor 0.6.4 (desabilitado por padrão) |
+| AI Backend | Ollama (local/cloud, desabilitado por padrão) |
 
 ## Prerequisites
 
@@ -25,7 +27,7 @@ Kubernetes cluster provisioner written in Go for lab environments. Supports macO
 |------|---------|--------------|
 | VirtualBox | 7.0+ | [Download](https://www.virtualbox.org/wiki/Downloads) |
 | Vagrant | 2.4+ | [Download](https://developer.hashicorp.com/vagrant/downloads) |
-| kubectl | 1.32+ | [Install Guide](https://kubernetes.io/docs/tasks/tools/) |
+| kubectl | 1.34+ | [Install Guide](https://kubernetes.io/docs/tasks/tools/) |
 | Go | 1.22+ | [Download](https://go.dev/dl/) (only for building) |
 
 ### macOS (Homebrew)
@@ -64,17 +66,31 @@ choco install virtualbox vagrant kubernetes-cli golang
 ## Architecture
 
 ```
-+------------------+     +------------------+     +------------------+
-|     Storage      |     |   ControlPlane   |     |     Node01       |
-|  192.168.56.20   |     |  192.168.56.10   |     |  192.168.56.11   |
-|    NFS Server    |     |     Master       |     |     Worker       |
-+------------------+     +------------------+     +------------------+
-                                                  +------------------+
-                                                  |     Node02       |
-                                                  |  192.168.56.12   |
-                                                  |     Worker       |
-                                                  +------------------+
+  ┌─────────────────────────────────────────────────────────────────────┐
+  │                         192.168.56.0/24                             │
+  │                                                                     │
+  │  ┌──────────────────┐                  ┌────────────────────────┐   │
+  │  │    Storage       │── NFS mount ────►│    ControlPlane        │   │
+  │  │  192.168.56.20   │◄─ Vault auth ────│    192.168.56.10       │   │
+  │  │──────────────────│                  │────────────────────────│   │
+  │  │  NFS Server      │                  │  kubeadm · Calico      │   │
+  │  │  Vault :8200     │                  │  MetalLB · Istio       │   │
+  │  └────────┬─────────┘                  │  Prometheus · Loki     │   │
+  │           │                            └──────────┬─────────────┘   │
+  │           │ NFS mount                             │                 │
+  │           │ Vault auth                       kubeadm join           │
+  │           │                             ┌─────────┴────────┐        │
+  │           │                        ┌────┴──────┐    ┌───────┴─────┐  │
+  │           ├───────────────────────►│  Node01   │    │   Node02   │  │
+  │           └───────────────────────►│ .56.11    │    │   .56.12   │  │
+  │                                    │  Worker   │    │   Worker   │  │
+  │                                    │ Ollama    │    │            │  │
+  │                                    │ (opcional)│    │            │  │
+  │                                    └───────────┘    └────────────┘  │
+  └─────────────────────────────────────────────────────────────────────┘
 ```
+
+O Vault roda no storage node **fora do cluster Kubernetes**. Isso garante que os secrets continuam acessíveis mesmo que o cluster tenha problemas.
 
 ## Project Structure
 
@@ -84,18 +100,33 @@ k8s-provisioner/
 │   ├── root.go
 │   ├── provision.go
 │   ├── status.go
+│   ├── user.go            # User management
+│   ├── vault.go           # Vault commands
 │   └── vbox.go            # VirtualBox management
 ├── internal/
 │   ├── config/            # YAML config parser
 │   ├── executor/          # Shell command executor
-│   ├── installer/         # Calico, MetalLB, Istio
+│   ├── installer/         # Component installers
+│   │   ├── calico.go
+│   │   ├── istio.go
+│   │   ├── karpor.go
+│   │   ├── loki.go
+│   │   ├── metallb.go
+│   │   ├── metrics.go
+│   │   ├── monitoring.go
+│   │   ├── nfs_provisioner.go
+│   │   ├── ollama.go
+│   │   └── vault.go       # Vault init, unseal, k8s auth, secrets
 │   └── provisioner/       # Main provisioning logic
 ├── vagrant/               # Vagrant files
 │   ├── Vagrantfile
 │   └── settings.yaml
 ├── examples/              # Example manifests
-│   ├── nfs-pv-pvc.yaml   # NFS PV/PVC example
-│   └── podinfo-app.yaml  # Podinfo with Istio
+│   ├── nfs-pv-pvc.yaml
+│   ├── podinfo-app.yaml
+│   ├── vault-secret-app.yaml  # App de exemplo usando Vault
+│   ├── vault-usage.md         # Guia do Vault
+│   └── monitoring-access.md
 ├── build/                 # Compiled binaries
 ├── config.yaml            # Cluster configuration
 ├── go.mod
@@ -186,6 +217,20 @@ k8s-provisioner vbox status     # Show promiscuous mode status
 k8s-provisioner vbox list       # List all VirtualBox VMs
 ```
 
+### Vault Management (runs on host)
+
+```bash
+k8s-provisioner vault status        # Status do Vault (inicializado, sealed/unsealed)
+k8s-provisioner vault init-info     # Como recuperar as credenciais do storage node
+k8s-provisioner vault get-secret <path>  # Lê um secret (requer VAULT_TOKEN)
+```
+
+Exemplo:
+```bash
+export VAULT_TOKEN=hvs.xxxx
+./build/k8s-provisioner-darwin-arm64 vault get-secret k8s-provisioner/api-keys
+```
+
 **Why promiscuous mode?**
 
 MetalLB uses Layer 2 mode (ARP) to announce LoadBalancer IPs. VirtualBox by default blocks ARP traffic between VMs and the host. Enabling promiscuous mode allows the host to receive ARP responses from MetalLB, making LoadBalancer IPs accessible from the host machine.
@@ -262,11 +307,11 @@ cluster:
   service_cidr: "10.96.0.0/12"
 
 versions:
-  kubernetes: "1.32"
-  crio: "v1.32"
-  calico: "3.28.0"
-  metallb: "0.14.8"
-  istio: "1.28.2"
+  kubernetes: "1.34"
+  crio: "v1.34"
+  calico: "3.31.5"
+  metallb: "0.15.3"
+  istio: "1.29.2"
 
 network:
   interface: "eth1"
@@ -274,11 +319,10 @@ network:
   metallb_range: "192.168.56.200-192.168.56.250"
 
 storage:
-  nfs_server: "storage"       # Uses hostname from /etc/hosts
+  nfs_server: "storage"
   nfs_path: "/exports/k8s-volumes"
-  default_dynamic: true       # nfs-dynamic as default StorageClass
+  default_dynamic: true
 
-# Node definitions - IPs should match vagrant/settings.yaml
 nodes:
   - name: "storage"
     role: "storage"
@@ -295,28 +339,37 @@ components:
   service_mesh: "istio"
   monitoring: "prometheus-stack"  # Options: prometheus-stack, none
   logging: "loki"                 # Options: loki, none
-  karpor: "enabled"               # Options: enabled, none
+  karpor: "none"                  # Options: enabled, none (desabilitado por padrão — consome ~1.5 CPU, ~2GB RAM)
 
-# Karpor AI configuration (optional)
-karpor_ai:
+# HashiCorp Vault (roda no storage node, fora do cluster)
+vault:
   enabled: true
-  backend: "ollama"           # Options: openai, azureopenai, huggingface, ollama
-  model: "llama3.2:3b"        # Local model (or minimax-m2.5:cloud for cloud)
+  address: "http://192.168.56.20:8200"
+  version: "2.0.0"
+  auto_init: true    # Inicializa e faz unseal automaticamente
+  k8s_auth: true     # Configura Kubernetes auth method para pods
 
-# Ollama cloud API key (only for :cloud models)
+# Karpor AI (requer karpor: "enabled" acima)
+karpor_ai:
+  enabled: false
+  backend: "ollama"
+  model: "llama3.2:3b"
+
+# Ollama (requer karpor_ai.enabled: true)
+# API key para modelos cloud — se Vault habilitado, armazene lá e deixe vazio aqui
 ollama:
-  api_key: ""                 # Get from https://ollama.com/settings/keys
+  api_key: ""
 ```
 
 ### vagrant/settings.yaml
 
 ```yaml
-box_name: "bento/debian-12"
+box_name: "bento/debian-13"
 vm:
-# Storage VM (NFS Server) - must be created first
+# Storage VM (NFS Server + Vault) - must be created first
 - name: "storage"
   ip: "192.168.56.20"
-  memory: "1024"
+  memory: "2048"    # 2GB: NFS server + HashiCorp Vault
   cpus: "1"
   role: "storage"
 # Kubernetes VMs
@@ -327,7 +380,7 @@ vm:
   role: "controlplane"
 - name: "node01"
   ip: "192.168.56.11"
-  memory: "8192"    # Extra for AI workloads (Ollama)
+  memory: "8192"    # Extra for AI workloads (Ollama, se habilitado)
   cpus: "2"
   role: "worker"
 - name: "node02"
@@ -336,6 +389,274 @@ vm:
   cpus: "2"
   role: "worker"
 ```
+
+## HashiCorp Vault
+
+O Vault é instalado automaticamente no storage node (`192.168.56.20:8200`) como serviço systemd, **fora do cluster Kubernetes**. Durante o `provision all`, o provisioner:
+
+1. Inicializa o Vault (5 unseal keys, threshold 3) e faz unseal automático
+2. Salva as credenciais em `/etc/vault.d/vault-init.json` no storage node
+3. Habilita o **KV v2 secrets engine** em `secret/k8s-provisioner/`
+4. Configura o **Kubernetes auth method** para pods se autenticarem via ServiceAccount
+5. Gera e armazena a **senha do Grafana** aleatoriamente
+6. Armazena **API keys** do Ollama e Karpor (se configurados)
+
+### Recuperando credenciais do Vault
+
+As credenciais são salvas em dois locais durante o `provision all`:
+
+| Local | Path | Acesso |
+|-------|------|--------|
+| Storage node | `/etc/vault.d/vault-init.json` | `vagrant ssh storage` |
+| Controlplane (backup) | `/etc/k8s-provisioner/vault-init.json` | `vagrant ssh controlplane` |
+
+**Opção 1 — via storage node (principal):**
+```bash
+vagrant ssh storage -c 'sudo cat /etc/vault.d/vault-init.json' | jq .
+```
+
+**Opção 2 — via controlplane (backup):**
+```bash
+vagrant ssh controlplane -c 'sudo cat /etc/k8s-provisioner/vault-init.json' | jq .
+```
+
+**Opção 3 — via CLI do projeto (na máquina host):**
+```bash
+./build/k8s-provisioner-darwin-arm64 vault init-info
+```
+
+O JSON retornado contém:
+```json
+{
+  "keys": ["unseal-key-1", "unseal-key-2", "..."],
+  "root_token": "hvs.XXXXXXXXXXXXXXXX"
+}
+```
+
+Use o `root_token` para acessar a UI ou autenticar no CLI.
+
+### Acessar a UI
+
+```
+http://192.168.56.20:8200/ui
+```
+
+Faça login com o `root_token` obtido acima.
+
+### Recuperar senha do Grafana
+
+```bash
+# Via CLI do projeto
+./build/k8s-provisioner-darwin-arm64 vault get-secret k8s-provisioner/api-keys
+
+# Via Vault CLI
+export VAULT_ADDR=http://192.168.56.20:8200
+export VAULT_TOKEN=$(vagrant ssh storage -c 'sudo cat /etc/vault.d/vault-init.json' | jq -r .root_token)
+vault kv get -field=grafana_admin_password secret/k8s-provisioner/api-keys
+```
+
+### Verificar status
+
+```bash
+./build/k8s-provisioner-darwin-arm64 vault status
+```
+
+### Operações via Vault CLI
+
+Configure as variáveis de ambiente antes de usar o Vault CLI:
+
+```bash
+export VAULT_ADDR=http://192.168.56.20:8200
+export VAULT_TOKEN=$(vagrant ssh storage -c 'sudo cat /etc/vault.d/vault-init.json' | jq -r .root_token)
+```
+
+#### Listar e ler secrets
+
+```bash
+# Listar todos os paths de secrets
+vault kv list secret/k8s-provisioner/
+
+# Ler todos os secrets do projeto
+vault kv get secret/k8s-provisioner/api-keys
+
+# Ler um campo específico
+vault kv get -field=grafana_admin_password secret/k8s-provisioner/api-keys
+vault kv get -field=ollama_api_key secret/k8s-provisioner/api-keys
+```
+
+#### Criar e atualizar secrets
+
+```bash
+# Adicionar um novo secret (mantém os existentes)
+vault kv patch secret/k8s-provisioner/api-keys meu_secret="valor"
+
+# Substituir todos os secrets de um path
+vault kv put secret/k8s-provisioner/api-keys \
+  grafana_admin_password="nova-senha" \
+  ollama_api_key="olka_xxxxx"
+
+# Criar um path novo
+vault kv put secret/minha-app/config \
+  db_password="senha-segura" \
+  api_key="chave-api"
+```
+
+#### Versões e histórico
+
+```bash
+# Ver histórico de versões de um secret
+vault kv metadata get secret/k8s-provisioner/api-keys
+
+# Ler uma versão específica
+vault kv get -version=1 secret/k8s-provisioner/api-keys
+
+# Restaurar versão anterior
+vault kv undelete -versions=1 secret/k8s-provisioner/api-keys
+```
+
+#### Gerenciar políticas
+
+```bash
+# Listar políticas
+vault policy list
+
+# Ver política existente
+vault policy read k8s-provisioner
+
+# Criar política personalizada
+vault policy write minha-app - <<EOF
+path "secret/data/minha-app/*" {
+  capabilities = ["read"]
+}
+path "secret/data/k8s-provisioner/api-keys" {
+  capabilities = ["read"]
+}
+EOF
+```
+
+#### Kubernetes auth method
+
+```bash
+# Verificar configuração do k8s auth
+vault auth list
+vault read auth/kubernetes/config
+
+# Listar roles configuradas
+vault list auth/kubernetes/role
+
+# Ver detalhes de uma role
+vault read auth/kubernetes/role/k8s-provisioner
+
+# Criar role para uma nova aplicação
+vault write auth/kubernetes/role/minha-app \
+  bound_service_account_names="minha-app-sa" \
+  bound_service_account_namespaces="default" \
+  policies="minha-app" \
+  ttl="1h"
+```
+
+#### Testar autenticação de um pod
+
+```bash
+# Dentro do pod — autentica usando o ServiceAccount token
+SA_TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
+
+vault write auth/kubernetes/login \
+  role="k8s-provisioner" \
+  jwt="$SA_TOKEN"
+```
+
+### App de exemplo
+
+```bash
+# Deploy de uma app que busca secrets do Vault via init container
+kubectl apply -f examples/vault-secret-app.yaml
+
+# Acompanhar autenticação e busca do secret
+kubectl logs -l app=vault-demo -c vault-fetch-secrets
+
+# Ver o container principal usando o secret
+kubectl logs -l app=vault-demo -c app
+
+# Inspecionar o arquivo de secret (em memória)
+kubectl exec -it deploy/vault-demo-app -- cat /vault/secrets/api-keys.json
+
+# Remover
+kubectl delete -f examples/vault-secret-app.yaml
+```
+
+Veja [examples/vault-usage.md](examples/vault-usage.md) para o guia completo.
+
+### Fluxo de secrets
+
+```
+config.yaml (apenas na primeira vez)
+    └─► VaultInstaller armazena em Vault
+              ├─► grafana_admin_password (gerada aleatoriamente)
+              ├─► ollama_api_key
+              └─► karpor_auth_token
+
+              ↓ provisioner continua
+
+    Monitoring ──► lê grafana_admin_password do Vault
+                       └─► cria K8s Secret grafana-admin
+                               └─► Grafana usa secretKeyRef
+
+    Ollama ──────► lê ollama_api_key do Vault
+                       └─► cria K8s Secret ollama-api-key
+                               └─► Pod usa secretKeyRef
+
+    Karpor ──────► lê karpor_auth_token do Vault
+                       └─► passa via helm --set (sem arquivo em disco)
+```
+
+Após o primeiro deploy, os secrets ficam **apenas no Vault**. Remova as chaves do `config.yaml`:
+
+```yaml
+ollama:
+  api_key: ""   # vazio — o Vault é a fonte de verdade agora
+```
+
+### Boas práticas
+
+| Prática | Por quê |
+|---------|---------|
+| Nunca commitar `config.yaml` com API keys preenchidas | Evita exposição acidental no git |
+| Usar o Vault como única fonte de verdade após o primeiro deploy | Garante rastreabilidade e rotação centralizada |
+| Criar políticas com menor privilégio por aplicação | Um secret comprometido não expõe os demais |
+| Usar `kv patch` para atualizar sem sobrescrever outros campos | Preserva o histórico de versões do KV v2 |
+| Nunca usar o root token em aplicações | Crie tokens scoped via `vault token create -policy=minha-app` |
+| Armazenar secrets apenas em volumes `emptyDir.medium: Memory` | Secrets nunca vão para disco nas VMs |
+| Rotacionar o root token após o setup inicial | `vault token revoke <root_token>` após criar tokens de operação |
+
+### Rotacionar a senha do Grafana
+
+```bash
+# Gerar nova senha e salvar no Vault
+vault kv patch secret/k8s-provisioner/api-keys \
+  grafana_admin_password="nova-senha-segura"
+
+# Atualizar o K8s Secret (Grafana usa no próximo restart)
+kubectl create secret generic grafana-admin \
+  -n monitoring \
+  --from-literal=password="nova-senha-segura" \
+  --dry-run=client -o yaml | kubectl apply -f -
+
+# Reiniciar o Grafana para aplicar
+kubectl rollout restart deployment/grafana -n monitoring
+```
+
+### Desabilitar o Vault
+
+```yaml
+# config.yaml
+vault:
+  enabled: false
+```
+
+Nesse caso o Grafana usa a senha padrão `admin123` e as API keys vêm diretamente do `config.yaml`.
+
+---
 
 ## NFS Storage
 
@@ -445,6 +766,48 @@ kubectl autoscale deployment my-app --cpu-percent=50 --min=1 --max=10
 kubectl get hpa
 ```
 
+## Observability
+
+This project implements the three pillars of observability, following the observability pyramid model where each layer builds on the previous.
+
+### The Observability Pyramid
+
+```
+        ╔══════════════════════╗
+        ║       TRACES         ║  ← Why is it slow / where did it fail?
+        ║   (Grafana Tempo +   ║
+        ║    OpenTelemetry)    ║
+        ╠══════════════════════╣
+        ║        LOGS          ║  ← What happened?
+        ║  (Loki + Alloy)      ║
+        ╠══════════════════════╣
+        ║       METRICS        ║  ← Is something wrong?
+        ║ (Prometheus+Grafana) ║
+        ╚══════════════════════╝
+```
+
+> The pyramid reflects signal volume and cost: metrics are cheap and always-on; logs are richer but larger; traces are the most detailed and selectively sampled.
+
+### Three Pillars — Project Coverage
+
+| Pillar | Tool(s) | What it answers | Status |
+|--------|---------|-----------------|--------|
+| **Metrics** | Prometheus + Grafana + Node Exporter + kube-state-metrics | Is anything wrong? What are the SLIs? | ✅ Enabled by default |
+| **Logs** | Loki 3.x + Grafana Alloy | What happened and when? Which pod crashed? | ✅ Enabled with monitoring |
+| **Traces** | Grafana Tempo + OpenTelemetry Collector | Why is a request slow? Which service failed? | ✅ Enabled with `tracing: otel-tempo` |
+| **Mesh Visibility** | Kiali | How are services connected? What is the error rate between them? | ✅ Enabled with monitoring |
+
+### Cross-Signal Correlation (Grafana)
+
+| From | To | Trigger |
+|------|----|---------|
+| Log line with `traceID=` | Trace in Tempo | Click derived field link |
+| Trace span | Logs for that service | "Logs" button in Tempo UI |
+| Trace span | RED metrics in Prometheus | `service.name` tag link |
+| Service Map (Tempo) | Prometheus rate/error/duration | Click node in graph |
+
+---
+
 ## Monitoring Stack
 
 The cluster includes a full monitoring stack with Prometheus and Grafana.
@@ -459,6 +822,26 @@ The cluster includes a full monitoring stack with Prometheus and Grafana.
 | Node Exporter | Host metrics (CPU, memory, disk) |
 | kube-state-metrics | Kubernetes object metrics |
 
+### /etc/hosts Setup (Mac/Linux host)
+
+All web UIs are exposed via the same Istio Ingress Gateway IP. Add all entries at once:
+
+```bash
+INGRESS_IP=$(kubectl get svc -n istio-system istio-ingressgateway -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+
+sudo tee -a /etc/hosts <<EOF
+$INGRESS_IP grafana.local
+$INGRESS_IP prometheus.local
+$INGRESS_IP alertmanager.local
+$INGRESS_IP kiali.local
+$INGRESS_IP karpor.local
+EOF
+```
+
+> Run this once from your Mac/Linux host, not inside the VMs.
+
+---
+
 ### Accessing Grafana
 
 Grafana is exposed via Istio Ingress Gateway:
@@ -467,7 +850,7 @@ Grafana is exposed via Istio Ingress Gateway:
 # Get Istio Ingress IP
 INGRESS_IP=$(kubectl get svc -n istio-system istio-ingressgateway -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
 
-# Add to /etc/hosts
+# Add to /etc/hosts (if not done already in the setup section above)
 echo "$INGRESS_IP grafana.local" | sudo tee -a /etc/hosts
 
 # Access
@@ -476,13 +859,48 @@ open http://grafana.local
 
 **Credentials:**
 - Username: `admin`
-- Password: `admin123`
+- Password: gerada pelo Vault — recupere com:
+  ```bash
+  vault kv get -field=grafana_admin_password secret/k8s-provisioner/api-keys
+  ```
+  > Se Vault desabilitado: `admin123`
 
 ### Accessing Prometheus
 
 ```bash
 kubectl port-forward -n monitoring svc/prometheus 9090:9090
 # Access: http://localhost:9090
+```
+
+### Accessing Alertmanager
+
+Alertmanager is exposed via Istio Ingress Gateway at `alertmanager.local`.
+
+Add to `/etc/hosts` (if not done in the setup section):
+```bash
+INGRESS_IP=$(kubectl get svc -n istio-system istio-ingressgateway -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+echo "$INGRESS_IP alertmanager.local" | sudo tee -a /etc/hosts
+```
+
+Open: **http://alertmanager.local**
+
+**Check active alerts:**
+```bash
+kubectl port-forward -n monitoring svc/alertmanager 9093:9093
+# Access: http://localhost:9093
+```
+
+**Configure notifications (Slack, email, PagerDuty):**
+
+With Vault enabled, store the full `alertmanager.yaml` config:
+```bash
+export VAULT_TOKEN=$(vagrant ssh storage -c 'sudo cat /etc/vault.d/vault-init.json' | jq -r .root_token)
+vault kv patch secret/k8s-provisioner/api-keys alertmanager_config=@alertmanager.yaml
+```
+
+Without Vault, edit the secret directly:
+```bash
+kubectl edit secret alertmanager-alertmanager -n monitoring
 ```
 
 ### Recommended Dashboards
@@ -528,14 +946,25 @@ Import dashboards from grafana.com: **Dashboards** → **Import** → Enter ID �
 
 ## Logging Stack (Loki)
 
-The cluster includes Loki for log aggregation.
+The cluster includes Loki 3.x for log aggregation with Grafana Alloy as the log collector (replaces the deprecated Promtail).
+
+### Storage Recommendation by Environment
+
+| Environment | Storage for Loki/Tempo | Reason |
+|-------------|----------------------|--------|
+| **Lab/Dev** (this project) | NFS dynamic | Simple, zero configuration |
+| **On-premise production** | Ceph (Rook-Ceph) or Longhorn | Distributed block storage, HA, replication |
+| **Cloud production** | S3 / GCS / Azure Blob | Loki and Tempo have native object storage support |
+| **Hybrid production** | MinIO (S3-compatible) | Self-hosted object storage with S3 API |
+
+> Loki 3.x and Tempo were designed to use object storage natively in production. NFS works well for lab environments but lacks redundancy — if the storage node goes down, both Loki and Tempo stop working.
 
 ### Components
 
 | Component | Description |
 |-----------|-------------|
-| Loki | Log aggregation and storage |
-| Promtail | Log collector (DaemonSet on all nodes) |
+| Loki 3.x | Log aggregation and storage (TSDB schema v13) |
+| Grafana Alloy | Log collector DaemonSet — replaces Promtail, collects pod logs and Kubernetes events |
 
 ### Accessing Logs
 
@@ -584,17 +1013,248 @@ sum by (pod) (count_over_time({namespace="default"} |= "error" [5m]))
 | ID | Dashboard | Description |
 |----|-----------|-------------|
 | `13639` | Loki Dashboard | General log overview |
-| `12611` | Loki & Promtail | Logs with Promtail stats |
+| `12611` | Loki & Alloy | Logs with Alloy stats |
 | `15141` | Loki Logs | Simple log viewer |
+
+## Tracing Stack (OpenTelemetry + Grafana Tempo)
+
+Enabled via `components.tracing: "otel-tempo"`, this stack adds distributed tracing to complete the three pillars of observability.
+
+### Components
+
+| Component | Description | Port |
+|-----------|-------------|------|
+| Grafana Tempo | Trace storage and query backend | 3200 (HTTP), 4317 (OTLP gRPC), 4318 (OTLP HTTP) |
+| OpenTelemetry Collector | DaemonSet that receives and forwards traces | 4317/4318 (hostPort) |
+
+### Automatic Trace Injection (Zero Code Changes)
+
+When `tracing: otel-tempo` is enabled, the provisioner automatically configures **two layers** of telemetry for all deployments in the cluster:
+
+#### Layer 1 — Istio Mesh Tracing (always active)
+
+The Istio sidecar proxy (Envoy) is configured to forward HTTP/gRPC traces to the OTel Collector. This happens automatically for **every namespace** with `istio-injection: enabled` — including the example apps (`hello`, `podinfo`).
+
+```
+App Pod  →  Envoy Sidecar  →  OTel Collector  →  Grafana Tempo
+            (auto-injected)    (DaemonSet)
+```
+
+What you get for free:
+- Inbound/outbound HTTP spans with latency, status code, method, URL
+- Service-to-service call graph (Service Map in Grafana)
+- 100% sampling rate (configurable in `Telemetry` resource)
+
+#### Layer 2 — OTel Operator (deep code instrumentation, opt-in)
+
+For code-level spans (database queries, function calls, custom business logic), deploy the OTel Operator and annotate your pod with a single line:
+
+```yaml
+annotations:
+  instrumentation.opentelemetry.io/inject-java: "true"   # Java
+  instrumentation.opentelemetry.io/inject-nodejs: "true" # Node.js
+  instrumentation.opentelemetry.io/inject-python: "true" # Python
+  instrumentation.opentelemetry.io/inject-go: "true"     # Go
+```
+
+See `examples/otel-operator-instrumentation.yaml` for a complete example.
+
+#### Sending Traces from Your Apps (manual SDK)
+
+For custom instrumentation or languages not supported by the Operator:
+
+```bash
+# From inside the cluster (via Service)
+OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector.monitoring.svc:4317   # gRPC
+OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector.monitoring.svc:4318   # HTTP
+
+# From any node (via DaemonSet hostPort)
+OTEL_EXPORTER_OTLP_ENDPOINT=http://<node-ip>:4317
+```
+
+### Viewing Traces in Grafana
+
+1. Open **http://grafana.local**
+2. Go to **Explore** → select **Tempo** as datasource
+3. Search by **TraceID**, service name, or use the **Service Graph**
+
+### Observability Correlations
+
+The stack is configured with fixed datasource UIDs to enable cross-signal navigation:
+
+| From | To | How |
+|------|----|-----|
+| Trace → Logs | Tempo → Loki | Click TraceID in a log line to jump to the trace |
+| Trace → Metrics | Tempo → Prometheus | `service.name` tag links to RED metrics |
+| Service Map | Prometheus | Auto-generated from span metrics |
+| Node Graph | Tempo | Visualize trace topology |
+
+### Go Example (OpenTelemetry SDK)
+
+```go
+import (
+    "go.opentelemetry.io/otel"
+    "go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
+    "go.opentelemetry.io/otel/sdk/trace"
+)
+
+exporter, _ := otlptracegrpc.New(ctx,
+    otlptracegrpc.WithEndpoint("otel-collector.monitoring.svc:4317"),
+    otlptracegrpc.WithInsecure(),
+)
+tp := trace.NewTracerProvider(trace.WithBatcher(exporter))
+otel.SetTracerProvider(tp)
+```
+
+### Verifying Installation
+
+```bash
+# Check pods
+kubectl get pods -n monitoring -l app=tempo
+kubectl get pods -n monitoring -l app=otel-collector
+
+# Check Tempo is receiving traces (via port-forward)
+kubectl port-forward -n monitoring svc/tempo 3200:3200
+curl http://localhost:3200/ready
+```
+
+## Istio Installation Profile
+
+This project installs Istio using the **`default` profile**. Understanding the available profiles:
+
+| Profile | Ingress Gateway | Egress Gateway | Telemetry | Recommended for |
+|---------|----------------|----------------|-----------|-----------------|
+| `minimal` | ❌ | ❌ | minimal | Istiod only, gateways managed separately |
+| `default` | ✅ | ❌ | standard | **Production** — balanced resources and security |
+| `demo` | ✅ | ✅ | verbose | Learning and demos |
+| `ambient` | ✅ | ❌ | standard | Production (no sidecar, node-level proxy) |
+
+### Why `default` and not `demo`?
+
+The `demo` profile enables everything for easy exploration but is not production-safe:
+- Verbose logging and telemetry impacts performance
+- No resource limits configured — can saturate nodes
+- Relaxed security settings
+
+### Enabling Egress Gateway (production)
+
+The `default` profile does not include an Egress Gateway. To control outbound traffic in production, enable it explicitly:
+
+```yaml
+# istio-operator.yaml
+apiVersion: install.istio.io/v1alpha1
+kind: IstioOperator
+spec:
+  profile: default
+  components:
+    egressGateways:
+    - name: istio-egressgateway
+      enabled: true
+```
+
+```bash
+istioctl install -f istio-operator.yaml -y
+```
+
+---
+
+## Kiali (Service Mesh Observability)
+
+Kiali is the observability console for Istio. It visualizes the service mesh topology in real-time, shows traffic health between services, and validates Istio configuration.
+
+Installed automatically alongside the monitoring stack — no extra configuration required.
+
+### What Kiali Shows
+
+| View | Description |
+|------|-------------|
+| **Service Graph** | Live topology of all services, with RPS, error rate and latency on each edge |
+| **Traffic Metrics** | RED metrics (Rate, Errors, Duration) per workload |
+| **Config Validation** | Detects misconfigured VirtualServices, DestinationRules, Gateways |
+| **Workload Details** | Pod health, logs (via Loki), traces (via Tempo) for each workload |
+| **Istio Config** | Full view and edit of all Istio CRDs in the cluster |
+
+### Accessing Kiali
+
+```bash
+# Get Istio Ingress IP
+INGRESS_IP=$(kubectl get svc -n istio-system istio-ingressgateway -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+
+# Add to /etc/hosts
+echo "$INGRESS_IP kiali.local" | sudo tee -a /etc/hosts
+
+# Access (no login required — anonymous mode)
+open http://kiali.local/kiali
+```
+
+### Integrations
+
+Kiali is pre-configured to link to the full observability stack:
+
+| Signal | Backend | How to access |
+|--------|---------|---------------|
+| Metrics | Prometheus | Auto-loaded in service graphs and dashboards |
+| Logs | Loki | Click "Show Logs" on any workload |
+| Traces | Grafana Tempo | Click "Show Traces" on any workload or span link |
+| Dashboards | Grafana | "View in Grafana" button on metrics panels |
+
+### Verifying Installation
+
+```bash
+kubectl get pods -n istio-system -l app=kiali
+kubectl get svc -n istio-system kiali
+```
+
+### Recommended Grafana Dashboards for Istio & Mesh Observability
+
+> **Import tip:** When importing from grafana.com, Grafana asks you to map the `$datasource` variable to your Prometheus instance. Always select **Prometheus** from the dropdown — this is what causes the error if left blank or mismatched.
+
+#### Option A — Import from Grafana.com (requires internet access)
+
+**Dashboards** → **Import** → Enter ID → **Load** → Set datasource to **Prometheus** → **Import**
+
+| ID | Dashboard | What it shows |
+|----|-----------|---------------|
+| `7639` | Istio Mesh Dashboard | Traffic overview: RPS, error rate, latency for the whole mesh |
+| `7636` | Istio Service Dashboard | Per-service breakdown: inbound/outbound, success rate |
+| `7630` | Istio Workload Dashboard | Per-pod/deployment metrics |
+| `7645` | Istio Control Plane | istiod CPU, memory, xDS push latency |
+| `11829` | Istio Performance | Envoy proxy performance metrics |
+| `15983` | OpenTelemetry Collector | Spans received, exported, queue depth |
+
+#### Option B — Import official JSON directly (recommended, works offline)
+
+Download and import the Istio dashboards from the official Istio repo — these are pre-configured for Prometheus and don't have datasource UID issues:
+
+```bash
+# Download official Istio dashboards (pre-configured for Prometheus)
+ISTIO_VERSION=release-1.29
+BASE_URL=https://raw.githubusercontent.com/istio/istio/${ISTIO_VERSION}/manifests/addons/dashboards
+
+for dashboard in istio-mesh-dashboard istio-service-dashboard istio-workload-dashboard \
+                 istio-performance-dashboard istio-extension-dashboard; do
+  curl -sSL "${BASE_URL}/${dashboard}.json" -o "/tmp/${dashboard}.json"
+  echo "Downloaded: ${dashboard}.json"
+done
+
+# Import each file via Grafana UI:
+# Dashboards → Import → Upload JSON file → select file → Import
+```
+
+After download, import each JSON file manually in Grafana: **Dashboards → Import → Upload JSON file**.
+
+For the OTel Collector dashboard (ID `15983`), it uses a separate `$otelcol_datasource` variable — set it to **Prometheus** on import.
 
 ## Karpor (Kubernetes Explorer)
 
 Karpor is a Kubernetes Explorer that provides intelligent search and AI-powered analysis.
 
-> **Note:** Karpor requires extra resources (~1.5 CPU, ~2GB RAM). To disable it, set in `config.yaml`:
+> **Note:** Karpor está **desabilitado por padrão** pois requer recursos extras (~1.5 CPU, ~2GB RAM). Para habilitar:
 > ```yaml
 > components:
->   karpor: "none"  # Options: enabled, none
+>   karpor: "enabled"
+> karpor_ai:
+>   enabled: true
 > ```
 
 ### Features
@@ -636,10 +1296,10 @@ kubectl logs -n karpor -l app.kubernetes.io/component=karpor-server
 
 Ollama provides AI capabilities for Karpor, supporting both local and cloud models.
 
-> **Note:** Ollama is only installed when Karpor AI is enabled. To disable:
+> **Note:** Ollama está **desabilitado por padrão** e só é instalado quando Karpor AI está habilitado:
 > ```yaml
 > karpor_ai:
->   enabled: false  # Disables Ollama installation
+>   enabled: true   # Habilita Ollama automaticamente
 > ```
 
 ### Local Models (Default)
@@ -679,11 +1339,16 @@ Cloud models offer better performance without GPU requirements:
 karpor_ai:
   enabled: true
   backend: "ollama"
-  model: "minimax-m2.5:cloud"   # Cloud model
+  model: "minimax-m2.5:cloud"
 
 ollama:
-  api_key: "olka_your_key_here"  # Required for cloud models
+  api_key: "olka_your_key_here"  # Apenas no primeiro deploy — depois armazene no Vault
 ```
+
+> Se o Vault estiver habilitado, armazene a API key diretamente no Vault e deixe `api_key: ""` no config.yaml:
+> ```bash
+> vault kv patch secret/k8s-provisioner/api-keys ollama_api_key="olka_sua_chave"
+> ```
 
 **Available cloud models:**
 
@@ -746,7 +1411,7 @@ kubectl create namespace demo
 kubectl label namespace demo istio-injection=enabled
 
 # Deploy httpbin
-kubectl apply -n demo -f https://raw.githubusercontent.com/istio/istio/release-1.28/samples/httpbin/httpbin.yaml
+kubectl apply -n demo -f https://raw.githubusercontent.com/istio/istio/release-1.29/samples/httpbin/httpbin.yaml
 
 # Create Gateway and VirtualService
 kubectl apply -f - <<EOF
@@ -883,13 +1548,13 @@ The `clean.sh` script will:
 
 | VM | Memory | CPUs | Disk | Purpose |
 |----|--------|------|------|---------|
-| Storage | 1 GB | 1 | 10 GB | NFS Server |
+| Storage | 2 GB | 1 | 10 GB | NFS Server + HashiCorp Vault |
 | ControlPlane | 6 GB | 4 | 20 GB | K8s Master + Monitoring |
-| Node01 | 8 GB | 2 | 20 GB | Worker + AI Workloads |
+| Node01 | 8 GB | 2 | 20 GB | Worker + AI Workloads (opcional) |
 | Node02 | 4 GB | 2 | 20 GB | Worker |
-| **Total** | **19 GB** | **9** | **70 GB** | |
+| **Total** | **20 GB** | **9** | **70 GB** | |
 
-> **Note:** Node01 has extra memory for Ollama AI workloads (model loading requires ~4GB for llama3.2:3b)
+> **Karpor + Ollama desabilitados por padrão.** Para habilitá-los, o Node01 precisa dos 8GB para carregar o modelo llama3.2:3b (~4GB RAM).
 
 ## GitFlow & CI/CD
 
