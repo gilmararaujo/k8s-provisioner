@@ -1,8 +1,9 @@
 # k8s-provisioner configuration
 # Vault (HashiCorp) - running on storage node
+# token is auto-read from /etc/k8s-provisioner/vault-init.json if left empty
 vault:
   addr: "http://192.168.56.20:8200"
-  token: ""  # Set your Vault token here (root or provisioner token)
+  token: ""  # Leave empty to auto-resolve from vault-init.json
 
 cluster:
   name: "k8s-lab"

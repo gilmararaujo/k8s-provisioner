@@ -6,10 +6,37 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"time"
 )
 
 const vaultMount = "secret"
+
+// vaultInitFile is written by the provisioner during Vault initialization.
+const vaultInitFile = "/etc/k8s-provisioner/vault-init.json"
+
+type vaultInitData struct {
+	RootToken string `json:"root_token"`
+}
+
+// ResolveVaultToken returns the token from config, falling back to vault-init.json.
+func ResolveVaultToken(configToken string) string {
+	if configToken != "" {
+		return configToken
+	}
+
+	data, err := os.ReadFile(vaultInitFile)
+	if err != nil {
+		return ""
+	}
+
+	var init vaultInitData
+	if err := json.Unmarshal(data, &init); err != nil {
+		return ""
+	}
+
+	return init.RootToken
+}
 
 type VaultClient struct {
 	addr   string

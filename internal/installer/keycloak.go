@@ -31,12 +31,13 @@ func (k *Keycloak) resolveCredentials() keycloakCreds {
 		grafanaSecret:    "grafana-oidc-secret",
 	}
 
-	if k.config.Vault.Addr == "" || k.config.Vault.Token == "" {
+	token := ResolveVaultToken(k.config.Vault.Token)
+	if k.config.Vault.Addr == "" || token == "" {
 		fmt.Println("Warning: Vault not configured, using default Keycloak credentials")
 		return creds
 	}
 
-	vault := NewVaultClient(k.config.Vault.Addr, k.config.Vault.Token)
+	vault := NewVaultClient(k.config.Vault.Addr, token)
 	const vaultPath = "k8s-provisioner/api-keys"
 
 	existing, err := vault.ReadSecret(vaultPath)
