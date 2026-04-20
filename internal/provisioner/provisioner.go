@@ -307,6 +307,15 @@ func (p *Provisioner) InitControlPlane() error {
 		}
 	}
 
+	// Install Keycloak (if enabled) - after monitoring so Grafana OAuth2 can be configured
+	if cfg.Components.Keycloak == "enabled" {
+		fmt.Println("\n>>> Installing Keycloak (OIDC)...")
+		keycloakInstaller := installer.NewKeycloak(cfg, p.exec)
+		if err := keycloakInstaller.Install(); err != nil {
+			return err
+		}
+	}
+
 	// Install Karpor (if enabled)
 	if cfg.Components.Karpor == "enabled" {
 		// Install Ollama first if AI is enabled with ollama backend

@@ -74,6 +74,7 @@ type ComponentsConfig struct {
 	Logging      string `yaml:"logging"`
 	Tracing      string `yaml:"tracing"` // Options: otel-tempo, none
 	Karpor       string `yaml:"karpor"`
+	Keycloak     string `yaml:"keycloak"`
 }
 
 type KarporAIConfig struct {

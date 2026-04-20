@@ -41,6 +41,7 @@ components:
   logging: "loki"                 # Options: loki, none (installed with monitoring)
   tracing: "otel-tempo"           # Options: otel-tempo, none (requires monitoring+logging)
   karpor: "none"                  # Options: enabled, none (requires extra resources: ~1.5 CPU, ~2GB RAM)
+  keycloak: "enabled"             # Options: enabled, none (OIDC identity provider for kubectl + Grafana SSO)
 
 # Karpor AI configuration (optional)
 # When backend is "ollama", Ollama will be installed inside the cluster automatically
