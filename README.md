@@ -196,6 +196,32 @@ export KUBECONFIG=~/.kube/config-lab
 kubectl get nodes
 ```
 
+### 5. Configure /etc/hosts (on your Mac/Linux host)
+
+Add all service hostnames to your local `/etc/hosts` to access them by name:
+
+```bash
+# Get Istio Ingress IP (MetalLB LoadBalancer)
+INGRESS_IP=$(kubectl get svc -n istio-system istio-ingressgateway \
+  -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+
+# Kubernetes services (via Istio Ingress Gateway)
+echo "$INGRESS_IP grafana.local prometheus.local kiali.local karpor.local keycloak.local" \
+  | sudo tee -a /etc/hosts
+
+# Storage node services (direct IP — fixed)
+echo "192.168.56.20 storage.local" | sudo tee -a /etc/hosts
+```
+
+| Hostname | Service | URL |
+|---|---|---|
+| `grafana.local` | Grafana | http://grafana.local |
+| `prometheus.local` | Prometheus | http://prometheus.local |
+| `kiali.local` | Kiali (Istio) | http://kiali.local |
+| `karpor.local` | Karpor Explorer | http://karpor.local |
+| `keycloak.local` | Keycloak SSO | http://keycloak.local |
+| `storage.local` | Vault UI | http://storage.local:8200 |
+
 ## CLI Commands
 
 ### Provisioning (runs inside VMs)
@@ -1524,11 +1550,8 @@ Output example:
 ### Accessing the Vault UI
 
 ```bash
-# Add to /etc/hosts (on your Mac/Linux host)
-echo "192.168.56.20 vault.storage" | sudo tee -a /etc/hosts
-
-# Access
-open http://192.168.56.20:8200
+# storage.local is already in /etc/hosts (see Step 5 in Quick Start)
+open http://storage.local:8200
 ```
 
 Login with the `root_token` from `vault-init.json`.
@@ -1536,7 +1559,7 @@ Login with the `root_token` from `vault-init.json`.
 ### Accessing Vault via CLI
 
 ```bash
-export VAULT_ADDR=http://192.168.56.20:8200
+export VAULT_ADDR=http://storage.local:8200
 export VAULT_TOKEN=hvs.flcBx0hacwkSbeYK7hzSAGqk   # from vault-init.json
 
 # List secrets
@@ -1600,7 +1623,7 @@ Password: (from Vault → secret/k8s-provisioner/api-keys → keycloak_admin_pas
 
 To retrieve:
 ```bash
-export VAULT_ADDR=http://192.168.56.20:8200
+export VAULT_ADDR=http://storage.local:8200
 export VAULT_TOKEN=$(cat /etc/k8s-provisioner/vault-init.json | python3 -c "import sys,json; print(json.load(sys.stdin)['root_token'])")
 vault kv get -field=keycloak_admin_password secret/k8s-provisioner/api-keys
 ```
