@@ -1,4 +1,9 @@
 # k8s-provisioner configuration
+# Vault (HashiCorp) - running on storage node
+vault:
+  addr: "http://192.168.56.20:8200"
+  token: ""  # Set your Vault token here (root or provisioner token)
+
 cluster:
   name: "k8s-lab"
   pod_cidr: "10.244.0.0/16"

@@ -21,16 +21,13 @@ type Config struct {
 	Vault      VaultConfig      `yaml:"vault"`
 }
 
-type OllamaConfig struct {
-	APIKey string `yaml:"api_key"` // Ollama cloud API key (from https://ollama.com/settings/keys)
+type VaultConfig struct {
+	Addr  string `yaml:"addr"`
+	Token string `yaml:"token"`
 }
 
-type VaultConfig struct {
-	Enabled  bool   `yaml:"enabled"`
-	Address  string `yaml:"address"`   // Vault API address (http://192.168.56.20:8200)
-	Version  string `yaml:"version"`   // Vault binary version installed on storage node
-	AutoInit bool   `yaml:"auto_init"` // Initialize and unseal automatically during provisioning
-	K8sAuth  bool   `yaml:"k8s_auth"`  // Configure Kubernetes auth method
+type OllamaConfig struct {
+	APIKey string `yaml:"api_key"` // Ollama cloud API key (from https://ollama.com/settings/keys)
 }
 
 type ClusterConfig struct {

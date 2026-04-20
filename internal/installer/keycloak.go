@@ -14,8 +14,71 @@ type Keycloak struct {
 	exec   executor.CommandExecutor
 }
 
+type keycloakCreds struct {
+	adminPassword    string
+	postgresPassword string
+	grafanaSecret    string
+}
+
 func NewKeycloak(cfg *config.Config, exec executor.CommandExecutor) *Keycloak {
 	return &Keycloak{config: cfg, exec: exec}
+}
+
+func (k *Keycloak) resolveCredentials() keycloakCreds {
+	creds := keycloakCreds{
+		adminPassword:    "Admin@Keycloak123",
+		postgresPassword: "Keycloak@Pg123",
+		grafanaSecret:    "grafana-oidc-secret",
+	}
+
+	if k.config.Vault.Addr == "" || k.config.Vault.Token == "" {
+		fmt.Println("Warning: Vault not configured, using default Keycloak credentials")
+		return creds
+	}
+
+	vault := NewVaultClient(k.config.Vault.Addr, k.config.Vault.Token)
+	const vaultPath = "k8s-provisioner/api-keys"
+
+	existing, err := vault.ReadSecret(vaultPath)
+	if err != nil {
+		fmt.Printf("Warning: could not read Vault secrets: %v — using defaults\n", err)
+		return creds
+	}
+
+	// Write defaults for missing keys, then read back
+	updates := map[string]string{}
+	if existing == nil || existing["keycloak_admin_password"] == "" {
+		updates["keycloak_admin_password"] = creds.adminPassword
+	} else {
+		creds.adminPassword = existing["keycloak_admin_password"]
+	}
+	if existing == nil || existing["keycloak_postgres_password"] == "" {
+		updates["keycloak_postgres_password"] = creds.postgresPassword
+	} else {
+		creds.postgresPassword = existing["keycloak_postgres_password"]
+	}
+	if existing == nil || existing["keycloak_grafana_client_secret"] == "" {
+		updates["keycloak_grafana_client_secret"] = creds.grafanaSecret
+	} else {
+		creds.grafanaSecret = existing["keycloak_grafana_client_secret"]
+	}
+
+	if len(updates) > 0 {
+		merged := map[string]string{}
+		for key, val := range existing {
+			merged[key] = val
+		}
+		for key, val := range updates {
+			merged[key] = val
+		}
+		if werr := vault.WriteSecret(vaultPath, merged); werr != nil {
+			fmt.Printf("Warning: could not write Keycloak secrets to Vault: %v\n", werr)
+		} else {
+			fmt.Printf("Keycloak secrets written to Vault at %s\n", vaultPath)
+		}
+	}
+
+	return creds
 }
 
 func (k *Keycloak) Install() error {
@@ -24,8 +87,10 @@ func (k *Keycloak) Install() error {
 	cpIP := k.config.Network.ControlPlaneIP
 	issuerURL := fmt.Sprintf("http://%s:30080/realms/k8s", cpIP)
 
+	creds := k.resolveCredentials()
+
 	fmt.Println("Deploying Keycloak...")
-	if err := k.deployKeycloak(); err != nil {
+	if err := k.deployKeycloak(creds); err != nil {
 		return err
 	}
 
@@ -35,7 +100,7 @@ func (k *Keycloak) Install() error {
 	}
 
 	fmt.Println("Configuring realm, clients, and users...")
-	if err := k.configureRealm(cpIP); err != nil {
+	if err := k.configureRealm(cpIP, creds); err != nil {
 		fmt.Printf("Warning: realm configuration failed: %v\n", err)
 	}
 
@@ -46,7 +111,7 @@ func (k *Keycloak) Install() error {
 
 	if k.config.Components.Monitoring == "prometheus-stack" {
 		fmt.Println("Configuring Grafana OAuth2 with Keycloak...")
-		if err := k.configureGrafanaOAuth(cpIP); err != nil {
+		if err := k.configureGrafanaOAuth(cpIP, creds); err != nil {
 			fmt.Printf("Warning: Grafana OAuth2 configuration failed: %v\n", err)
 		}
 	}
@@ -63,8 +128,8 @@ func (k *Keycloak) Install() error {
 	return nil
 }
 
-func (k *Keycloak) deployKeycloak() error {
-	manifests := `apiVersion: v1
+func (k *Keycloak) deployKeycloak(creds keycloakCreds) error {
+	secrets := fmt.Sprintf(`apiVersion: v1
 kind: Namespace
 metadata:
   name: keycloak
@@ -77,7 +142,7 @@ metadata:
 type: Opaque
 stringData:
   username: admin
-  password: Admin@Keycloak123
+  password: %s
 ---
 apiVersion: v1
 kind: Secret
@@ -87,8 +152,10 @@ metadata:
 type: Opaque
 stringData:
   username: keycloak
-  password: Keycloak@Pg123
----
+  password: %s
+`, creds.adminPassword, creds.postgresPassword)
+
+	rest := `---
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -288,6 +355,8 @@ spec:
   selector:
     app: keycloak`
 
+	manifests := secrets + rest
+
 	if err := executor.WriteFile("/tmp/keycloak.yaml", manifests); err != nil {
 		return err
 	}
@@ -334,7 +403,7 @@ func (k *Keycloak) waitForReady(timeout time.Duration) error {
 	return fmt.Errorf("timeout waiting for Keycloak")
 }
 
-func (k *Keycloak) configureRealm(cpIP string) error {
+func (k *Keycloak) configureRealm(cpIP string, creds keycloakCreds) error {
 	script := fmt.Sprintf(`#!/bin/bash
 set -e
 KCADM=/opt/keycloak/bin/kcadm.sh
@@ -368,7 +437,7 @@ echo "Creating grafana client (confidential)..."
 GRAFANA_ID=$($KCADM create clients -r k8s \
   -s clientId=grafana \
   -s publicClient=false \
-  -s secret=grafana-oidc-secret \
+  -s secret=%s \
   -s 'redirectUris=["http://grafana.local/*","http://%s:30080/*"]' \
   -i)
 
@@ -411,7 +480,7 @@ $KCADM update users/$DEV_UID/groups/$DEVS_GID -r k8s \
   -s realm=k8s -s userId=$DEV_UID -s groupId=$DEVS_GID -n
 
 echo "Keycloak realm configuration completed!"
-`, cpIP)
+`, creds.grafanaSecret, cpIP)
 
 	if err := executor.WriteFile("/tmp/setup-keycloak.sh", script); err != nil {
 		return err
@@ -511,7 +580,7 @@ subjects:
 	return err
 }
 
-func (k *Keycloak) configureGrafanaOAuth(cpIP string) error {
+func (k *Keycloak) configureGrafanaOAuth(cpIP string, creds keycloakCreds) error {
 	iniLines := []string{
 		"[auth.generic_oauth]",
 		"enabled = true",
@@ -549,7 +618,7 @@ metadata:
   namespace: monitoring
 type: Opaque
 stringData:
-  client-secret: grafana-oidc-secret`, indented.String())
+  client-secret: %s`, indented.String(), creds.grafanaSecret)
 
 	if err := executor.WriteFile("/tmp/grafana-keycloak.yaml", resources); err != nil {
 		return err

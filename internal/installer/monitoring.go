@@ -387,7 +387,7 @@ spec:
   - port: 3000
     targetPort: 3000
   selector:
-    app: grafana`
+    app: grafana`, adminPassword)
 
 	if err := executor.WriteFile("/tmp/grafana.yaml", grafana); err != nil {
 		return err
