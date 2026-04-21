@@ -311,12 +311,14 @@ spec:
               key: password
         - name: KC_HTTP_ENABLED
           value: "true"
+        - name: KC_PROXY
+          value: edge
         - name: KC_HOSTNAME
+          value: keycloak.local
+        - name: KC_HOSTNAME_ADMIN
           value: keycloak.local
         - name: KC_HOSTNAME_STRICT
           value: "false"
-        - name: KC_PROXY_HEADERS
-          value: xforwarded
         - name: KC_HTTP_PORT
           value: "8080"
         - name: KC_HEALTH_ENABLED
