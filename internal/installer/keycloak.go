@@ -443,7 +443,7 @@ GRAFANA_ID=$($KCADM create clients -r k8s \
   -s clientId=grafana \
   -s publicClient=false \
   -s secret=%s \
-  -s 'redirectUris=["http://grafana.local/*","http://%s:30080/*"]' \
+  -s 'redirectUris=["https://grafana.local/*","http://grafana.local/*"]' \
   -i)
 
 $KCADM create clients/$GRAFANA_ID/protocol-mappers/models -r k8s \
@@ -595,10 +595,12 @@ func (k *Keycloak) configureGrafanaOAuth(cpIP string, creds keycloakCreds) error
 		"client_id = grafana",
 		"client_secret = ${GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET}",
 		"scopes = openid email profile groups",
-		fmt.Sprintf("auth_url = http://%s:30080/realms/k8s/protocol/openid-connect/auth", cpIP),
-		fmt.Sprintf("token_url = http://%s:30080/realms/k8s/protocol/openid-connect/token", cpIP),
-		fmt.Sprintf("api_url = http://%s:30080/realms/k8s/protocol/openid-connect/userinfo", cpIP),
+		"auth_url = https://keycloak.local/realms/k8s/protocol/openid-connect/auth",
+		"token_url = https://keycloak.local/realms/k8s/protocol/openid-connect/token",
+		"api_url = https://keycloak.local/realms/k8s/protocol/openid-connect/userinfo",
+		"redirect_uri = https://grafana.local/login/generic_oauth",
 		"role_attribute_path = contains(groups[*], 'k8s-admins') && 'Admin' || 'Viewer'",
+		"tls_skip_verify_insecure = true",
 	}
 
 	var indented strings.Builder
