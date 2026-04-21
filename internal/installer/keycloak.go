@@ -95,8 +95,8 @@ func (k *Keycloak) Install() error {
 		return err
 	}
 
-	fmt.Println("Waiting for Keycloak to be ready (first start includes build step, ~3-5 min)...")
-	if err := k.waitForReady(12 * time.Minute); err != nil {
+	fmt.Println("Waiting for Keycloak to be ready (first start includes build step, ~5-8 min)...")
+	if err := k.waitForReady(20 * time.Minute); err != nil {
 		return fmt.Errorf("keycloak did not become ready: %w", err)
 	}
 

@@ -310,7 +310,7 @@ func (p *Provisioner) InitControlPlane() error {
 		fmt.Println("\n>>> Installing Keycloak (OIDC)...")
 		keycloakInstaller := installer.NewKeycloak(cfg, p.exec)
 		if err := keycloakInstaller.Install(); err != nil {
-			return err
+			fmt.Printf("Warning: Keycloak installation failed: %v\n", err)
 		}
 	}
 
