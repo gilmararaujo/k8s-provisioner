@@ -311,8 +311,8 @@ spec:
               key: password
         - name: KC_HTTP_ENABLED
           value: "true"
-        - name: KC_PROXY
-          value: edge
+        - name: KC_PROXY_HEADERS
+          value: xforwarded
         - name: KC_HOSTNAME
           value: keycloak.local
         - name: KC_HOSTNAME_ADMIN
