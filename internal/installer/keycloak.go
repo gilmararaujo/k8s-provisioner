@@ -316,7 +316,7 @@ spec:
         - name: KC_HOSTNAME
           value: keycloak.local
         - name: KC_HOSTNAME_ADMIN
-          value: https://keycloak.local
+          value: keycloak.local
         - name: KC_HOSTNAME_STRICT
           value: "false"
         - name: KC_HTTP_PORT
