@@ -801,6 +801,19 @@ spec:
     - "grafana.local"
     - "prometheus.local"
     - "alertmanager.local"
+    tls:
+      httpsRedirect: true
+  - port:
+      number: 443
+      name: https
+      protocol: HTTPS
+    tls:
+      mode: SIMPLE
+      credentialName: lab-tls-secret
+    hosts:
+    - "grafana.local"
+    - "prometheus.local"
+    - "alertmanager.local"
 ---
 apiVersion: networking.istio.io/v1
 kind: VirtualService

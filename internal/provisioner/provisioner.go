@@ -252,6 +252,13 @@ func (p *Provisioner) InitControlPlane() error {
 		return err
 	}
 
+	// Install cert-manager (TLS certificates for all *.local services)
+	fmt.Println("\n>>> Installing cert-manager...")
+	certInstaller := installer.NewCertManager(cfg, p.exec)
+	if err := certInstaller.Install(); err != nil {
+		fmt.Printf("Warning: cert-manager installation failed: %v\n", err)
+	}
+
 	// Install Metrics Server
 	fmt.Println("\n>>> Installing Metrics Server...")
 	metricsInstaller := installer.NewMetricsServer(cfg, p.exec)

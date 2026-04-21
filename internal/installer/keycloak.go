@@ -664,6 +664,17 @@ spec:
       protocol: HTTP
     hosts:
     - keycloak.local
+    tls:
+      httpsRedirect: true
+  - port:
+      number: 443
+      name: https
+      protocol: HTTPS
+    tls:
+      mode: SIMPLE
+      credentialName: lab-tls-secret
+    hosts:
+    - keycloak.local
 ---
 apiVersion: networking.istio.io/v1beta1
 kind: VirtualService

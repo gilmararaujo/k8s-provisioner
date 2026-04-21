@@ -414,6 +414,17 @@ spec:
       protocol: HTTP
     hosts:
     - "karpor.local"
+    tls:
+      httpsRedirect: true
+  - port:
+      number: 443
+      name: https
+      protocol: HTTPS
+    tls:
+      mode: SIMPLE
+      credentialName: lab-tls-secret
+    hosts:
+    - "karpor.local"
 ---
 apiVersion: networking.istio.io/v1
 kind: DestinationRule
