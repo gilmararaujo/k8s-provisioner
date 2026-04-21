@@ -232,7 +232,7 @@ spec:
   - metadata:
       name: data
     spec:
-      storageClassName: nfs-client
+      storageClassName: nfs-dynamic
       accessModes: ["ReadWriteOnce"]
       resources:
         requests:
