@@ -1,8 +1,14 @@
 package installer
 
 import (
+	"bytes"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
+	"io"
+	"math/big"
+	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -10,300 +16,457 @@ import (
 	"github.com/techiescamp/k8s-provisioner/internal/executor"
 )
 
-const vaultInitFilePath = "/etc/k8s-provisioner/vault-init.json"
-
 type VaultInstaller struct {
-	config *config.Config
-	exec   executor.CommandExecutor
+	config  *config.Config
+	exec    executor.CommandExecutor
+	address string
 }
 
-type vaultInitOutput struct {
+func NewVaultInstaller(cfg *config.Config, exec executor.CommandExecutor) *VaultInstaller {
+	addr := cfg.Vault.Addr
+	if addr == "" {
+		addr = "http://192.168.56.20:8200"
+	}
+	return &VaultInstaller{config: cfg, exec: exec, address: addr}
+}
+
+type vaultInitRequest struct {
+	SecretShares    int `json:"secret_shares"`
+	SecretThreshold int `json:"secret_threshold"`
+}
+
+type vaultInitResponse struct {
 	Keys      []string `json:"keys"`
 	RootToken string   `json:"root_token"`
 }
 
-func NewVaultInstaller(cfg *config.Config, exec executor.CommandExecutor) *VaultInstaller {
-	return &VaultInstaller{config: cfg, exec: exec}
-}
-
 func (v *VaultInstaller) Install() error {
-	storageHost := v.config.Storage.NFSServer
-	if storageHost == "" {
-		storageHost = "storage"
+	fmt.Println("Configuring HashiCorp Vault on storage node...")
+
+	if err := v.waitForVault(3 * time.Minute); err != nil {
+		return fmt.Errorf("vault not reachable at %s: %w", v.address, err)
 	}
 
-	fmt.Printf("Installing Vault on %s node...\n", storageHost)
-	if err := v.installVault(storageHost); err != nil {
-		return err
-	}
-
-	fmt.Println("Configuring Vault...")
-	if err := v.writeConfig(storageHost); err != nil {
-		return err
-	}
-
-	fmt.Println("Starting Vault service...")
-	if err := v.startService(storageHost); err != nil {
-		return err
-	}
-
-	fmt.Println("Waiting for Vault API...")
-	if err := v.waitForAPI(storageHost); err != nil {
-		return err
-	}
-
-	fmt.Println("Initializing Vault...")
-	initData, err := v.initOrLoad(storageHost)
+	initialized, err := v.isInitialized()
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to check vault status: %w", err)
 	}
 
-	fmt.Println("Unsealing Vault...")
-	if err := v.unsealVault(storageHost, initData); err != nil {
-		return err
-	}
-
-	fmt.Println("Saving init data...")
-	if err := v.saveInitFiles(storageHost, initData); err != nil {
-		return err
-	}
-
-	fmt.Println("Enabling KV secrets engine...")
-	if err := v.enableKVEngine(storageHost, initData.RootToken); err != nil {
-		fmt.Printf("Warning: KV engine setup failed (may already exist): %v\n", err)
-	}
-
-	fmt.Println("Vault installed successfully!")
-	v.printAccessInfo(storageHost, initData)
-	return nil
-}
-
-func (v *VaultInstaller) installVault(host string) error {
-	// Install sshpass if needed
-	if _, err := v.exec.RunShell("which sshpass 2>/dev/null || apt-get install -y sshpass"); err != nil {
-		return err
-	}
-
-	script := `
-set -e
-if command -v vault &>/dev/null; then
-  echo "Vault already installed: $(vault version)"
-  exit 0
-fi
-apt-get install -y wget gpg lsb-release
-wget -O- https://apt.releases.hashicorp.com/gpg | gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
-echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" \
-  > /etc/apt/sources.list.d/hashicorp.list
-apt-get update -y
-apt-get install -y vault
-echo "Vault installed: $(vault version)"
-`
-	if err := executor.WriteFile("/tmp/install-vault.sh", script); err != nil {
-		return err
-	}
-
-	if _, err := v.scp(host, "/tmp/install-vault.sh", "/tmp/install-vault.sh"); err != nil {
-		return err
-	}
-
-	_, err := v.ssh(host, "bash /tmp/install-vault.sh")
-	return err
-}
-
-func (v *VaultInstaller) writeConfig(host string) error {
-	storageIP := "192.168.56.20"
-	// Resolve actual IP from nodes if available
-	for _, node := range v.config.Nodes {
-		if node.Role == "storage" && node.IP != "" {
-			storageIP = node.IP
+	var rootToken string
+	if !initialized {
+		fmt.Println("Initializing Vault...")
+		rootToken, err = v.initialize()
+		if err != nil {
+			return fmt.Errorf("vault initialization failed: %w", err)
+		}
+		fmt.Println("Vault initialized and unsealed successfully")
+	} else {
+		fmt.Println("Vault already initialized, loading stored credentials...")
+		rootToken, err = v.loadRootToken()
+		if err != nil {
+			return fmt.Errorf("failed to load vault root token: %w", err)
 		}
 	}
 
-	cfg := fmt.Sprintf(`storage "file" {
-  path = "/opt/vault/data"
-}
-
-listener "tcp" {
-  address     = "0.0.0.0:8200"
-  tls_disable = "true"
-}
-
-api_addr = "http://%s:8200"
-ui = true
-`, storageIP)
-
-	if err := executor.WriteFile("/tmp/vault.hcl", cfg); err != nil {
-		return err
+	fmt.Println("Enabling KV v2 secrets engine...")
+	if err := v.enableKVSecrets(rootToken); err != nil {
+		fmt.Printf("Warning: failed to enable KV secrets engine: %v\n", err)
 	}
 
-	if _, err := v.scp(host, "/tmp/vault.hcl", "/tmp/vault.hcl"); err != nil {
-		return err
+	if true {
+		fmt.Println("Configuring Kubernetes auth method...")
+		if err := v.configureK8sAuth(rootToken); err != nil {
+			fmt.Printf("Warning: failed to configure k8s auth: %v\n", err)
+		}
 	}
 
-	_, err := v.ssh(host, "mkdir -p /opt/vault/data && mv /tmp/vault.hcl /etc/vault.d/vault.hcl && chown -R vault:vault /etc/vault.d /opt/vault/data")
-	return err
-}
-
-func (v *VaultInstaller) startService(host string) error {
-	if _, err := v.ssh(host, "systemctl enable vault && systemctl restart vault"); err != nil {
-		return err
+	fmt.Println("Storing API secrets in Vault...")
+	if err := v.storeAPISecrets(rootToken); err != nil {
+		fmt.Printf("Warning: failed to store API secrets: %v\n", err)
 	}
+
+	v.printAccessInfo()
 	return nil
 }
 
-func (v *VaultInstaller) waitForAPI(host string) error {
-	deadline := time.Now().Add(ShortReadyTimeout)
+func (v *VaultInstaller) waitForVault(timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		out, _ := v.ssh(host, "VAULT_ADDR=http://localhost:8200 vault status -format=json 2>/dev/null | grep -c 'initialized' || echo 0")
-		if strings.TrimSpace(out) != "0" {
-			fmt.Println("Vault API is up!")
-			return nil
+		resp, err := http.Get(v.address + "/v1/sys/health")
+		if err == nil {
+			if closeErr := resp.Body.Close(); closeErr != nil {
+				fmt.Printf("Warning: failed to close response body: %v\n", closeErr)
+			}
+			// 200=active, 429=standby, 501=not initialized, 503=sealed — all mean API is up
+			if resp.StatusCode != 0 {
+				return nil
+			}
 		}
-		fmt.Println("Waiting for Vault API...")
-		time.Sleep(DefaultPollInterval)
+		fmt.Printf("Waiting for Vault at %s...\n", v.address)
+		time.Sleep(ShortPollInterval)
 	}
-	return fmt.Errorf("timeout waiting for Vault API")
+	return fmt.Errorf("timed out after %s", timeout)
 }
 
-func (v *VaultInstaller) initOrLoad(host string) (*vaultInitOutput, error) {
-	// Check if already initialized
-	out, _ := v.ssh(host, "VAULT_ADDR=http://localhost:8200 vault status 2>/dev/null | grep 'Initialized' | awk '{print $2}'")
-	if strings.TrimSpace(out) == "true" {
-		fmt.Println("Vault already initialized, loading existing init data...")
-		return v.loadExistingInitData(host)
-	}
-
-	// Initialize: 5 shares, threshold 3
-	raw, err := v.ssh(host, "VAULT_ADDR=http://localhost:8200 vault operator init -key-shares=5 -key-threshold=3 -format=json")
+func (v *VaultInstaller) isInitialized() (bool, error) {
+	resp, err := http.Get(v.address + "/v1/sys/init")
 	if err != nil {
-		return nil, fmt.Errorf("vault operator init failed: %w", err)
+		return false, err
+	}
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			fmt.Printf("Warning: failed to close response body: %v\n", err)
+		}
+	}()
+
+	var result map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return false, err
 	}
 
-	// vault output may have extra lines before the JSON
-	jsonStart := strings.Index(raw, "{")
-	if jsonStart < 0 {
-		return nil, fmt.Errorf("no JSON in vault init output: %s", raw)
-	}
-	raw = raw[jsonStart:]
-
-	// The full init output has unseal_keys_hex; map to our simplified format
-	var full struct {
-		UnsealKeysHex []string `json:"unseal_keys_hex"`
-		RootToken     string   `json:"root_token"`
-	}
-	if err := json.Unmarshal([]byte(raw), &full); err != nil {
-		return nil, fmt.Errorf("failed to parse vault init JSON: %w", err)
-	}
-
-	return &vaultInitOutput{
-		Keys:      full.UnsealKeysHex,
-		RootToken: full.RootToken,
-	}, nil
+	init, _ := result["initialized"].(bool)
+	return init, nil
 }
 
-func (v *VaultInstaller) loadExistingInitData(host string) (*vaultInitOutput, error) {
-	// Try controlplane file first (already copied in a previous run)
-	if data, err := executor.ReadFileContents(vaultInitFilePath); err == nil {
-		var init vaultInitOutput
-		if err := json.Unmarshal([]byte(data), &init); err == nil && init.RootToken != "" {
-			return &init, nil
-		}
-	}
-
-	// Fall back to storage node
-	raw, err := v.ssh(host, fmt.Sprintf("cat %s", vaultInitFilePath))
+func (v *VaultInstaller) initialize() (string, error) {
+	initReq := vaultInitRequest{SecretShares: 5, SecretThreshold: 3}
+	initResp, err := v.vaultPost("/v1/sys/init", "", initReq)
 	if err != nil {
-		return nil, fmt.Errorf("vault already initialized but init file not found on %s or controlplane", host)
+		return "", fmt.Errorf("init request failed: %w", err)
 	}
 
-	var init vaultInitOutput
-	if err := json.Unmarshal([]byte(strings.TrimSpace(raw)), &init); err != nil {
-		return nil, err
-	}
-	return &init, nil
-}
+	keys, _ := initResp["keys"].([]interface{})
+	rootToken, _ := initResp["root_token"].(string)
 
-func (v *VaultInstaller) unsealVault(host string, data *vaultInitOutput) error {
-	// Need 3 of 5 keys (threshold)
-	for i := 0; i < 3 && i < len(data.Keys); i++ {
-		cmd := fmt.Sprintf("VAULT_ADDR=http://localhost:8200 vault operator unseal %s", data.Keys[i])
-		if _, err := v.ssh(host, cmd); err != nil {
-			return fmt.Errorf("unseal with key %d failed: %w", i, err)
+	if len(keys) == 0 || rootToken == "" {
+		return "", fmt.Errorf("unexpected init response: %v", initResp)
+	}
+
+	// Unseal with first 3 keys (threshold=3)
+	fmt.Println("Unsealing Vault...")
+	for i := 0; i < 3; i++ {
+		key, _ := keys[i].(string)
+		if _, err := v.vaultPut("/v1/sys/unseal", "", map[string]interface{}{"key": key}); err != nil {
+			return "", fmt.Errorf("unseal attempt %d failed: %w", i+1, err)
 		}
 	}
 
-	// Verify unsealed
-	out, _ := v.ssh(host, "VAULT_ADDR=http://localhost:8200 vault status 2>/dev/null | grep 'Sealed' | awk '{print $2}'")
-	if strings.TrimSpace(out) == "true" {
-		return fmt.Errorf("vault is still sealed after unseal attempts")
+	// Persist init data on controlplane
+	initData := vaultInitResponse{RootToken: rootToken}
+	for _, k := range keys {
+		if s, ok := k.(string); ok {
+			initData.Keys = append(initData.Keys, s)
+		}
+	}
+	if err := v.saveInitData(initData); err != nil {
+		fmt.Printf("Warning: failed to save vault init data: %v\n", err)
 	}
 
-	fmt.Println("Vault unsealed successfully!")
-	return nil
+	return rootToken, nil
 }
 
-func (v *VaultInstaller) saveInitFiles(host string, data *vaultInitOutput) error {
-	jsonBytes, err := json.MarshalIndent(data, "", "  ")
+func (v *VaultInstaller) loadRootToken() (string, error) {
+	// Try reading from storage node via SSH
+	storageIP := "192.168.56.20"
+	out, err := v.exec.RunShell(fmt.Sprintf(
+		"sshpass -p 'vagrant' ssh -o StrictHostKeyChecking=no vagrant@%s 'sudo cat /etc/vault.d/vault-init.json'",
+		storageIP,
+	))
+	if err == nil && out != "" {
+		var init vaultInitResponse
+		if jsonErr := json.Unmarshal([]byte(out), &init); jsonErr == nil && init.RootToken != "" {
+			return init.RootToken, nil
+		}
+	}
+
+	// Fallback: local controlplane copy
+	data, err := os.ReadFile("/etc/k8s-provisioner/vault-init.json")
+	if err != nil {
+		return "", fmt.Errorf("vault-init.json not found on storage node or controlplane")
+	}
+	var init vaultInitResponse
+	if err := json.Unmarshal(data, &init); err != nil {
+		return "", err
+	}
+	if init.RootToken == "" {
+		return "", fmt.Errorf("root_token is empty in vault-init.json")
+	}
+	return init.RootToken, nil
+}
+
+func (v *VaultInstaller) saveInitData(data vaultInitResponse) error {
+	raw, err := json.MarshalIndent(data, "", "  ")
 	if err != nil {
 		return err
 	}
 
-	jsonStr := string(jsonBytes)
-
-	// Save on storage node
-	saveCmd := fmt.Sprintf("mkdir -p /etc/k8s-provisioner && cat > %s <<'VAULTEOF'\n%s\nVAULTEOF", vaultInitFilePath, jsonStr)
-	if _, err := v.ssh(host, saveCmd); err != nil {
-		fmt.Printf("Warning: could not save init file on storage node: %v\n", err)
+	// Always save locally on controlplane as reliable fallback
+	localPath := "/etc/k8s-provisioner/vault-init.json"
+	if err := os.WriteFile(localPath, raw, 0600); err != nil {
+		return fmt.Errorf("failed to save vault-init.json locally: %w", err)
 	}
 
-	// Save on controlplane (local)
-	if err := executor.WriteFile(vaultInitFilePath, jsonStr); err != nil {
-		return fmt.Errorf("failed to save init file on controlplane: %w", err)
+	// Copy to storage node via scp (avoids shell-escaping issues with JSON)
+	storageIP := "192.168.56.20"
+	if _, err := v.exec.RunShell("apt-get install -y sshpass 2>/dev/null || true"); err != nil {
+		fmt.Printf("Warning: could not install sshpass: %v\n", err)
 	}
 
-	fmt.Printf("Init data saved to %s\n", vaultInitFilePath)
-	return nil
-}
+	scpCmd := fmt.Sprintf(
+		"sshpass -p 'vagrant' scp -o StrictHostKeyChecking=no %s vagrant@%s:/tmp/vault-init.json",
+		localPath, storageIP,
+	)
+	moveCmd := fmt.Sprintf(
+		"sshpass -p 'vagrant' ssh -o StrictHostKeyChecking=no vagrant@%s "+
+			"'sudo mv /tmp/vault-init.json /etc/vault.d/vault-init.json && sudo chmod 600 /etc/vault.d/vault-init.json'",
+		storageIP,
+	)
 
-func (v *VaultInstaller) enableKVEngine(host, rootToken string) error {
-	// Check if already enabled
-	out, _ := v.ssh(host, fmt.Sprintf("VAULT_ADDR=http://localhost:8200 VAULT_TOKEN=%s vault secrets list 2>/dev/null | grep -c 'secret/' || echo 0", rootToken))
-	if strings.TrimSpace(out) != "0" {
-		fmt.Println("KV engine already enabled at secret/")
+	if _, err := v.exec.RunShell(scpCmd); err != nil {
+		fmt.Printf("Warning: could not scp vault-init.json to storage node: %v\n", err)
+		fmt.Printf("Vault init data saved locally at %s\n", localPath)
 		return nil
 	}
+	if _, err := v.exec.RunShell(moveCmd); err != nil {
+		fmt.Printf("Warning: could not move vault-init.json on storage node: %v\n", err)
+	}
 
-	cmd := fmt.Sprintf("VAULT_ADDR=http://localhost:8200 VAULT_TOKEN=%s vault secrets enable -path=secret kv-v2", rootToken)
-	_, err := v.ssh(host, cmd)
+	fmt.Printf("Vault init data saved to %s:/etc/vault.d/vault-init.json\n", storageIP)
+	fmt.Printf("Backup local em: %s\n", localPath)
+	return nil
+}
+
+func (v *VaultInstaller) enableKVSecrets(token string) error {
+	// Check if already mounted
+	mounts, err := v.vaultGet("/v1/sys/mounts", token)
+	if err == nil {
+		if _, exists := mounts["secret/"]; exists {
+			fmt.Println("KV v2 secrets engine already enabled")
+			return nil
+		}
+	}
+
+	_, err = v.vaultPost("/v1/sys/mounts/secret", token, map[string]interface{}{
+		"type":    "kv",
+		"options": map[string]string{"version": "2"},
+	})
 	return err
 }
 
-// ssh runs a command on the storage node as root via vagrant SSH.
-func (v *VaultInstaller) ssh(host, cmd string) (string, error) {
-	fullCmd := fmt.Sprintf("sshpass -p 'vagrant' ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 vagrant@%s 'sudo %s'",
-		host, strings.ReplaceAll(cmd, "'", `'"'"'`))
-	return v.exec.RunShell(fullCmd)
-}
-
-// scp copies a local file to the storage node.
-func (v *VaultInstaller) scp(host, src, dst string) (string, error) {
-	cmd := fmt.Sprintf("sshpass -p 'vagrant' scp -o StrictHostKeyChecking=no %s vagrant@%s:%s", src, host, dst)
-	return v.exec.RunShell(cmd)
-}
-
-func (v *VaultInstaller) printAccessInfo(host string, data *vaultInitOutput) {
-	fmt.Println("\n========================================")
-	fmt.Println("Vault Access Information")
-	fmt.Println("========================================")
-	fmt.Printf("  UI:          http://%s:8200\n", host)
-	fmt.Printf("  Root Token:  %s\n", data.RootToken)
-	fmt.Printf("  Init File:   %s\n", vaultInitFilePath)
-	fmt.Println("\nUnseal keys (keep safe!):")
-	for i, key := range data.Keys {
-		fmt.Printf("  Key %d: %s\n", i+1, key)
+func (v *VaultInstaller) configureK8sAuth(token string) error {
+	// Enable kubernetes auth method
+	if _, err := v.vaultPost("/v1/sys/auth/kubernetes", token, map[string]interface{}{
+		"type": "kubernetes",
+	}); err != nil && !strings.Contains(err.Error(), "path is already in use") {
+		return fmt.Errorf("enable k8s auth: %w", err)
 	}
-	fmt.Println("\nTo access Vault from the host:")
-	fmt.Printf("  export VAULT_ADDR=http://192.168.56.20:8200\n")
-	fmt.Printf("  export VAULT_TOKEN=%s\n", data.RootToken)
-	fmt.Println("========================================")
+
+	// Read Kubernetes CA cert from controlplane
+	caCert, err := os.ReadFile("/etc/kubernetes/pki/ca.crt")
+	if err != nil {
+		return fmt.Errorf("read k8s CA cert: %w", err)
+	}
+
+	// Create vault-auth ServiceAccount
+	saManifest := `apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: vault-auth
+  namespace: kube-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: vault-auth-tokenreview
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:auth-delegator
+subjects:
+- kind: ServiceAccount
+  name: vault-auth
+  namespace: kube-system`
+
+	if err := executor.WriteFile("/tmp/vault-auth-sa.yaml", saManifest); err != nil {
+		return err
+	}
+	if _, err := v.exec.RunShell("kubectl apply -f /tmp/vault-auth-sa.yaml"); err != nil {
+		return fmt.Errorf("create vault-auth SA: %w", err)
+	}
+
+	// Create a bound token for vault-auth SA
+	saToken, err := v.exec.RunShell(
+		"kubectl create token vault-auth -n kube-system --duration=8760h",
+	)
+	if err != nil {
+		return fmt.Errorf("create SA token: %w", err)
+	}
+
+	k8sHost := fmt.Sprintf("https://%s:6443", v.config.Network.ControlPlaneIP)
+	if _, err := v.vaultPost("/v1/auth/kubernetes/config", token, map[string]interface{}{
+		"kubernetes_host":    k8sHost,
+		"kubernetes_ca_cert": string(caCert),
+		"token_reviewer_jwt": strings.TrimSpace(saToken),
+	}); err != nil {
+		return fmt.Errorf("configure k8s auth backend: %w", err)
+	}
+
+	// Create read-only policy for k8s workloads
+	policy := `path "secret/data/k8s-provisioner/*" { capabilities = ["read"] }`
+	if _, err := v.vaultPut("/v1/sys/policies/acl/k8s-provisioner", token, map[string]interface{}{
+		"policy": policy,
+	}); err != nil {
+		return fmt.Errorf("create policy: %w", err)
+	}
+
+	// Create role bound to all namespaces
+	if _, err := v.vaultPost("/v1/auth/kubernetes/role/k8s-provisioner", token, map[string]interface{}{
+		"bound_service_account_names":      []string{"default", "vault-auth"},
+		"bound_service_account_namespaces": []string{"*"},
+		"policies":                         []string{"k8s-provisioner"},
+		"ttl":                              "24h",
+	}); err != nil {
+		return fmt.Errorf("create k8s role: %w", err)
+	}
+
+	fmt.Println("Kubernetes auth method configured successfully")
+	return nil
+}
+
+func (v *VaultInstaller) storeAPISecrets(token string) error {
+	secrets := map[string]string{}
+
+	if v.config.Ollama.APIKey != "" {
+		secrets["ollama_api_key"] = v.config.Ollama.APIKey
+	}
+	if v.config.KarporAI.AuthToken != "" {
+		secrets["karpor_auth_token"] = v.config.KarporAI.AuthToken
+	}
+
+	// Gera senha do Grafana se ainda não existe no Vault
+	grafanaPassword, err := v.resolveOrGenerate(token, "grafana_admin_password")
+	if err != nil {
+		fmt.Printf("Warning: could not resolve grafana password: %v\n", err)
+		grafanaPassword = "admin123" // fallback para lab
+	}
+	secrets["grafana_admin_password"] = grafanaPassword
+
+	_, err = v.vaultPost("/v1/secret/data/k8s-provisioner/api-keys", token, map[string]interface{}{
+		"data": secrets,
+	})
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("Stored %d secret(s) at secret/data/k8s-provisioner/api-keys\n", len(secrets))
+	fmt.Printf("Grafana admin password stored in Vault (grafana_admin_password)\n")
+	return nil
+}
+
+// resolveOrGenerate retorna o valor existente no Vault ou gera um novo.
+func (v *VaultInstaller) resolveOrGenerate(token, key string) (string, error) {
+	existing, err := v.vaultGet("/v1/secret/data/k8s-provisioner/api-keys", token)
+	if err == nil {
+		if data, ok := existing["data"].(map[string]interface{}); ok {
+			if inner, ok := data["data"].(map[string]interface{}); ok {
+				if val, ok := inner[key].(string); ok && val != "" {
+					return val, nil
+				}
+			}
+		}
+	}
+	return generatePassword(16)
+}
+
+func generatePassword(length int) (string, error) {
+	const chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$"
+	result := make([]byte, length)
+	for i := range result {
+		n, err := rand.Int(rand.Reader, big.NewInt(int64(len(chars))))
+		if err != nil {
+			return "", err
+		}
+		result[i] = chars[n.Int64()]
+	}
+	return string(result), nil
+}
+
+// vaultGet performs an authenticated GET to the Vault API.
+func (v *VaultInstaller) vaultGet(path, token string) (map[string]interface{}, error) {
+	return v.vaultRequest("GET", path, token, nil)
+}
+
+// vaultPost performs an authenticated POST to the Vault API.
+func (v *VaultInstaller) vaultPost(path, token string, body interface{}) (map[string]interface{}, error) {
+	return v.vaultRequest("POST", path, token, body)
+}
+
+// vaultPut performs an authenticated PUT to the Vault API.
+func (v *VaultInstaller) vaultPut(path, token string, body interface{}) (map[string]interface{}, error) {
+	return v.vaultRequest("PUT", path, token, body)
+}
+
+func (v *VaultInstaller) vaultRequest(method, path, token string, body interface{}) (map[string]interface{}, error) {
+	var reqBody io.Reader
+	if body != nil {
+		raw, err := json.Marshal(body)
+		if err != nil {
+			return nil, err
+		}
+		reqBody = bytes.NewReader(raw)
+	}
+
+	req, err := http.NewRequest(method, v.address+path, reqBody)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		req.Header.Set("X-Vault-Token", token)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			fmt.Printf("Warning: failed to close response body: %v\n", err)
+		}
+	}()
+
+	respBody, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("vault %s %s returned %d: %s", method, path, resp.StatusCode, string(respBody))
+	}
+
+	if len(respBody) == 0 {
+		return map[string]interface{}{}, nil
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func (v *VaultInstaller) printAccessInfo() {
+	fmt.Println("\n" + strings.Repeat("=", 50))
+	fmt.Println("   HashiCorp Vault configurado com sucesso!")
+	fmt.Println(strings.Repeat("=", 50))
+	fmt.Printf("\nVault UI:  %s/ui\n", v.address)
+	fmt.Printf("Vault API: %s\n", v.address)
+	fmt.Println("\nCredenciais salvas em: /etc/k8s-provisioner/vault-init.json")
+	fmt.Println("\nPara usar o Vault:")
+	fmt.Printf("  export VAULT_ADDR=%s\n", v.address)
+	fmt.Println("  export VAULT_TOKEN=$(cat /etc/k8s-provisioner/vault-init.json | jq -r .root_token)")
+	fmt.Println("\nPara ler todos os secrets:")
+	fmt.Println("  vault kv get secret/k8s-provisioner/api-keys")
+	fmt.Println("\nSenha do Grafana:")
+	fmt.Println("  vault kv get -field=grafana_admin_password secret/k8s-provisioner/api-keys")
+	fmt.Println("\nAutenticação Kubernetes (em pods):")
+	fmt.Println("  vault write auth/kubernetes/login role=k8s-provisioner jwt=$SA_TOKEN")
+	fmt.Println(strings.Repeat("=", 50))
 }
