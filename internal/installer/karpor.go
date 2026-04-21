@@ -16,13 +16,13 @@ type Karpor struct {
 
 // resolveAuthToken retorna o auth token do Vault (se habilitado) ou do config.yaml.
 func (k *Karpor) resolveAuthToken() string {
-	if k.config.Vault.Enabled {
-		if val, err := FetchSecret(k.config, "karpor_auth_token"); err == nil && val != "" {
+	if k.config.Vault.Enabled() {
+		if val, err := FetchSecret(k.config.Vault.Addr, k.config.Vault.Token, "karpor_auth_token"); err == nil && val != "" {
 			fmt.Println("Karpor auth token loaded from Vault")
 			return val
 		}
 		// Fallback: try ollama_api_key for cloud models
-		if val, err := FetchSecret(k.config, "ollama_api_key"); err == nil && val != "" {
+		if val, err := FetchSecret(k.config.Vault.Addr, k.config.Vault.Token, "ollama_api_key"); err == nil && val != "" {
 			return val
 		}
 	}

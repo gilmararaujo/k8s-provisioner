@@ -387,7 +387,7 @@ spec:
   - port: 3000
     targetPort: 3000
   selector:
-    app: grafana`, adminPassword)
+    app: grafana`
 
 	if err := executor.WriteFile("/tmp/grafana.yaml", grafana); err != nil {
 		return err
@@ -399,8 +399,8 @@ spec:
 
 // resolveGrafanaPassword busca a senha do Vault se habilitado, fallback para "admin123".
 func (m *Monitoring) resolveGrafanaPassword() string {
-	if m.config.Vault.Enabled {
-		if val, err := FetchSecret(m.config, "grafana_admin_password"); err == nil && val != "" {
+	if m.config.Vault.Enabled() {
+		if val, err := FetchSecret(m.config.Vault.Addr, m.config.Vault.Token, "grafana_admin_password"); err == nil && val != "" {
 			fmt.Println("Grafana password loaded from Vault")
 			return val
 		}
@@ -695,8 +695,8 @@ spec:
 }
 
 func (m *Monitoring) resolveAlertmanagerConfig() string {
-	if m.config.Vault.Enabled {
-		if val, err := FetchSecret(m.config, "alertmanager_config"); err == nil && val != "" {
+	if m.config.Vault.Enabled() {
+		if val, err := FetchSecret(m.config.Vault.Addr, m.config.Vault.Token, "alertmanager_config"); err == nil && val != "" {
 			fmt.Println("Alertmanager config loaded from Vault")
 			return val
 		}
@@ -902,7 +902,7 @@ func (m *Monitoring) printAccessInfo() {
 	fmt.Println("   - Alertmanager: http://alertmanager.local")
 	fmt.Println("\nGrafana Credentials:")
 	fmt.Println("  User: admin")
-	if m.config.Vault.Enabled {
+	if m.config.Vault.Enabled() {
 		fmt.Println("  Password: (stored in Vault)")
 		fmt.Println("  Retrieve: k8s-provisioner vault get-secret k8s-provisioner/api-keys")
 		fmt.Println("\nAlertmanager Config:")

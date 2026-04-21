@@ -26,6 +26,8 @@ type VaultConfig struct {
 	Token string `yaml:"token"`
 }
 
+func (v VaultConfig) Enabled() bool { return v.Addr != "" }
+
 type OllamaConfig struct {
 	APIKey string `yaml:"api_key"` // Ollama cloud API key (from https://ollama.com/settings/keys)
 }

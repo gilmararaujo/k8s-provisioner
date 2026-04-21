@@ -25,8 +25,8 @@ func (o *Ollama) isCloudModel() bool {
 
 // resolveAPIKey retorna a API key do Vault (se habilitado) ou do config.yaml.
 func (o *Ollama) resolveAPIKey() string {
-	if o.config.Vault.Enabled {
-		if val, err := FetchSecret(o.config, "ollama_api_key"); err == nil && val != "" {
+	if o.config.Vault.Enabled() {
+		if val, err := FetchSecret(o.config.Vault.Addr, o.config.Vault.Token, "ollama_api_key"); err == nil && val != "" {
 			fmt.Println("Ollama API key loaded from Vault")
 			return val
 		}

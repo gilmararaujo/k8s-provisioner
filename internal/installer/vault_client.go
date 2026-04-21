@@ -150,3 +150,48 @@ func (v *VaultClient) GetValue(path, key, defaultVal string) string {
 	}
 	return defaultVal
 }
+
+// UnsealWithKey sends a single unseal key to Vault's /v1/sys/unseal endpoint.
+func UnsealWithKey(addr, key string) error {
+	url := fmt.Sprintf("%s/v1/sys/unseal", addr)
+	payload := map[string]string{"key": key}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	resp, err := http.Post(url, "application/json", bytes.NewBuffer(body)) //nolint:noctx
+	if err != nil {
+		return fmt.Errorf("vault unreachable at %s: %w", addr, err)
+	}
+	defer resp.Body.Close() //nolint:errcheck
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("vault unseal: HTTP %d", resp.StatusCode)
+	}
+	return nil
+}
+
+// FetchSecret reads a single key from the k8s-provisioner/api-keys KV path.
+// addr and token are vault address and token respectively.
+// Returns ("", err) if Vault is not configured or the key is missing.
+func FetchSecret(addr, token, key string) (string, error) {
+	if addr == "" {
+		return "", fmt.Errorf("vault not configured")
+	}
+	token = ResolveVaultToken(token)
+	if token == "" {
+		return "", fmt.Errorf("vault token not available")
+	}
+	v := NewVaultClient(addr, token)
+	data, err := v.ReadSecret("k8s-provisioner/api-keys")
+	if err != nil {
+		return "", err
+	}
+	if data == nil {
+		return "", fmt.Errorf("secret path not found")
+	}
+	val, ok := data[key]
+	if !ok || val == "" {
+		return "", fmt.Errorf("key %q not found", key)
+	}
+	return val, nil
+}
