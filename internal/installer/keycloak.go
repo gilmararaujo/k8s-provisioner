@@ -326,7 +326,7 @@ spec:
         readinessProbe:
           httpGet:
             path: /health/ready
-            port: 8080
+            port: 9000
           initialDelaySeconds: 60
           periodSeconds: 10
           failureThreshold: 15
@@ -392,7 +392,7 @@ func (k *Keycloak) waitForReady(timeout time.Duration) error {
 
 	// Wait for Keycloak health endpoint
 	for time.Now().Before(deadline) {
-		_, err := k.exec.RunShell("kubectl exec -n keycloak -l app=keycloak -- curl -sf http://localhost:8080/health/ready 2>/dev/null")
+		_, err := k.exec.RunShell("kubectl get pod -n keycloak -l app=keycloak -o jsonpath='{.items[0].status.containerStatuses[0].ready}' 2>/dev/null | grep -q true")
 		if err == nil {
 			fmt.Println("Keycloak is ready!")
 			return nil
