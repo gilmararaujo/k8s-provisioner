@@ -14,6 +14,7 @@ type CommandExecutor interface {
 	RunWithOutput(name string, args ...string) error
 	RunShell(command string) (string, error)
 	RunShellWithOutput(command string) error
+	RunShellWithStdin(command string, stdin string) (string, error)
 }
 
 // Executor implements CommandExecutor
@@ -110,6 +111,26 @@ func ReadFileContents(path string) (string, error) {
 		return "", err
 	}
 	return string(data), nil
+}
+
+// RunShellWithStdin executes a shell command with stdin input
+func (e *Executor) RunShellWithStdin(command string, stdin string) (string, error) {
+	if e.Verbose {
+		fmt.Printf(">>> sh -c %s (with stdin)\n", command)
+	}
+
+	cmd := exec.Command("sh", "-c", command)
+	cmd.Stdin = strings.NewReader(stdin)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+	if err != nil {
+		return "", fmt.Errorf("%v: %s", err, stderr.String())
+	}
+
+	return stdout.String(), nil
 }
 
 // AppendToFile appends content to a file

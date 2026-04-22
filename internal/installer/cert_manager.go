@@ -47,6 +47,11 @@ func (c *CertManager) Install() error {
 		fmt.Printf("Warning: certificates may not be ready yet: %v\n", err)
 	}
 
+	fmt.Println("Creating cert-manager ServiceMonitor...")
+	if err := c.createServiceMonitor(); err != nil {
+		fmt.Printf("Warning: ServiceMonitor creation failed: %v\n", err)
+	}
+
 	fmt.Println("cert-manager installed successfully!")
 	c.printCAInstructions()
 	return nil
@@ -193,6 +198,35 @@ func (c *CertManager) printCAInstructions() {
 	fmt.Println()
 	fmt.Println("After trusting, all *.local services will show a green lock in Safari/Chrome.")
 	fmt.Println("========================================")
+}
+
+func (c *CertManager) createServiceMonitor() error {
+	manifest := `apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: cert-manager
+  namespace: monitoring
+  labels:
+    release: prometheus-stack
+spec:
+  jobLabel: app
+  selector:
+    matchLabels:
+      app: cert-manager
+  namespaceSelector:
+    matchNames:
+    - cert-manager
+  endpoints:
+  - port: tcp-prometheus-servicemonitor
+    path: /metrics
+    interval: 30s
+    scrapeTimeout: 10s`
+
+	if err := executor.WriteFile("/tmp/cert-manager-servicemonitor.yaml", manifest); err != nil {
+		return err
+	}
+	_, err := c.exec.RunShell("kubectl apply -f /tmp/cert-manager-servicemonitor.yaml")
+	return err
 }
 
 func splitWords(s string) []string {

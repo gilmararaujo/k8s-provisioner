@@ -206,21 +206,22 @@ INGRESS_IP=$(kubectl get svc -n istio-system istio-ingressgateway \
   -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
 
 # Kubernetes services (via Istio Ingress Gateway)
-echo "$INGRESS_IP grafana.local prometheus.local kiali.local karpor.local keycloak.local" \
+echo "$INGRESS_IP grafana.local prometheus.local alertmanager.local kiali.local karpor.local keycloak.local" \
   | sudo tee -a /etc/hosts
 
 # Storage node services (direct IP — fixed)
-echo "192.168.56.20 storage.local" | sudo tee -a /etc/hosts
+echo "192.168.56.20 vault.local" | sudo tee -a /etc/hosts
 ```
 
-| Hostname | Service | URL |
-|---|---|---|
-| `grafana.local` | Grafana | http://grafana.local |
-| `prometheus.local` | Prometheus | http://prometheus.local |
-| `kiali.local` | Kiali (Istio) | http://kiali.local |
-| `karpor.local` | Karpor Explorer | http://karpor.local |
-| `keycloak.local` | Keycloak SSO | http://keycloak.local |
-| `storage.local` | Vault UI | http://storage.local:8200 |
+| Hostname | Service | URL | Credentials |
+|----------|---------|-----|-------------|
+| `grafana.local` | Grafana | https://grafana.local | `admin` / Vault |
+| `prometheus.local` | Prometheus | https://prometheus.local | — |
+| `alertmanager.local` | Alertmanager | https://alertmanager.local | — |
+| `kiali.local` | Kiali (Istio) | https://kiali.local | — |
+| `karpor.local` | Karpor Explorer | https://karpor.local | — |
+| `keycloak.local` | Keycloak SSO | https://keycloak.local | `admin` / Vault |
+| `vault.local` | Vault | http://vault.local:8200 | root token from `vault-init.json` |
 
 ## CLI Commands
 
@@ -881,7 +882,7 @@ INGRESS_IP=$(kubectl get svc -n istio-system istio-ingressgateway -o jsonpath='{
 echo "$INGRESS_IP grafana.local" | sudo tee -a /etc/hosts
 
 # Access
-open http://grafana.local
+open https://grafana.local
 ```
 
 **Credentials:**
@@ -895,21 +896,14 @@ open http://grafana.local
 ### Accessing Prometheus
 
 ```bash
-kubectl port-forward -n monitoring svc/prometheus 9090:9090
-# Access: http://localhost:9090
+open https://prometheus.local
 ```
 
 ### Accessing Alertmanager
 
-Alertmanager is exposed via Istio Ingress Gateway at `alertmanager.local`.
-
-Add to `/etc/hosts` (if not done in the setup section):
 ```bash
-INGRESS_IP=$(kubectl get svc -n istio-system istio-ingressgateway -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
-echo "$INGRESS_IP alertmanager.local" | sudo tee -a /etc/hosts
+open https://alertmanager.local
 ```
-
-Open: **http://alertmanager.local**
 
 **Check active alerts:**
 ```bash
@@ -971,6 +965,14 @@ Import dashboards from grafana.com: **Dashboards** → **Import** → Enter ID �
 
 > **Note:** Go apps need to expose metrics via [prometheus/client_golang](https://github.com/prometheus/client_golang)
 
+#### cert-manager Dashboards
+
+| ID | Dashboard | Description |
+|----|-----------|-------------|
+| `20842` | cert-manager | Certificate expiry, renewal, and issuer status |
+
+> **Note:** The cert-manager ServiceMonitor is automatically created during provisioning. The dashboard shows all certificates managed by cert-manager, including expiry dates and renewal status.
+
 ## Logging Stack (Loki)
 
 The cluster includes Loki 3.x for log aggregation with Grafana Alloy as the log collector (replaces the deprecated Promtail).
@@ -997,7 +999,7 @@ The cluster includes Loki 3.x for log aggregation with Grafana Alloy as the log 
 
 Logs are accessed via Grafana:
 
-1. Open **http://grafana.local**
+1. Open **https://grafana.local**
 2. Go to **Explore** (left sidebar)
 3. Select **Loki** as datasource
 
@@ -1101,7 +1103,7 @@ OTEL_EXPORTER_OTLP_ENDPOINT=http://<node-ip>:4317
 
 ### Viewing Traces in Grafana
 
-1. Open **http://grafana.local**
+1. Open **https://grafana.local**
 2. Go to **Explore** → select **Tempo** as datasource
 3. Search by **TraceID**, service name, or use the **Service Graph**
 
@@ -1211,7 +1213,7 @@ INGRESS_IP=$(kubectl get svc -n istio-system istio-ingressgateway -o jsonpath='{
 echo "$INGRESS_IP kiali.local" | sudo tee -a /etc/hosts
 
 # Access (no login required — anonymous mode)
-open http://kiali.local/kiali
+open https://kiali.local/kiali
 ```
 
 ### Integrations
@@ -1300,7 +1302,7 @@ INGRESS_IP=$(kubectl get svc -n istio-system istio-ingressgateway -o jsonpath='{
 echo "$INGRESS_IP karpor.local" | sudo tee -a /etc/hosts
 
 # Access
-open http://karpor.local
+open https://karpor.local
 ```
 
 ### Search Examples
@@ -1517,7 +1519,9 @@ Vault is installed automatically on the **storage node** (`192.168.56.20`) durin
 | Secret path | Key | Used by |
 |---|---|---|
 | `secret/k8s-provisioner/api-keys` | `grafana_admin_password` | Grafana login |
+| `secret/k8s-provisioner/api-keys` | `keycloak_admin_username` | Keycloak admin username |
 | `secret/k8s-provisioner/api-keys` | `keycloak_admin_password` | Keycloak admin console |
+| `secret/k8s-provisioner/api-keys` | `keycloak_postgres_username` | PostgreSQL username |
 | `secret/k8s-provisioner/api-keys` | `keycloak_postgres_password` | PostgreSQL (Keycloak DB) |
 | `secret/k8s-provisioner/api-keys` | `keycloak_grafana_client_secret` | Grafana OAuth2 client |
 
@@ -1550,8 +1554,11 @@ Output example:
 ### Accessing the Vault UI
 
 ```bash
-# storage.local is already in /etc/hosts (see Step 5 in Quick Start)
-open http://storage.local:8200
+# vault.local requires the /etc/hosts entry: 192.168.56.20 vault.local
+open http://vault.local:8200
+
+# Or use the IP directly (no /etc/hosts needed)
+open http://192.168.56.20:8200
 ```
 
 Login with the `root_token` from `vault-init.json`.
@@ -1559,7 +1566,7 @@ Login with the `root_token` from `vault-init.json`.
 ### Accessing Vault via CLI
 
 ```bash
-export VAULT_ADDR=http://storage.local:8200
+export VAULT_ADDR=http://192.168.56.20:8200
 export VAULT_TOKEN=hvs.flcBx0hacwkSbeYK7hzSAGqk   # from vault-init.json
 
 # List secrets
@@ -1607,25 +1614,35 @@ Keycloak provides OIDC authentication for `kubectl` and Single Sign-On (SSO) for
 # NodePort — accessible without /etc/hosts
 open http://192.168.56.10:30080
 
-# Or via Istio Gateway (requires /etc/hosts entry)
-INGRESS_IP=$(kubectl get svc -n istio-system istio-ingressgateway -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
-echo "$INGRESS_IP keycloak.local" | sudo tee -a /etc/hosts
-open http://keycloak.local
+# Or via Istio Gateway (requires /etc/hosts entry — see Quick Start step 5)
+open https://keycloak.local
 ```
 
 ### Admin credentials
 
 ```
-URL:      http://192.168.56.10:30080
+URL:      http://192.168.56.10:30080  (or https://keycloak.local via Istio)
 Username: admin
 Password: (from Vault → secret/k8s-provisioner/api-keys → keycloak_admin_password)
 ```
 
-To retrieve:
+All Keycloak credentials are stored in Vault at `secret/k8s-provisioner/api-keys`:
+
+| Vault key | Description |
+|-----------|-------------|
+| `keycloak_admin_username` | Admin console username (`admin`) |
+| `keycloak_admin_password` | Admin console password |
+| `keycloak_postgres_username` | PostgreSQL username (`keycloak`) |
+| `keycloak_postgres_password` | PostgreSQL password |
+| `keycloak_grafana_client_secret` | Grafana OIDC client secret |
+
+To retrieve via Vault UI: `http://vault.local:8200` → **secret/k8s-provisioner/api-keys**
+
+To retrieve via CLI:
 ```bash
-export VAULT_ADDR=http://storage.local:8200
-export VAULT_TOKEN=$(cat /etc/k8s-provisioner/vault-init.json | python3 -c "import sys,json; print(json.load(sys.stdin)['root_token'])")
-vault kv get -field=keycloak_admin_password secret/k8s-provisioner/api-keys
+export VAULT_ADDR=http://192.168.56.20:8200
+export VAULT_TOKEN=$(cat /etc/k8s-provisioner/vault-init.json | grep root_token | cut -d'"' -f4)
+vault kv get secret/k8s-provisioner/api-keys
 ```
 
 ### Pre-configured realm: `k8s`
@@ -1677,10 +1694,84 @@ kubectl config set-context --current --user=oidc
 
 ### Grafana SSO
 
-Grafana is configured to use Keycloak for login. Users in the `k8s-admins` group get `Admin` role; all others get `Viewer`.
+Grafana is configured to use Keycloak for SSO. Click **"Sign in with Keycloak"** on the Grafana login page.
 
+| User | Password | Grafana Role |
+|------|----------|--------------|
+| `k8sadmin` | `Admin@K8s123` | Admin (member of `k8s-admins`) |
+| `developer` | `Dev@K8s123` | Viewer (member of `k8s-developers`) |
+
+- Users in `k8s-admins` group → Grafana `Admin` role
+- All other users → Grafana `Viewer` role
 - Local admin login still works: `admin` / (password from Vault)
-- OIDC login button: **"Sign in with Keycloak"**
+
+### Registering a new application in Keycloak
+
+To protect a new application with Keycloak SSO, create a client in the `k8s` realm.
+
+**Via Admin Console** (`https://keycloak.local/admin`):
+
+1. Login with `admin` credentials
+2. Select realm **k8s** (top-left dropdown)
+3. Go to **Clients** → **Create client**
+4. Fill in:
+   - **Client type**: `OpenID Connect`
+   - **Client ID**: your app name (e.g., `myapp`)
+5. Enable **Client authentication** if your app can keep a secret (confidential client)
+6. Set **Valid redirect URIs**: `https://myapp.local/*`
+7. Set **Web origins**: `https://myapp.local`
+8. Save
+
+**Via kcadm (CLI):**
+
+```bash
+kubectl exec -n keycloak deployment/keycloak -- bash -c '
+KCADM=/opt/keycloak/bin/kcadm.sh
+$KCADM config credentials --server http://localhost:8080 \
+  --realm master --user admin --password Admin@Keycloak123
+
+# Confidential client (server-side apps)
+$KCADM create clients -r k8s \
+  -s clientId=myapp \
+  -s publicClient=false \
+  -s secret=my-client-secret \
+  -s "redirectUris=[\"https://myapp.local/*\"]" \
+  -s enabled=true
+
+# Public client with PKCE (SPAs / CLIs)
+$KCADM create clients -r k8s \
+  -s clientId=myapp-spa \
+  -s publicClient=true \
+  -s "redirectUris=[\"https://myapp.local/*\"]" \
+  -s "attributes={\"pkce.code.challenge.method\":\"S256\"}" \
+  -s enabled=true
+'
+```
+
+**Adding the groups claim to a new client:**
+
+```bash
+kubectl exec -n keycloak deployment/keycloak -- bash -c '
+KCADM=/opt/keycloak/bin/kcadm.sh
+$KCADM config credentials --server http://localhost:8080 \
+  --realm master --user admin --password Admin@Keycloak123
+
+# Get the groups scope ID
+SCOPE_ID=$($KCADM get client-scopes -r k8s --fields id,name \
+  | grep -B2 "\"groups\"" \
+  | grep -oE "[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}" | head -1)
+
+# Get your client ID
+CLIENT_ID=$($KCADM get clients -r k8s --fields id,clientId \
+  | grep -B2 "\"myapp\"" \
+  | grep -oE "[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}" | head -1)
+
+# Associate groups scope
+$KCADM update clients/$CLIENT_ID/optional-client-scopes/$SCOPE_ID -r k8s
+'
+```
+
+The token will then include `"groups": ["k8s-admins"]` (or whichever groups the user belongs to), which your app can use for role-based access control.
 
 ---
 

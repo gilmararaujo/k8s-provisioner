@@ -239,7 +239,8 @@ VAULTSERVICE
           chmod +x /usr/local/bin/k8s-provisioner
           mkdir -p /etc/k8s-provisioner
           cp /opt/k8s-provisioner/config.yaml /etc/k8s-provisioner/config.yaml
-          k8s-provisioner provision all -c /etc/k8s-provisioner/config.yaml -v
+          k8s-provisioner provision all -c /etc/k8s-provisioner/config.yaml -v 2>&1 | tee /var/log/k8s-provisioner.log
+          exit ${PIPESTATUS[0]}
         SHELL
 
         # Label node01 for AI workloads after joining (only if Karpor AI is enabled)

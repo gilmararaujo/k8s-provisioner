@@ -15,7 +15,9 @@ type Keycloak struct {
 }
 
 type keycloakCreds struct {
+	adminUsername    string
 	adminPassword    string
+	postgresUsername string
 	postgresPassword string
 	grafanaSecret    string
 }
@@ -26,7 +28,9 @@ func NewKeycloak(cfg *config.Config, exec executor.CommandExecutor) *Keycloak {
 
 func (k *Keycloak) resolveCredentials() keycloakCreds {
 	creds := keycloakCreds{
+		adminUsername:    "admin",
 		adminPassword:    "Admin@Keycloak123",
+		postgresUsername: "keycloak",
 		postgresPassword: "Keycloak@Pg123",
 		grafanaSecret:    "grafana-oidc-secret",
 	}
@@ -48,10 +52,20 @@ func (k *Keycloak) resolveCredentials() keycloakCreds {
 
 	// Write defaults for missing keys, then read back
 	updates := map[string]string{}
+	if existing == nil || existing["keycloak_admin_username"] == "" {
+		updates["keycloak_admin_username"] = creds.adminUsername
+	} else {
+		creds.adminUsername = existing["keycloak_admin_username"]
+	}
 	if existing == nil || existing["keycloak_admin_password"] == "" {
 		updates["keycloak_admin_password"] = creds.adminPassword
 	} else {
 		creds.adminPassword = existing["keycloak_admin_password"]
+	}
+	if existing == nil || existing["keycloak_postgres_username"] == "" {
+		updates["keycloak_postgres_username"] = creds.postgresUsername
+	} else {
+		creds.postgresUsername = existing["keycloak_postgres_username"]
 	}
 	if existing == nil || existing["keycloak_postgres_password"] == "" {
 		updates["keycloak_postgres_password"] = creds.postgresPassword
@@ -102,7 +116,7 @@ func (k *Keycloak) Install() error {
 
 	fmt.Println("Configuring realm, clients, and users...")
 	if err := k.configureRealm(cpIP, creds); err != nil {
-		fmt.Printf("Warning: realm configuration failed: %v\n", err)
+		return fmt.Errorf("realm configuration failed: %w", err)
 	}
 
 	fmt.Println("Patching API server with OIDC authentication...")
@@ -142,7 +156,7 @@ metadata:
   namespace: keycloak
 type: Opaque
 stringData:
-  username: admin
+  username: %s
   password: %s
 ---
 apiVersion: v1
@@ -152,9 +166,9 @@ metadata:
   namespace: keycloak
 type: Opaque
 stringData:
-  username: keycloak
+  username: %s
   password: %s
-`, creds.adminPassword, creds.postgresPassword)
+`, creds.adminUsername, creds.adminPassword, creds.postgresUsername, creds.postgresPassword)
 
 	rest := `---
 apiVersion: v1
@@ -420,6 +434,19 @@ $KCADM config credentials --server http://localhost:8080 --realm master \
 echo "Creating k8s realm..."
 $KCADM create realms -s realm=k8s -s enabled=true -s displayName=Kubernetes || echo "Realm may already exist"
 
+echo "Creating groups client scope..."
+GROUPS_SCOPE_ID=$($KCADM create client-scopes -r k8s \
+  -s name=groups \
+  -s protocol=openid-connect \
+  -s 'attributes={"include.in.token.scope":"true"}' \
+  -i)
+
+$KCADM create client-scopes/$GROUPS_SCOPE_ID/protocol-mappers/models -r k8s \
+  -s name=groups \
+  -s protocol=openid-connect \
+  -s protocolMapper=oidc-group-membership-mapper \
+  -s 'config={"full.path":"false","id.token.claim":"true","access.token.claim":"true","userinfo.token.claim":"true","claim.name":"groups"}'
+
 echo "Creating kubectl client (public + PKCE)..."
 KUBECTL_ID=$($KCADM create clients -r k8s \
   -s clientId=kubectl \
@@ -427,16 +454,7 @@ KUBECTL_ID=$($KCADM create clients -r k8s \
   -s 'redirectUris=["http://localhost:8000","http://localhost:18000"]' \
   -s 'attributes={"pkce.code.challenge.method":"S256"}' \
   -i)
-
-$KCADM create clients/$KUBECTL_ID/protocol-mappers/models -r k8s \
-  -s name=groups \
-  -s protocol=openid-connect \
-  -s protocolMapper=oidc-group-membership-mapper \
-  -s 'config.full.path=false' \
-  -s 'config.id.token.claim=true' \
-  -s 'config.access.token.claim=true' \
-  -s 'config.userinfo.token.claim=true' \
-  -s 'config.claim.name=groups'
+$KCADM update clients/$KUBECTL_ID/optional-client-scopes/$GROUPS_SCOPE_ID -r k8s
 
 echo "Creating grafana client (confidential)..."
 GRAFANA_ID=$($KCADM create clients -r k8s \
@@ -446,15 +464,13 @@ GRAFANA_ID=$($KCADM create clients -r k8s \
   -s 'redirectUris=["https://grafana.local/*","http://grafana.local/*"]' \
   -i)
 
+$KCADM update clients/$GRAFANA_ID/optional-client-scopes/$GROUPS_SCOPE_ID -r k8s
+
 $KCADM create clients/$GRAFANA_ID/protocol-mappers/models -r k8s \
   -s name=groups \
   -s protocol=openid-connect \
   -s protocolMapper=oidc-group-membership-mapper \
-  -s 'config.full.path=false' \
-  -s 'config.id.token.claim=true' \
-  -s 'config.access.token.claim=true' \
-  -s 'config.userinfo.token.claim=true' \
-  -s 'config.claim.name=groups'
+  -s 'config={"full.path":"false","id.token.claim":"true","access.token.claim":"true","userinfo.token.claim":"true","claim.name":"groups"}'
 
 echo "Creating groups..."
 ADMINS_GID=$($KCADM create groups -r k8s -s name=k8s-admins -i)
@@ -485,11 +501,7 @@ $KCADM update users/$DEV_UID/groups/$DEVS_GID -r k8s \
   -s realm=k8s -s userId=$DEV_UID -s groupId=$DEVS_GID -n
 
 echo "Keycloak realm configuration completed!"
-`, creds.grafanaSecret, cpIP)
-
-	if err := executor.WriteFile("/tmp/setup-keycloak.sh", script); err != nil {
-		return err
-	}
+`, creds.grafanaSecret)
 
 	pod, err := k.exec.RunShell("kubectl get pods -n keycloak -l app=keycloak -o jsonpath='{.items[0].metadata.name}'")
 	if err != nil {
@@ -497,11 +509,7 @@ echo "Keycloak realm configuration completed!"
 	}
 	pod = strings.TrimSpace(pod)
 
-	if _, err := k.exec.RunShell(fmt.Sprintf("kubectl cp /tmp/setup-keycloak.sh keycloak/%s:/tmp/setup-keycloak.sh", pod)); err != nil {
-		return err
-	}
-
-	_, err = k.exec.RunShell(fmt.Sprintf("kubectl exec -n keycloak %s -- bash /tmp/setup-keycloak.sh", pod))
+	_, err = k.exec.RunShellWithStdin(fmt.Sprintf("kubectl exec -i -n keycloak %s -- bash -s", pod), script)
 	return err
 }
 
@@ -596,11 +604,18 @@ func (k *Keycloak) configureGrafanaOAuth(cpIP string, creds keycloakCreds) error
 		"client_secret = ${GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET}",
 		"scopes = openid email profile groups",
 		"auth_url = https://keycloak.local/realms/k8s/protocol/openid-connect/auth",
-		"token_url = https://keycloak.local/realms/k8s/protocol/openid-connect/token",
-		"api_url = https://keycloak.local/realms/k8s/protocol/openid-connect/userinfo",
+		"token_url = http://keycloak.keycloak.svc.cluster.local:8080/realms/k8s/protocol/openid-connect/token",
+		"api_url = http://keycloak.keycloak.svc.cluster.local:8080/realms/k8s/protocol/openid-connect/userinfo",
 		"redirect_uri = https://grafana.local/login/generic_oauth",
 		"role_attribute_path = contains(groups[*], 'k8s-admins') && 'Admin' || 'Viewer'",
+		"role_attribute_strict = true",
+		"allow_assign_grafana_admin = true",
 		"tls_skip_verify_insecure = true",
+		"",
+		"[server]",
+		"domain = grafana.local",
+		"root_url = https://grafana.local/",
+		"serve_from_sub_path = false",
 	}
 
 	var indented strings.Builder
