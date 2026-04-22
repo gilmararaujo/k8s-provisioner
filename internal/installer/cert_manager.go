@@ -52,6 +52,11 @@ func (c *CertManager) Install() error {
 		fmt.Printf("Warning: ServiceMonitor creation failed: %v\n", err)
 	}
 
+	fmt.Println("Creating cert-manager PrometheusRule...")
+	if err := c.createPrometheusRule(); err != nil {
+		fmt.Printf("Warning: PrometheusRule creation failed: %v\n", err)
+	}
+
 	fmt.Println("cert-manager installed successfully!")
 	c.printCAInstructions()
 	return nil
@@ -226,6 +231,50 @@ spec:
 		return err
 	}
 	_, err := c.exec.RunShell("kubectl apply -f /tmp/cert-manager-servicemonitor.yaml")
+	return err
+}
+
+func (c *CertManager) createPrometheusRule() error {
+	manifest := `apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: cert-manager
+  namespace: monitoring
+  labels:
+    release: prometheus-stack
+spec:
+  groups:
+  - name: cert-manager
+    rules:
+    - alert: CertificateExpiringSoon
+      expr: certmanager_certificate_expiration_timestamp_seconds - time() < 30 * 24 * 3600
+      for: 1h
+      labels:
+        severity: warning
+      annotations:
+        summary: "Certificado expirando em breve"
+        description: "O certificado {{ $labels.name }} no namespace {{ $labels.namespace }} expira em menos de 30 dias."
+    - alert: CertificateExpiryCritical
+      expr: certmanager_certificate_expiration_timestamp_seconds - time() < 7 * 24 * 3600
+      for: 1h
+      labels:
+        severity: critical
+      annotations:
+        summary: "Certificado expirando criticamente"
+        description: "O certificado {{ $labels.name }} no namespace {{ $labels.namespace }} expira em menos de 7 dias."
+    - alert: CertificateNotReady
+      expr: certmanager_certificate_ready_status{condition="True"} != 1
+      for: 10m
+      labels:
+        severity: critical
+      annotations:
+        summary: "Certificado não está pronto"
+        description: "O certificado {{ $labels.name }} no namespace {{ $labels.namespace }} não está no estado Ready."`
+
+	if err := executor.WriteFile("/tmp/cert-manager-prometheusrule.yaml", manifest); err != nil {
+		return err
+	}
+	_, err := c.exec.RunShell("kubectl apply -f /tmp/cert-manager-prometheusrule.yaml")
 	return err
 }
 

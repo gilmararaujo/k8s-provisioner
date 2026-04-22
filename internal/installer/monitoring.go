@@ -198,6 +198,8 @@ spec:
   serviceMonitorNamespaceSelector: {}
   podMonitorSelector: {}
   podMonitorNamespaceSelector: {}
+  ruleSelector: {}
+  ruleNamespaceSelector: {}
   resources:
     requests:
       memory: 400Mi
