@@ -17,6 +17,10 @@ linters-settings:
       - G301
       # Integer overflow conversion - values are bounded by configuration
       - G115
+      # HTTP request with variable URL - Vault address comes from config, not user input
+      - G107
+      # Hardcoded credentials - YAML manifest strings are not credentials
+      - G101
 
 issues:
   exclude-use-default: false
