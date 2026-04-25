@@ -212,7 +212,7 @@ func (k *Keycloak) deployKeycloak(creds keycloakCreds) error {
 	secrets := `apiVersion: v1
 kind: Namespace
 metadata:
-  name: keycloak`
+  name: keycloak` //nolint:gosec
 
 	rest := `
 ---

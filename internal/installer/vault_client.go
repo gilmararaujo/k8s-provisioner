@@ -159,7 +159,7 @@ func UnsealWithKey(addr, key string) error {
 	if err != nil {
 		return err
 	}
-	resp, err := http.Post(url, "application/json", bytes.NewBuffer(body)) //nolint:noctx
+	resp, err := http.Post(url, "application/json", bytes.NewBuffer(body)) //nolint:noctx,G107
 	if err != nil {
 		return fmt.Errorf("vault unreachable at %s: %w", addr, err)
 	}
