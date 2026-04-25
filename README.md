@@ -1977,16 +1977,29 @@ Send the `kubeconfig-oidc` file to the user.
 # 1. Install kubelogin
 brew install int128/kubelogin/kubelogin   # macOS
 
-# 2. Save the kubeconfig received from admin
+# 2. Add keycloak.local to /etc/hosts (required to reach the OIDC issuer)
+INGRESS_IP=$(vagrant ssh controlplane -c "kubectl get svc -n istio-system istio-ingressgateway -o jsonpath='{.status.loadBalancer.ingress[0].ip}'" 2>/dev/null | tr -d '\r')
+echo "$INGRESS_IP keycloak.local" | sudo tee -a /etc/hosts
+
+# 3. Save the kubeconfig received from admin
 mkdir -p ~/.kube
 cp kubeconfig-oidc ~/.kube/k8s-lab.conf
 export KUBECONFIG=~/.kube/k8s-lab.conf   # add to ~/.zshrc to persist
 
-# 3. First login — opens browser at Keycloak
+# 4. First login — opens browser at Keycloak
 kubectl get nodes
 ```
 
 Log in with your Keycloak credentials. The token is cached locally; the browser will not open again until it expires (24h).
+
+Verify who you are authenticated as:
+
+```bash
+kubectl auth whoami
+# ATTRIBUTE   VALUE
+# Username    oidc:alice
+# Groups      [oidc:k8s-developers system:authenticated]
+```
 
 **Day-to-day usage:**
 
