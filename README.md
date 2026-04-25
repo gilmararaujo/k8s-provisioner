@@ -1909,9 +1909,42 @@ The `kubeconfig-oidc` file contains no credentials — it is safe to distribute.
 
 **Admin: adding a new user**
 
-1. Create the user in the Keycloak admin console (`https://keycloak.local` or `http://192.168.56.10:30080`)
-2. Add them to the appropriate group (`k8s-admins` or `k8s-developers`)
-3. Retrieve the `kubeconfig-oidc` from Vault and send it to the user:
+Access is group-based — no Kubernetes changes needed. Just create the user in Keycloak and assign the group:
+
+| Keycloak group | Kubernetes access | Grafana role |
+|---------------|-------------------|--------------|
+| `k8s-admins` | `cluster-admin` | Admin |
+| `k8s-developers` | `view` (read-only) | Viewer |
+
+**Option A — Keycloak Admin Console:**
+
+1. Open `https://keycloak.local/admin` → realm `k8s` → Users → Add user
+2. Set username, email, enable the user, save
+3. Go to **Credentials** tab → Set password
+4. Go to **Groups** tab → Join `k8s-admins` or `k8s-developers`
+
+**Option B — CLI (from controlplane):**
+
+```bash
+# Get admin token
+KCADM="kubectl exec -n keycloak deploy/keycloak -- /opt/keycloak/bin/kcadm.sh"
+$KCADM config credentials --server http://localhost:8080 --realm master \
+  --user "$KEYCLOAK_ADMIN" --password "$KEYCLOAK_ADMIN_PASSWORD"
+
+# Create user and add to group
+NEW_UID=$($KCADM create users -r k8s \
+  -s username=alice \
+  -s email=alice@example.com \
+  -s firstName=Alice \
+  -s lastName=Smith \
+  -s enabled=true -i)
+$KCADM set-password -r k8s --username alice --new-password 'Alice@K8s123'
+
+GID=$($KCADM get groups -r k8s | grep -A1 k8s-developers | grep id | cut -d'"' -f4)
+$KCADM update users/$NEW_UID/groups/$GID -r k8s -s realm=k8s -s userId=$NEW_UID -s groupId=$GID -n
+```
+
+5. Retrieve the `kubeconfig-oidc` from Vault and send it to the user:
 
 ```bash
 vagrant ssh storage

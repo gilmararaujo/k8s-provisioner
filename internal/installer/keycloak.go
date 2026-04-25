@@ -194,6 +194,7 @@ users:
         - --oidc-client-id=kubectl
         - --oidc-pkce-method=auto
         - --insecure-skip-tls-verify
+        - --listen-address=127.0.0.1:8000
 `, cpIP, issuerURL)
 
 	vault := NewVaultClient(k.config.Vault.Addr, token)
@@ -497,10 +498,16 @@ echo "Creating kubectl client (public + PKCE)..."
 KUBECTL_ID=$($KCADM create clients -r k8s \
   -s clientId=kubectl \
   -s publicClient=true \
-  -s 'redirectUris=["http://localhost:8000","http://localhost:18000"]' \
+  -s 'redirectUris=["http://localhost:8000/*","http://127.0.0.1:8000/*","http://localhost:18000/*"]' \
   -s 'attributes={"pkce.code.challenge.method":"S256"}' \
   -i)
 $KCADM update clients/$KUBECTL_ID/optional-client-scopes/$GROUPS_SCOPE_ID -r k8s
+
+$KCADM create clients/$KUBECTL_ID/protocol-mappers/models -r k8s \
+  -s name=groups \
+  -s protocol=openid-connect \
+  -s protocolMapper=oidc-group-membership-mapper \
+  -s 'config={"full.path":"false","id.token.claim":"true","access.token.claim":"true","userinfo.token.claim":"true","claim.name":"groups"}'
 
 echo "Creating grafana client (confidential)..."
 GRAFANA_ID=$($KCADM create clients -r k8s \
@@ -568,6 +575,7 @@ jwt:
     audiences:
     - kubectl
     - account
+    audienceMatchPolicy: MatchAny
   claimMappings:
     username:
       claim: preferred_username
@@ -787,7 +795,9 @@ func (k *Keycloak) printAccessInfo(cpIP, issuerURL string) {
     --exec-arg=get-token \
     --exec-arg=--oidc-issuer-url=%s \
     --exec-arg=--oidc-client-id=kubectl \
-    --exec-arg=--oidc-use-pkce
+    --exec-arg=--oidc-pkce-method=auto \
+    --exec-arg=--insecure-skip-tls-verify \
+    --exec-arg=--listen-address=127.0.0.1:8000
 `, issuerURL)
 	fmt.Println("\nTest login:")
 	fmt.Println("  kubectl get nodes --user=oidc")
