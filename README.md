@@ -782,16 +782,159 @@ kubectl top pods
 kubectl top pods -A
 ```
 
+## Autoscaling
+
+The cluster includes three complementary autoscalers. They can be used independently or together.
+
+| Autoscaler | What it scales | Trigger | Config |
+|------------|---------------|---------|--------|
+| **HPA** | Replicas (horizontal) | CPU, memory, custom metrics | Native Kubernetes |
+| **VPA** | CPU/Memory requests per pod (vertical) | Historical usage | `components.vpa: "enabled"` |
+| **KEDA** | Replicas to zero and back | Prometheus, queues, cron, etc. | `components.keda: "enabled"` |
+
 ### HPA (Horizontal Pod Autoscaler)
 
-Metrics Server enables HPA for automatic scaling:
+Scales the number of pod replicas based on CPU or memory. Requires Metrics Server (included).
 
 ```bash
-# Create HPA for a deployment
+# Scale based on CPU (50% target, 1-10 replicas)
 kubectl autoscale deployment my-app --cpu-percent=50 --min=1 --max=10
+
+# Or declaratively
+kubectl apply -f - <<EOF
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: my-app
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: my-app
+  minReplicas: 1
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 50
+EOF
 
 # Check HPA status
 kubectl get hpa
+kubectl describe hpa my-app
+```
+
+### VPA (Vertical Pod Autoscaler)
+
+Automatically adjusts CPU and memory **requests** for each pod based on observed usage. Useful when you don't know the right resource requests upfront.
+
+> VPA and HPA should not be used together on the same metric (e.g. both on CPU). Use VPA for right-sizing, HPA for scaling replicas.
+
+```bash
+# Check VPA components
+kubectl get pods -n kube-system | grep vpa
+
+# Create a VPA for a deployment
+kubectl apply -f - <<EOF
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: my-app-vpa
+  namespace: default
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: my-app
+  updatePolicy:
+    updateMode: "Auto"   # Options: Auto, Recreate, Initial, Off
+  resourcePolicy:
+    containerPolicies:
+    - containerName: my-app
+      minAllowed:
+        cpu: 50m
+        memory: 64Mi
+      maxAllowed:
+        cpu: 2
+        memory: 2Gi
+EOF
+
+# Check VPA recommendations (even in Off mode)
+kubectl describe vpa my-app-vpa
+```
+
+**Update modes:**
+
+| Mode | Behaviour |
+|------|-----------|
+| `Off` | Only shows recommendations, never applies them |
+| `Initial` | Sets requests only at pod creation, never evicts |
+| `Recreate` | Evicts pods to apply new requests |
+| `Auto` | Same as Recreate (default recommended) |
+
+### KEDA (Kubernetes Event-Driven Autoscaler)
+
+Scales deployments based on external event sources — including Prometheus metrics. Can scale to **zero** when there is no load.
+
+```bash
+# Check KEDA components
+kubectl get pods -n keda
+```
+
+#### Scale on Prometheus metric
+
+```yaml
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: my-app-scaler
+  namespace: default
+spec:
+  scaleTargetRef:
+    name: my-app
+  minReplicaCount: 0    # scales to zero when idle
+  maxReplicaCount: 10
+  triggers:
+  - type: prometheus
+    metadata:
+      serverAddress: http://prometheus.monitoring.svc:9090
+      metricName: http_requests_total
+      threshold: "100"       # scale up when > 100 req/s per replica
+      query: sum(rate(http_requests_total{app="my-app"}[2m]))
+```
+
+#### Scale on CPU/Memory (via Prometheus)
+
+```yaml
+triggers:
+- type: prometheus
+  metadata:
+    serverAddress: http://prometheus.monitoring.svc:9090
+    metricName: cpu_usage
+    threshold: "70"
+    query: |
+      avg(rate(container_cpu_usage_seconds_total{pod=~"my-app-.*"}[2m])) * 100
+```
+
+#### Scale on cron schedule
+
+```yaml
+triggers:
+- type: cron
+  metadata:
+    timezone: America/Sao_Paulo
+    start: "0 8 * * 1-5"    # weekdays at 08:00
+    end: "0 18 * * 1-5"     # weekdays at 18:00
+    desiredReplicas: "3"
+```
+
+```bash
+# Check ScaledObject status
+kubectl get scaledobject
+kubectl describe scaledobject my-app-scaler
 ```
 
 ## Observability
