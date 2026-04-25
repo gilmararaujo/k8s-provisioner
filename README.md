@@ -1135,6 +1135,71 @@ tp := trace.NewTracerProvider(trace.WithBatcher(exporter))
 otel.SetTracerProvider(tp)
 ```
 
+### Instrumenting a New Application
+
+For full trace → log correlation to work in Grafana ("Log for this span" button in Tempo), your application must satisfy three requirements:
+
+#### 1. Pod label `app: <name>`
+
+Alloy (the log collector) automatically extracts the `app` label from pod labels and adds it to every log stream in Loki. Without it, Tempo cannot find the matching logs.
+
+```yaml
+# deployment.yaml
+spec:
+  template:
+    metadata:
+      labels:
+        app: my-app   # required
+```
+
+#### 2. Log format with `traceID=<hex>`
+
+Include the active trace ID in every log line using logfmt key `traceID`. Loki's derived fields use the regex `traceID=(\w+)` to extract it and create a clickable link to Tempo.
+
+```go
+// Go example — log inside a span handler
+traceID := span.SpanContext().TraceID().String()
+log.Printf("traceID=%s level=info msg=\"handled request\"", traceID)
+```
+
+```python
+# Python example
+import logging
+trace_id = trace.get_current_span().get_span_context().trace_id
+logging.info(f"traceID={trace_id:032x} level=info msg=handled_request")
+```
+
+```java
+// Java example (SLF4J + OTel SDK)
+import io.opentelemetry.api.trace.Span;
+
+String traceId = Span.current().getSpanContext().getTraceId();
+logger.info("traceID={} level=info msg=handled_request", traceId);
+```
+
+#### 3. Set `service.name` matching the `app` label
+
+When initialising the OTel tracer, set the resource attribute `service.name` to the **same value** as your pod's `app` label. Tempo uses this to query Loki with `{app="my-app"}`.
+
+```go
+resource.NewWithAttributes(
+    semconv.SchemaURL,
+    semconv.ServiceName("my-app"),   // must match pod label app=my-app
+)
+```
+
+#### Full checklist
+
+| Requirement | Why |
+|-------------|-----|
+| Pod label `app: my-app` | Alloy adds it as Loki stream label |
+| Log line contains `traceID=<hex>` | Loki derived field links log → trace |
+| OTel resource `service.name=my-app` | Tempo queries `{app="my-app"}` in Loki |
+| Namespace has `istio-injection: enabled` | Istio auto-injects sidecar for mesh tracing |
+| OTLP endpoint `otel-collector.monitoring.svc:4317` | Collector forwards to Tempo |
+
+See `examples/otel-demo-app/` for a complete working reference (Go app + `deploy.yaml`).
+
 ### Verifying Installation
 
 ```bash
@@ -1524,6 +1589,8 @@ Vault is installed automatically on the **storage node** (`192.168.56.20`) durin
 | `secret/k8s-provisioner/api-keys` | `keycloak_postgres_username` | PostgreSQL username |
 | `secret/k8s-provisioner/api-keys` | `keycloak_postgres_password` | PostgreSQL (Keycloak DB) |
 | `secret/k8s-provisioner/api-keys` | `keycloak_grafana_client_secret` | Grafana OAuth2 client |
+| `secret/k8s-provisioner/api-keys` | `keycloak_k8sadmin_password` | Realm user `k8sadmin` |
+| `secret/k8s-provisioner/api-keys` | `keycloak_developer_password` | Realm user `developer` |
 
 ### Getting the Vault token
 
@@ -1635,6 +1702,21 @@ All Keycloak credentials are stored in Vault at `secret/k8s-provisioner/api-keys
 | `keycloak_postgres_username` | PostgreSQL username (`keycloak`) |
 | `keycloak_postgres_password` | PostgreSQL password |
 | `keycloak_grafana_client_secret` | Grafana OIDC client secret |
+| `keycloak_k8sadmin_password` | Realm user `k8sadmin` password |
+| `keycloak_developer_password` | Realm user `developer` password |
+
+To customize passwords before provisioning:
+
+```bash
+export VAULT_ADDR=http://192.168.56.20:8200
+export VAULT_TOKEN=$(cat /etc/k8s-provisioner/vault-init.json | jq -r .root_token)
+
+vault kv patch secret/k8s-provisioner/api-keys \
+  keycloak_k8sadmin_password="MinhaSenh@Forte" \
+  keycloak_developer_password="OutraSenha@123"
+```
+
+> **Note:** Run this after Vault is initialized but before Keycloak is installed (or recreate the cluster).
 
 To retrieve via Vault UI: `http://vault.local:8200` → **secret/k8s-provisioner/api-keys**
 
@@ -1654,42 +1736,88 @@ vault kv get secret/k8s-provisioner/api-keys
 | Grafana client | `grafana` (confidential) |
 | Admin group | `k8s-admins` → `cluster-admin` RBAC |
 | Developer group | `k8s-developers` → `view` RBAC |
-| Test user (admin) | `k8sadmin` / `Admin@K8s123` |
-| Test user (dev) | `developer` / `Dev@K8s123` |
+| Test user (admin) | `k8sadmin` / (Vault: `keycloak_k8sadmin_password`) |
+| Test user (dev) | `developer` / (Vault: `keycloak_developer_password`) |
 
-### kubectl OIDC login (kubelogin)
+### kubectl access
 
-**1. Install kubelogin:**
+#### Quick access (admin)
+
+Two commands to get full cluster access from your Mac:
 
 ```bash
-# macOS
-brew install int128/kubelogin/kubelogin
+# 1. Copy kubeconfig and fix the API server address
+vagrant ssh controlplane -c "cat /etc/kubernetes/admin.conf" \
+  | sed 's|https://.*:6443|https://192.168.56.10:6443|' \
+  > ~/.kube/k8s-lab.conf
 
-# via krew
-kubectl krew install oidc-login
+# 2. Use it
+export KUBECONFIG=~/.kube/k8s-lab.conf
+kubectl get nodes
 ```
 
-**2. Add OIDC credentials to kubeconfig:**
+This uses the `cluster-admin` credentials. Suitable for day-to-day lab usage.
+
+#### OIDC login via Keycloak (kubelogin)
+
+Use this for role-based access — each user logs in with their own Keycloak credentials and gets the permissions of their group (`k8s-admins` → `cluster-admin`, `k8s-developers` → `view`).
+
+The `kubeconfig-oidc` file contains no credentials — it is safe to distribute. It is stored in Vault automatically during provisioning.
+
+**Admin: adding a new user**
+
+1. Create the user in the Keycloak admin console (`https://keycloak.local` or `http://192.168.56.10:30080`)
+2. Add them to the appropriate group (`k8s-admins` or `k8s-developers`)
+3. Retrieve the `kubeconfig-oidc` from Vault and send it to the user:
 
 ```bash
-kubectl config set-credentials oidc \
-  --exec-api-version=client.authentication.k8s.io/v1beta1 \
-  --exec-command=kubectl \
-  --exec-arg=oidc-login \
-  --exec-arg=get-token \
-  --exec-arg=--oidc-issuer-url=http://192.168.56.10:30080/realms/k8s \
-  --exec-arg=--oidc-client-id=kubectl \
-  --exec-arg=--oidc-use-pkce
+vagrant ssh storage
+
+export VAULT_ADDR=http://127.0.0.1:8200
+export VAULT_TOKEN=$(sudo cat /etc/vault.d/vault-init.json | grep root_token | cut -d'"' -f4)
+
+vault kv get -field=config secret/k8s-provisioner/kubeconfig-oidc > /tmp/kubeconfig-oidc
+exit
 ```
 
-**3. Login:**
+Copy to your Mac:
 
 ```bash
-# Opens browser for login
-kubectl get nodes --user=oidc
+vagrant scp storage:/tmp/kubeconfig-oidc ./kubeconfig-oidc
+```
 
-# Use as default context
-kubectl config set-context --current --user=oidc
+Send the `kubeconfig-oidc` file to the user.
+
+**Alternative: copy from the Vault UI**
+
+1. Open `http://192.168.56.20:8200` in your browser and log in with the root token
+2. Navigate to **secret → k8s-provisioner → kubeconfig-oidc**
+3. Copy the value of the `config` field
+4. Paste into a new file and save as `~/.kube/kubeconfig-oidc`
+
+**New user: first-time setup (once)**
+
+```bash
+# 1. Install kubelogin
+brew install int128/kubelogin/kubelogin   # macOS
+
+# 2. Save the kubeconfig received from admin
+mkdir -p ~/.kube
+cp kubeconfig-oidc ~/.kube/k8s-lab.conf
+export KUBECONFIG=~/.kube/k8s-lab.conf   # add to ~/.zshrc to persist
+
+# 3. First login — opens browser at Keycloak
+kubectl get nodes
+```
+
+Log in with your Keycloak credentials. The token is cached locally; the browser will not open again until it expires (24h).
+
+**Day-to-day usage:**
+
+```bash
+export KUBECONFIG=~/.kube/k8s-lab.conf
+kubectl get nodes
+kubectl get pods -A
 ```
 
 ### Grafana SSO
@@ -1698,8 +1826,8 @@ Grafana is configured to use Keycloak for SSO. Click **"Sign in with Keycloak"**
 
 | User | Password | Grafana Role |
 |------|----------|--------------|
-| `k8sadmin` | `Admin@K8s123` | Admin (member of `k8s-admins`) |
-| `developer` | `Dev@K8s123` | Viewer (member of `k8s-developers`) |
+| `k8sadmin` | `vault kv get -field=keycloak_k8sadmin_password secret/k8s-provisioner/api-keys` | Admin |
+| `developer` | `vault kv get -field=keycloak_developer_password secret/k8s-provisioner/api-keys` | Viewer |
 
 - Users in `k8s-admins` group → Grafana `Admin` role
 - All other users → Grafana `Viewer` role

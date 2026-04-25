@@ -159,7 +159,8 @@ spec:
   - alertmanager.local
   - keycloak.local
   - kiali.local
-  - karpor.local`
+  - karpor.local
+  - otel-demo.local`
 
 	if err := executor.WriteFile("/tmp/lab-certs.yaml", manifest); err != nil {
 		return err

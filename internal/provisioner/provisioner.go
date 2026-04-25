@@ -266,6 +266,24 @@ func (p *Provisioner) InitControlPlane() error {
 		return err
 	}
 
+	// Install VPA (if enabled)
+	if cfg.Components.VPA == "enabled" {
+		fmt.Println("\n>>> Installing VPA (Vertical Pod Autoscaler)...")
+		vpaInstaller := installer.NewVPA(cfg, p.exec)
+		if err := vpaInstaller.Install(); err != nil {
+			fmt.Printf("Warning: VPA installation failed: %v\n", err)
+		}
+	}
+
+	// Install KEDA (if enabled)
+	if cfg.Components.KEDA == "enabled" {
+		fmt.Println("\n>>> Installing KEDA (Event-Driven Autoscaling)...")
+		kedaInstaller := installer.NewKEDA(cfg, p.exec)
+		if err := kedaInstaller.Install(); err != nil {
+			fmt.Printf("Warning: KEDA installation failed: %v\n", err)
+		}
+	}
+
 	// Install NFS Provisioner (provides nfs-dynamic and nfs-static StorageClasses)
 	fmt.Println("\n>>> Installing NFS Storage Provisioner...")
 	nfsInstaller := installer.NewNFSProvisioner(cfg, p.exec)
@@ -278,6 +296,13 @@ func (p *Provisioner) InitControlPlane() error {
 	vaultInstaller := installer.NewVaultInstaller(cfg, p.exec)
 	if err := vaultInstaller.Install(); err != nil {
 		fmt.Printf("Warning: Vault installation failed: %v\n", err)
+	}
+
+	// Install Vault Secrets Operator — syncs Vault secrets into K8s Secrets before components start
+	fmt.Println("\n>>> Installing Vault Secrets Operator...")
+	vsoInstaller := installer.NewVaultSecretsOperator(cfg, p.exec)
+	if err := vsoInstaller.Install(); err != nil {
+		fmt.Printf("Warning: Vault Secrets Operator installation failed: %v\n", err)
 	}
 
 	// Install Monitoring Stack (if enabled)

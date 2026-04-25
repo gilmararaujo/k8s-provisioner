@@ -60,7 +60,7 @@ func main() {
 	tracer := otel.Tracer("otel-demo")
 
 	http.HandleFunc("/ping", func(w http.ResponseWriter, r *http.Request) {
-		ctx, span := tracer.Start(r.Context(), "handle-ping",
+		_, span := tracer.Start(r.Context(), "handle-ping",
 			trace.WithAttributes(
 				attribute.String("http.method", r.Method),
 				attribute.String("http.path", r.URL.Path),

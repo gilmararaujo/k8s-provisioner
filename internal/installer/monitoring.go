@@ -411,7 +411,11 @@ func (m *Monitoring) resolveGrafanaPassword() string {
 }
 
 func (m *Monitoring) createGrafanaSecret(password string) error {
-	_, _ = m.exec.RunShell("kubectl delete secret grafana-admin -n monitoring 2>/dev/null || true")
+	// Skip if already managed by Vault Secrets Operator
+	if out, _ := m.exec.RunShell("kubectl get secret grafana-admin -n monitoring -o name 2>/dev/null"); out != "" {
+		fmt.Println("Grafana admin secret already synced by Vault Secrets Operator, skipping direct creation")
+		return nil
+	}
 	cmd := fmt.Sprintf(
 		"kubectl create secret generic grafana-admin -n monitoring --from-literal=password=%s",
 		password,
@@ -419,7 +423,7 @@ func (m *Monitoring) createGrafanaSecret(password string) error {
 	if _, err := m.exec.RunShell(cmd); err != nil {
 		return fmt.Errorf("failed to create grafana-admin secret: %w", err)
 	}
-	fmt.Println("Grafana admin secret created from Vault")
+	fmt.Println("Grafana admin secret created")
 	return nil
 }
 

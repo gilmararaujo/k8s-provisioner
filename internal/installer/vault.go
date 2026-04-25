@@ -311,8 +311,9 @@ subjects:
 		return fmt.Errorf("configure k8s auth backend: %w", err)
 	}
 
-	// Create read-only policy for k8s workloads
-	policy := `path "secret/data/k8s-provisioner/*" { capabilities = ["read"] }`
+	// Create policy for k8s workloads — data read + metadata list for VSO version checks
+	policy := `path "secret/data/k8s-provisioner/*" { capabilities = ["read", "list"] }
+path "secret/metadata/k8s-provisioner/*" { capabilities = ["read", "list"] }`
 	if _, err := v.vaultPut("/v1/sys/policies/acl/k8s-provisioner", token, map[string]interface{}{
 		"policy": policy,
 	}); err != nil {
@@ -343,13 +344,21 @@ func (v *VaultInstaller) storeAPISecrets(token string) error {
 		secrets["karpor_auth_token"] = v.config.KarporAI.AuthToken
 	}
 
-	// Gera senha do Grafana se ainda não existe no Vault
 	grafanaPassword, err := v.resolveOrGenerate(token, "grafana_admin_password")
 	if err != nil {
 		fmt.Printf("Warning: could not resolve grafana password: %v\n", err)
-		grafanaPassword = "admin123" // fallback para lab
+		grafanaPassword = "admin123"
 	}
 	secrets["grafana_admin_password"] = grafanaPassword
+
+	// Keycloak defaults — stored early so VSO can sync them before Keycloak is installed
+	secrets["keycloak_admin_username"] = v.resolveOrDefaultStr(token, "keycloak_admin_username", "admin")
+	secrets["keycloak_admin_password"] = v.resolveOrDefaultStr(token, "keycloak_admin_password", "Admin@Keycloak123")
+	secrets["keycloak_postgres_username"] = v.resolveOrDefaultStr(token, "keycloak_postgres_username", "keycloak")
+	secrets["keycloak_postgres_password"] = v.resolveOrDefaultStr(token, "keycloak_postgres_password", "Keycloak@Pg123")
+	secrets["keycloak_grafana_client_secret"] = v.resolveOrDefaultStr(token, "keycloak_grafana_client_secret", "grafana-oidc-secret")
+	secrets["keycloak_k8sadmin_password"] = v.resolveOrDefaultStr(token, "keycloak_k8sadmin_password", "Admin@K8s123")
+	secrets["keycloak_developer_password"] = v.resolveOrDefaultStr(token, "keycloak_developer_password", "Dev@K8s123")
 
 	_, err = v.vaultPost("/v1/secret/data/k8s-provisioner/api-keys", token, map[string]interface{}{
 		"data": secrets,
@@ -359,8 +368,22 @@ func (v *VaultInstaller) storeAPISecrets(token string) error {
 	}
 
 	fmt.Printf("Stored %d secret(s) at secret/data/k8s-provisioner/api-keys\n", len(secrets))
-	fmt.Printf("Grafana admin password stored in Vault (grafana_admin_password)\n")
 	return nil
+}
+
+// resolveOrDefaultStr returns the existing Vault value for key, or fallback if absent.
+func (v *VaultInstaller) resolveOrDefaultStr(token, key, fallback string) string {
+	existing, err := v.vaultGet("/v1/secret/data/k8s-provisioner/api-keys", token)
+	if err == nil {
+		if data, ok := existing["data"].(map[string]interface{}); ok {
+			if inner, ok := data["data"].(map[string]interface{}); ok {
+				if val, ok := inner[key].(string); ok && val != "" {
+					return val
+				}
+			}
+		}
+	}
+	return fallback
 }
 
 // resolveOrGenerate retorna o valor existente no Vault ou gera um novo.

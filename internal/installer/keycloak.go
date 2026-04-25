@@ -15,11 +15,13 @@ type Keycloak struct {
 }
 
 type keycloakCreds struct {
-	adminUsername    string
-	adminPassword    string
-	postgresUsername string
-	postgresPassword string
-	grafanaSecret    string
+	adminUsername     string
+	adminPassword     string
+	postgresUsername  string
+	postgresPassword  string
+	grafanaSecret     string
+	k8sAdminPassword  string
+	developerPassword string
 }
 
 func NewKeycloak(cfg *config.Config, exec executor.CommandExecutor) *Keycloak {
@@ -28,11 +30,13 @@ func NewKeycloak(cfg *config.Config, exec executor.CommandExecutor) *Keycloak {
 
 func (k *Keycloak) resolveCredentials() keycloakCreds {
 	creds := keycloakCreds{
-		adminUsername:    "admin",
-		adminPassword:    "Admin@Keycloak123",
-		postgresUsername: "keycloak",
-		postgresPassword: "Keycloak@Pg123",
-		grafanaSecret:    "grafana-oidc-secret",
+		adminUsername:     "admin",
+		adminPassword:     "Admin@Keycloak123",
+		postgresUsername:  "keycloak",
+		postgresPassword:  "Keycloak@Pg123",
+		grafanaSecret:     "grafana-oidc-secret",
+		k8sAdminPassword:  "Admin@K8s123",
+		developerPassword: "Dev@K8s123",
 	}
 
 	token := ResolveVaultToken(k.config.Vault.Token)
@@ -76,6 +80,16 @@ func (k *Keycloak) resolveCredentials() keycloakCreds {
 		updates["keycloak_grafana_client_secret"] = creds.grafanaSecret
 	} else {
 		creds.grafanaSecret = existing["keycloak_grafana_client_secret"]
+	}
+	if existing == nil || existing["keycloak_k8sadmin_password"] == "" {
+		updates["keycloak_k8sadmin_password"] = creds.k8sAdminPassword
+	} else {
+		creds.k8sAdminPassword = existing["keycloak_k8sadmin_password"]
+	}
+	if existing == nil || existing["keycloak_developer_password"] == "" {
+		updates["keycloak_developer_password"] = creds.developerPassword
+	} else {
+		creds.developerPassword = existing["keycloak_developer_password"]
 	}
 
 	if len(updates) > 0 {
@@ -138,39 +152,70 @@ func (k *Keycloak) Install() error {
 		}
 	}
 
+	fmt.Println("Storing kubeconfig-oidc in Vault for distribution...")
+	if err := k.storeKubeconfigInVault(cpIP, issuerURL); err != nil {
+		fmt.Printf("Warning: could not store kubeconfig in Vault: %v\n", err)
+	}
+
 	fmt.Println("Keycloak installed successfully!")
 	k.printAccessInfo(cpIP, issuerURL)
 	return nil
 }
 
+func (k *Keycloak) storeKubeconfigInVault(cpIP, issuerURL string) error {
+	token := ResolveVaultToken(k.config.Vault.Token)
+	if k.config.Vault.Addr == "" || token == "" {
+		return fmt.Errorf("vault not configured")
+	}
+
+	kubeconfig := fmt.Sprintf(`apiVersion: v1
+kind: Config
+clusters:
+- name: k8s-lab
+  cluster:
+    server: https://%s:6443
+    insecure-skip-tls-verify: true
+contexts:
+- name: k8s-lab
+  context:
+    cluster: k8s-lab
+    user: oidc
+current-context: k8s-lab
+users:
+- name: oidc
+  user:
+    exec:
+      apiVersion: client.authentication.k8s.io/v1beta1
+      command: kubectl
+      args:
+        - oidc-login
+        - get-token
+        - --oidc-issuer-url=%s
+        - --oidc-client-id=kubectl
+        - --oidc-use-pkce
+`, cpIP, issuerURL)
+
+	vault := NewVaultClient(k.config.Vault.Addr, token)
+	if err := vault.WriteSecret("k8s-provisioner/kubeconfig-oidc", map[string]string{
+		"config": kubeconfig,
+	}); err != nil {
+		return err
+	}
+
+	fmt.Println("kubeconfig-oidc stored at: secret/k8s-provisioner/kubeconfig-oidc")
+	return nil
+}
+
 func (k *Keycloak) deployKeycloak(creds keycloakCreds) error {
-	secrets := fmt.Sprintf(`apiVersion: v1
+	// Secrets keycloak-admin and postgres-credentials are managed by Vault Secrets Operator.
+	// We only create the namespace here; the rest is deployed below.
+	secrets := `apiVersion: v1
 kind: Namespace
 metadata:
-  name: keycloak
----
-apiVersion: v1
-kind: Secret
-metadata:
-  name: keycloak-admin
-  namespace: keycloak
-type: Opaque
-stringData:
-  username: %s
-  password: %s
----
-apiVersion: v1
-kind: Secret
-metadata:
-  name: postgres-credentials
-  namespace: keycloak
-type: Opaque
-stringData:
-  username: %s
-  password: %s
-`, creds.adminUsername, creds.adminPassword, creds.postgresUsername, creds.postgresPassword)
+  name: keycloak`
 
-	rest := `---
+	rest := `
+---
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -484,7 +529,7 @@ ADMIN_UID=$($KCADM create users -r k8s \
   -s lastName=Admin \
   -s enabled=true \
   -i)
-$KCADM set-password -r k8s --username k8sadmin --new-password 'Admin@K8s123'
+$KCADM set-password -r k8s --username k8sadmin --new-password '%s'
 $KCADM update users/$ADMIN_UID/groups/$ADMINS_GID -r k8s \
   -s realm=k8s -s userId=$ADMIN_UID -s groupId=$ADMINS_GID -n
 
@@ -496,12 +541,12 @@ DEV_UID=$($KCADM create users -r k8s \
   -s lastName=User \
   -s enabled=true \
   -i)
-$KCADM set-password -r k8s --username developer --new-password 'Dev@K8s123'
+$KCADM set-password -r k8s --username developer --new-password '%s'
 $KCADM update users/$DEV_UID/groups/$DEVS_GID -r k8s \
   -s realm=k8s -s userId=$DEV_UID -s groupId=$DEVS_GID -n
 
 echo "Keycloak realm configuration completed!"
-`, creds.grafanaSecret)
+`, creds.grafanaSecret, creds.k8sAdminPassword, creds.developerPassword)
 
 	pod, err := k.exec.RunShell("kubectl get pods -n keycloak -l app=keycloak -o jsonpath='{.items[0].metadata.name}'")
 	if err != nil {
@@ -625,6 +670,7 @@ func (k *Keycloak) configureGrafanaOAuth(cpIP string, creds keycloakCreds) error
 		indented.WriteString("\n")
 	}
 
+	// grafana-oidc Secret is managed by Vault Secrets Operator; only apply the ConfigMap.
 	resources := fmt.Sprintf(`apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -632,15 +678,7 @@ metadata:
   namespace: monitoring
 data:
   grafana.ini: |
-%s---
-apiVersion: v1
-kind: Secret
-metadata:
-  name: grafana-oidc
-  namespace: monitoring
-type: Opaque
-stringData:
-  client-secret: %s`, indented.String(), creds.grafanaSecret)
+%s`, indented.String())
 
 	if err := executor.WriteFile("/tmp/grafana-keycloak.yaml", resources); err != nil {
 		return err
@@ -728,12 +766,14 @@ func (k *Keycloak) printAccessInfo(cpIP, issuerURL string) {
 	fmt.Println("========================================")
 	fmt.Printf("\nAdmin Console: http://%s:30080\n", cpIP)
 	fmt.Println("  (or http://keycloak.local via Istio Gateway)")
-	fmt.Println("\nAdmin credentials:")
-	fmt.Println("  User:     admin")
-	fmt.Println("  Password: Admin@Keycloak123")
-	fmt.Println("\nTest users (realm: k8s):")
-	fmt.Println("  k8sadmin  / Admin@K8s123  (group: k8s-admins  → cluster-admin)")
-	fmt.Println("  developer / Dev@K8s123    (group: k8s-developers → view)")
+	fmt.Println("\nAdmin credentials (stored in Vault):")
+	fmt.Println("  vault kv get -field=keycloak_admin_username secret/k8s-provisioner/api-keys")
+	fmt.Println("  vault kv get -field=keycloak_admin_password secret/k8s-provisioner/api-keys")
+	fmt.Println("\nTest users (realm: k8s) — senhas no Vault:")
+	fmt.Println("  k8sadmin  (group: k8s-admins  → cluster-admin)")
+	fmt.Println("    vault kv get -field=keycloak_k8sadmin_password secret/k8s-provisioner/api-keys")
+	fmt.Println("  developer (group: k8s-developers → view)")
+	fmt.Println("    vault kv get -field=keycloak_developer_password secret/k8s-provisioner/api-keys")
 	fmt.Println("\n--- kubectl OIDC login (kubelogin) ---")
 	fmt.Println("Install kubelogin:")
 	fmt.Println("  brew install int128/kubelogin/kubelogin   # Mac")

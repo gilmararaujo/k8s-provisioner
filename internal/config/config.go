@@ -74,6 +74,8 @@ type ComponentsConfig struct {
 	Tracing      string `yaml:"tracing"` // Options: otel-tempo, none
 	Karpor       string `yaml:"karpor"`
 	Keycloak     string `yaml:"keycloak"`
+	VPA          string `yaml:"vpa"`  // Options: enabled, disabled
+	KEDA         string `yaml:"keda"` // Options: enabled, disabled
 }
 
 type KarporAIConfig struct {
