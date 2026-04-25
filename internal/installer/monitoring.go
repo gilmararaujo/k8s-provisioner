@@ -198,6 +198,8 @@ spec:
   serviceMonitorNamespaceSelector: {}
   podMonitorSelector: {}
   podMonitorNamespaceSelector: {}
+  ruleSelector: {}
+  ruleNamespaceSelector: {}
   resources:
     requests:
       memory: 400Mi
@@ -399,8 +401,8 @@ spec:
 
 // resolveGrafanaPassword busca a senha do Vault se habilitado, fallback para "admin123".
 func (m *Monitoring) resolveGrafanaPassword() string {
-	if m.config.Vault.Enabled {
-		if val, err := FetchSecret(m.config, "grafana_admin_password"); err == nil && val != "" {
+	if m.config.Vault.Enabled() {
+		if val, err := FetchSecret(m.config.Vault.Addr, m.config.Vault.Token, "grafana_admin_password"); err == nil && val != "" {
 			fmt.Println("Grafana password loaded from Vault")
 			return val
 		}
@@ -409,7 +411,11 @@ func (m *Monitoring) resolveGrafanaPassword() string {
 }
 
 func (m *Monitoring) createGrafanaSecret(password string) error {
-	_, _ = m.exec.RunShell("kubectl delete secret grafana-admin -n monitoring 2>/dev/null || true")
+	// Skip if already managed by Vault Secrets Operator
+	if out, _ := m.exec.RunShell("kubectl get secret grafana-admin -n monitoring -o name 2>/dev/null"); out != "" {
+		fmt.Println("Grafana admin secret already synced by Vault Secrets Operator, skipping direct creation")
+		return nil
+	}
 	cmd := fmt.Sprintf(
 		"kubectl create secret generic grafana-admin -n monitoring --from-literal=password=%s",
 		password,
@@ -417,7 +423,7 @@ func (m *Monitoring) createGrafanaSecret(password string) error {
 	if _, err := m.exec.RunShell(cmd); err != nil {
 		return fmt.Errorf("failed to create grafana-admin secret: %w", err)
 	}
-	fmt.Println("Grafana admin secret created from Vault")
+	fmt.Println("Grafana admin secret created")
 	return nil
 }
 
@@ -695,8 +701,8 @@ spec:
 }
 
 func (m *Monitoring) resolveAlertmanagerConfig() string {
-	if m.config.Vault.Enabled {
-		if val, err := FetchSecret(m.config, "alertmanager_config"); err == nil && val != "" {
+	if m.config.Vault.Enabled() {
+		if val, err := FetchSecret(m.config.Vault.Addr, m.config.Vault.Token, "alertmanager_config"); err == nil && val != "" {
 			fmt.Println("Alertmanager config loaded from Vault")
 			return val
 		}
@@ -797,6 +803,19 @@ spec:
       number: 80
       name: http
       protocol: HTTP
+    hosts:
+    - "grafana.local"
+    - "prometheus.local"
+    - "alertmanager.local"
+    tls:
+      httpsRedirect: true
+  - port:
+      number: 443
+      name: https
+      protocol: HTTPS
+    tls:
+      mode: SIMPLE
+      credentialName: lab-tls-secret
     hosts:
     - "grafana.local"
     - "prometheus.local"
@@ -902,7 +921,7 @@ func (m *Monitoring) printAccessInfo() {
 	fmt.Println("   - Alertmanager: http://alertmanager.local")
 	fmt.Println("\nGrafana Credentials:")
 	fmt.Println("  User: admin")
-	if m.config.Vault.Enabled {
+	if m.config.Vault.Enabled() {
 		fmt.Println("  Password: (stored in Vault)")
 		fmt.Println("  Retrieve: k8s-provisioner vault get-secret k8s-provisioner/api-keys")
 		fmt.Println("\nAlertmanager Config:")

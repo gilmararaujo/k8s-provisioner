@@ -13,13 +13,14 @@ Kubernetes cluster provisioner written in Go for lab environments. Supports macO
 | LoadBalancer | MetalLB 0.15.3 |
 | Service Mesh | Istio 1.29.2 + Kiali 2.24.0 |
 | Storage | NFS Server + Dynamic Provisioner |
-| Secrets Manager | HashiCorp Vault 2.0.0 |
+| Secrets Management | HashiCorp Vault |
 | Metrics | Metrics Server + Prometheus Operator 0.90.1 |
 | Monitoring | Prometheus + Grafana 13.0.1 + node-exporter 1.11.1 |
 | Logging | Loki 3.7.1 + Grafana Alloy 1.15.1 |
 | Tracing | Grafana Tempo 2.10.4 + OpenTelemetry Collector 0.150.0 |
-| Kubernetes Explorer | Karpor 0.6.4 (desabilitado por padrão) |
-| AI Backend | Ollama (local/cloud, desabilitado por padrão) |
+| Identity Provider | Keycloak 26.2 |
+| Kubernetes Explorer | Karpor 0.7.6 (disabled by default) |
+| AI Backend | Ollama (local/cloud, disabled by default) |
 
 ## Prerequisites
 
@@ -194,6 +195,33 @@ sed -i '' 's/127.0.0.1/192.168.56.10/' ~/.kube/config-lab
 export KUBECONFIG=~/.kube/config-lab
 kubectl get nodes
 ```
+
+### 5. Configure /etc/hosts (on your Mac/Linux host)
+
+Add all service hostnames to your local `/etc/hosts` to access them by name:
+
+```bash
+# Get Istio Ingress IP (MetalLB LoadBalancer)
+INGRESS_IP=$(kubectl get svc -n istio-system istio-ingressgateway \
+  -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+
+# Kubernetes services (via Istio Ingress Gateway)
+echo "$INGRESS_IP grafana.local prometheus.local alertmanager.local kiali.local karpor.local keycloak.local" \
+  | sudo tee -a /etc/hosts
+
+# Storage node services (direct IP — fixed)
+echo "192.168.56.20 vault.local" | sudo tee -a /etc/hosts
+```
+
+| Hostname | Service | URL | Credentials |
+|----------|---------|-----|-------------|
+| `grafana.local` | Grafana | https://grafana.local | `admin` / Vault |
+| `prometheus.local` | Prometheus | https://prometheus.local | — |
+| `alertmanager.local` | Alertmanager | https://alertmanager.local | — |
+| `kiali.local` | Kiali (Istio) | https://kiali.local | — |
+| `karpor.local` | Karpor Explorer | https://karpor.local | — |
+| `keycloak.local` | Keycloak SSO | https://keycloak.local | `admin` / Vault |
+| `vault.local` | Vault | http://vault.local:8200 | root token from `vault-init.json` |
 
 ## CLI Commands
 
@@ -754,16 +782,159 @@ kubectl top pods
 kubectl top pods -A
 ```
 
+## Autoscaling
+
+The cluster includes three complementary autoscalers. They can be used independently or together.
+
+| Autoscaler | What it scales | Trigger | Config |
+|------------|---------------|---------|--------|
+| **HPA** | Replicas (horizontal) | CPU, memory, custom metrics | Native Kubernetes |
+| **VPA** | CPU/Memory requests per pod (vertical) | Historical usage | `components.vpa: "enabled"` |
+| **KEDA** | Replicas to zero and back | Prometheus, queues, cron, etc. | `components.keda: "enabled"` |
+
 ### HPA (Horizontal Pod Autoscaler)
 
-Metrics Server enables HPA for automatic scaling:
+Scales the number of pod replicas based on CPU or memory. Requires Metrics Server (included).
 
 ```bash
-# Create HPA for a deployment
+# Scale based on CPU (50% target, 1-10 replicas)
 kubectl autoscale deployment my-app --cpu-percent=50 --min=1 --max=10
+
+# Or declaratively
+kubectl apply -f - <<EOF
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: my-app
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: my-app
+  minReplicas: 1
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 50
+EOF
 
 # Check HPA status
 kubectl get hpa
+kubectl describe hpa my-app
+```
+
+### VPA (Vertical Pod Autoscaler)
+
+Automatically adjusts CPU and memory **requests** for each pod based on observed usage. Useful when you don't know the right resource requests upfront.
+
+> VPA and HPA should not be used together on the same metric (e.g. both on CPU). Use VPA for right-sizing, HPA for scaling replicas.
+
+```bash
+# Check VPA components
+kubectl get pods -n kube-system | grep vpa
+
+# Create a VPA for a deployment
+kubectl apply -f - <<EOF
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: my-app-vpa
+  namespace: default
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: my-app
+  updatePolicy:
+    updateMode: "Auto"   # Options: Auto, Recreate, Initial, Off
+  resourcePolicy:
+    containerPolicies:
+    - containerName: my-app
+      minAllowed:
+        cpu: 50m
+        memory: 64Mi
+      maxAllowed:
+        cpu: 2
+        memory: 2Gi
+EOF
+
+# Check VPA recommendations (even in Off mode)
+kubectl describe vpa my-app-vpa
+```
+
+**Update modes:**
+
+| Mode | Behaviour |
+|------|-----------|
+| `Off` | Only shows recommendations, never applies them |
+| `Initial` | Sets requests only at pod creation, never evicts |
+| `Recreate` | Evicts pods to apply new requests |
+| `Auto` | Same as Recreate (default recommended) |
+
+### KEDA (Kubernetes Event-Driven Autoscaler)
+
+Scales deployments based on external event sources — including Prometheus metrics. Can scale to **zero** when there is no load.
+
+```bash
+# Check KEDA components
+kubectl get pods -n keda
+```
+
+#### Scale on Prometheus metric
+
+```yaml
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: my-app-scaler
+  namespace: default
+spec:
+  scaleTargetRef:
+    name: my-app
+  minReplicaCount: 0    # scales to zero when idle
+  maxReplicaCount: 10
+  triggers:
+  - type: prometheus
+    metadata:
+      serverAddress: http://prometheus.monitoring.svc:9090
+      metricName: http_requests_total
+      threshold: "100"       # scale up when > 100 req/s per replica
+      query: sum(rate(http_requests_total{app="my-app"}[2m]))
+```
+
+#### Scale on CPU/Memory (via Prometheus)
+
+```yaml
+triggers:
+- type: prometheus
+  metadata:
+    serverAddress: http://prometheus.monitoring.svc:9090
+    metricName: cpu_usage
+    threshold: "70"
+    query: |
+      avg(rate(container_cpu_usage_seconds_total{pod=~"my-app-.*"}[2m])) * 100
+```
+
+#### Scale on cron schedule
+
+```yaml
+triggers:
+- type: cron
+  metadata:
+    timezone: America/Sao_Paulo
+    start: "0 8 * * 1-5"    # weekdays at 08:00
+    end: "0 18 * * 1-5"     # weekdays at 18:00
+    desiredReplicas: "3"
+```
+
+```bash
+# Check ScaledObject status
+kubectl get scaledobject
+kubectl describe scaledobject my-app-scaler
 ```
 
 ## Observability
@@ -854,7 +1025,7 @@ INGRESS_IP=$(kubectl get svc -n istio-system istio-ingressgateway -o jsonpath='{
 echo "$INGRESS_IP grafana.local" | sudo tee -a /etc/hosts
 
 # Access
-open http://grafana.local
+open https://grafana.local
 ```
 
 **Credentials:**
@@ -868,21 +1039,14 @@ open http://grafana.local
 ### Accessing Prometheus
 
 ```bash
-kubectl port-forward -n monitoring svc/prometheus 9090:9090
-# Access: http://localhost:9090
+open https://prometheus.local
 ```
 
 ### Accessing Alertmanager
 
-Alertmanager is exposed via Istio Ingress Gateway at `alertmanager.local`.
-
-Add to `/etc/hosts` (if not done in the setup section):
 ```bash
-INGRESS_IP=$(kubectl get svc -n istio-system istio-ingressgateway -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
-echo "$INGRESS_IP alertmanager.local" | sudo tee -a /etc/hosts
+open https://alertmanager.local
 ```
-
-Open: **http://alertmanager.local**
 
 **Check active alerts:**
 ```bash
@@ -944,6 +1108,14 @@ Import dashboards from grafana.com: **Dashboards** → **Import** → Enter ID �
 
 > **Note:** Go apps need to expose metrics via [prometheus/client_golang](https://github.com/prometheus/client_golang)
 
+#### cert-manager Dashboards
+
+| ID | Dashboard | Description |
+|----|-----------|-------------|
+| `20842` | cert-manager | Certificate expiry, renewal, and issuer status |
+
+> **Note:** The cert-manager ServiceMonitor is automatically created during provisioning. The dashboard shows all certificates managed by cert-manager, including expiry dates and renewal status.
+
 ## Logging Stack (Loki)
 
 The cluster includes Loki 3.x for log aggregation with Grafana Alloy as the log collector (replaces the deprecated Promtail).
@@ -970,7 +1142,7 @@ The cluster includes Loki 3.x for log aggregation with Grafana Alloy as the log 
 
 Logs are accessed via Grafana:
 
-1. Open **http://grafana.local**
+1. Open **https://grafana.local**
 2. Go to **Explore** (left sidebar)
 3. Select **Loki** as datasource
 
@@ -1074,7 +1246,7 @@ OTEL_EXPORTER_OTLP_ENDPOINT=http://<node-ip>:4317
 
 ### Viewing Traces in Grafana
 
-1. Open **http://grafana.local**
+1. Open **https://grafana.local**
 2. Go to **Explore** → select **Tempo** as datasource
 3. Search by **TraceID**, service name, or use the **Service Graph**
 
@@ -1105,6 +1277,71 @@ exporter, _ := otlptracegrpc.New(ctx,
 tp := trace.NewTracerProvider(trace.WithBatcher(exporter))
 otel.SetTracerProvider(tp)
 ```
+
+### Instrumenting a New Application
+
+For full trace → log correlation to work in Grafana ("Log for this span" button in Tempo), your application must satisfy three requirements:
+
+#### 1. Pod label `app: <name>`
+
+Alloy (the log collector) automatically extracts the `app` label from pod labels and adds it to every log stream in Loki. Without it, Tempo cannot find the matching logs.
+
+```yaml
+# deployment.yaml
+spec:
+  template:
+    metadata:
+      labels:
+        app: my-app   # required
+```
+
+#### 2. Log format with `traceID=<hex>`
+
+Include the active trace ID in every log line using logfmt key `traceID`. Loki's derived fields use the regex `traceID=(\w+)` to extract it and create a clickable link to Tempo.
+
+```go
+// Go example — log inside a span handler
+traceID := span.SpanContext().TraceID().String()
+log.Printf("traceID=%s level=info msg=\"handled request\"", traceID)
+```
+
+```python
+# Python example
+import logging
+trace_id = trace.get_current_span().get_span_context().trace_id
+logging.info(f"traceID={trace_id:032x} level=info msg=handled_request")
+```
+
+```java
+// Java example (SLF4J + OTel SDK)
+import io.opentelemetry.api.trace.Span;
+
+String traceId = Span.current().getSpanContext().getTraceId();
+logger.info("traceID={} level=info msg=handled_request", traceId);
+```
+
+#### 3. Set `service.name` matching the `app` label
+
+When initialising the OTel tracer, set the resource attribute `service.name` to the **same value** as your pod's `app` label. Tempo uses this to query Loki with `{app="my-app"}`.
+
+```go
+resource.NewWithAttributes(
+    semconv.SchemaURL,
+    semconv.ServiceName("my-app"),   // must match pod label app=my-app
+)
+```
+
+#### Full checklist
+
+| Requirement | Why |
+|-------------|-----|
+| Pod label `app: my-app` | Alloy adds it as Loki stream label |
+| Log line contains `traceID=<hex>` | Loki derived field links log → trace |
+| OTel resource `service.name=my-app` | Tempo queries `{app="my-app"}` in Loki |
+| Namespace has `istio-injection: enabled` | Istio auto-injects sidecar for mesh tracing |
+| OTLP endpoint `otel-collector.monitoring.svc:4317` | Collector forwards to Tempo |
+
+See `examples/otel-demo-app/` for a complete working reference (Go app + `deploy.yaml`).
 
 ### Verifying Installation
 
@@ -1184,7 +1421,7 @@ INGRESS_IP=$(kubectl get svc -n istio-system istio-ingressgateway -o jsonpath='{
 echo "$INGRESS_IP kiali.local" | sudo tee -a /etc/hosts
 
 # Access (no login required — anonymous mode)
-open http://kiali.local/kiali
+open https://kiali.local/kiali
 ```
 
 ### Integrations
@@ -1273,7 +1510,7 @@ INGRESS_IP=$(kubectl get svc -n istio-system istio-ingressgateway -o jsonpath='{
 echo "$INGRESS_IP karpor.local" | sudo tee -a /etc/hosts
 
 # Access
-open http://karpor.local
+open https://karpor.local
 ```
 
 ### Search Examples
@@ -1480,6 +1717,380 @@ export do='--dry-run=client -o yaml'
 # Example: Create a pod YAML
 kubectl run nginx --image=nginx $do > nginx.yaml
 ```
+
+## HashiCorp Vault (Secrets Management)
+
+Vault is installed automatically on the **storage node** (`192.168.56.20`) during cluster provisioning. It stores all sensitive credentials used by the cluster components.
+
+### What Vault manages
+
+| Secret path | Key | Used by |
+|---|---|---|
+| `secret/k8s-provisioner/api-keys` | `grafana_admin_password` | Grafana login |
+| `secret/k8s-provisioner/api-keys` | `keycloak_admin_username` | Keycloak admin username |
+| `secret/k8s-provisioner/api-keys` | `keycloak_admin_password` | Keycloak admin console |
+| `secret/k8s-provisioner/api-keys` | `keycloak_postgres_username` | PostgreSQL username |
+| `secret/k8s-provisioner/api-keys` | `keycloak_postgres_password` | PostgreSQL (Keycloak DB) |
+| `secret/k8s-provisioner/api-keys` | `keycloak_grafana_client_secret` | Grafana OAuth2 client |
+| `secret/k8s-provisioner/api-keys` | `keycloak_k8sadmin_password` | Realm user `k8sadmin` |
+| `secret/k8s-provisioner/api-keys` | `keycloak_developer_password` | Realm user `developer` |
+
+### Getting the Vault token
+
+The init data (root token + unseal keys) is saved automatically to both nodes during provisioning:
+
+```bash
+# On the controlplane node
+sudo cat /etc/k8s-provisioner/vault-init.json
+
+# On the storage node
+vagrant ssh storage -c 'sudo cat /etc/k8s-provisioner/vault-init.json'
+```
+
+Output example:
+```json
+{
+  "keys": [
+    "a4062b2811b...",
+    "1c8fc4973e5...",
+    "cfb91c7481a...",
+    "04d1dead7c6...",
+    "150414ae84d..."
+  ],
+  "root_token": "hvs.XXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+}
+```
+
+### Accessing the Vault UI
+
+```bash
+# vault.local requires the /etc/hosts entry: 192.168.56.20 vault.local
+open http://vault.local:8200
+
+# Or use the IP directly (no /etc/hosts needed)
+open http://192.168.56.20:8200
+```
+
+Login with the `root_token` from `vault-init.json`.
+
+### Accessing Vault via CLI
+
+```bash
+export VAULT_ADDR=http://192.168.56.20:8200
+export VAULT_TOKEN=hvs.XXXXXXXXXXXXXXXXXXXXXXXXXXXX   # from vault-init.json
+
+# List secrets
+vault kv list secret/k8s-provisioner
+
+# Read a secret
+vault kv get secret/k8s-provisioner/api-keys
+
+# Update Grafana password
+vault kv patch secret/k8s-provisioner/api-keys grafana_admin_password=NewPassword123
+```
+
+> **Note:** After updating a password in Vault, restart the affected component (e.g. `kubectl rollout restart deployment/grafana -n monitoring`).
+
+### Re-sealing and unsealing
+
+Vault is automatically unsealed during provisioning. If the storage node is restarted, Vault will be sealed again. To unseal manually:
+
+```bash
+vagrant ssh storage
+
+# Unseal with 3 of the 5 keys from vault-init.json
+sudo VAULT_ADDR=http://localhost:8200 vault operator unseal <key-1>
+sudo VAULT_ADDR=http://localhost:8200 vault operator unseal <key-2>
+sudo VAULT_ADDR=http://localhost:8200 vault operator unseal <key-3>
+```
+
+### config.yaml
+
+```yaml
+vault:
+  addr: "http://192.168.56.20:8200"
+  token: ""   # Leave empty — token is auto-read from /etc/k8s-provisioner/vault-init.json
+```
+
+---
+
+## Keycloak (Identity Provider / SSO)
+
+Keycloak provides OIDC authentication for `kubectl` and Single Sign-On (SSO) for Grafana. It runs inside the Kubernetes cluster with a PostgreSQL backend.
+
+### Access
+
+```bash
+# NodePort — accessible without /etc/hosts
+open http://192.168.56.10:30080
+
+# Or via Istio Gateway (requires /etc/hosts entry — see Quick Start step 5)
+open https://keycloak.local
+```
+
+### Admin credentials
+
+```
+URL:      http://192.168.56.10:30080  (or https://keycloak.local via Istio)
+Username: admin
+Password: (from Vault → secret/k8s-provisioner/api-keys → keycloak_admin_password)
+```
+
+All Keycloak credentials are stored in Vault at `secret/k8s-provisioner/api-keys`:
+
+| Vault key | Description |
+|-----------|-------------|
+| `keycloak_admin_username` | Admin console username (`admin`) |
+| `keycloak_admin_password` | Admin console password |
+| `keycloak_postgres_username` | PostgreSQL username (`keycloak`) |
+| `keycloak_postgres_password` | PostgreSQL password |
+| `keycloak_grafana_client_secret` | Grafana OIDC client secret |
+| `keycloak_k8sadmin_password` | Realm user `k8sadmin` password |
+| `keycloak_developer_password` | Realm user `developer` password |
+
+To customize passwords before provisioning:
+
+```bash
+export VAULT_ADDR=http://192.168.56.20:8200
+export VAULT_TOKEN=$(cat /etc/k8s-provisioner/vault-init.json | jq -r .root_token)
+
+vault kv patch secret/k8s-provisioner/api-keys \
+  keycloak_k8sadmin_password="MinhaSenh@Forte" \
+  keycloak_developer_password="OutraSenha@123"
+```
+
+> **Note:** Run this after Vault is initialized but before Keycloak is installed (or recreate the cluster).
+
+To retrieve via Vault UI: `http://vault.local:8200` → **secret/k8s-provisioner/api-keys**
+
+To retrieve via CLI:
+```bash
+export VAULT_ADDR=http://192.168.56.20:8200
+export VAULT_TOKEN=$(cat /etc/k8s-provisioner/vault-init.json | grep root_token | cut -d'"' -f4)
+vault kv get secret/k8s-provisioner/api-keys
+```
+
+### Pre-configured realm: `k8s`
+
+| Resource | Details |
+|---|---|
+| Realm | `k8s` |
+| kubectl client | `kubectl` (public, PKCE enabled) |
+| Grafana client | `grafana` (confidential) |
+| Admin group | `k8s-admins` → `cluster-admin` RBAC |
+| Developer group | `k8s-developers` → `view` RBAC |
+| Test user (admin) | `k8sadmin` / (Vault: `keycloak_k8sadmin_password`) |
+| Test user (dev) | `developer` / (Vault: `keycloak_developer_password`) |
+
+### kubectl access
+
+#### Quick access (admin)
+
+Two commands to get full cluster access from your Mac:
+
+```bash
+# 1. Copy kubeconfig and fix the API server address
+vagrant ssh controlplane -c "cat /etc/kubernetes/admin.conf" \
+  | sed 's|https://.*:6443|https://192.168.56.10:6443|' \
+  > ~/.kube/k8s-lab.conf
+
+# 2. Use it
+export KUBECONFIG=~/.kube/k8s-lab.conf
+kubectl get nodes
+```
+
+This uses the `cluster-admin` credentials. Suitable for day-to-day lab usage.
+
+#### OIDC login via Keycloak (kubelogin)
+
+Use this for role-based access — each user logs in with their own Keycloak credentials and gets the permissions of their group (`k8s-admins` → `cluster-admin`, `k8s-developers` → `view`).
+
+The `kubeconfig-oidc` file contains no credentials — it is safe to distribute. It is stored in Vault automatically during provisioning.
+
+**Admin: adding a new user**
+
+Access is group-based — no Kubernetes changes needed. Just create the user in Keycloak and assign the group:
+
+| Keycloak group | Kubernetes access | Grafana role |
+|---------------|-------------------|--------------|
+| `k8s-admins` | `cluster-admin` | Admin |
+| `k8s-developers` | `view` (read-only) | Viewer |
+
+**Option A — Keycloak Admin Console:**
+
+1. Open `https://keycloak.local/admin` → realm `k8s` → Users → Add user
+2. Set username, email, enable the user, save
+3. Go to **Credentials** tab → Set password
+4. Go to **Groups** tab → Join `k8s-admins` or `k8s-developers`
+
+**Option B — CLI (from controlplane):**
+
+```bash
+# Get admin token
+KCADM="kubectl exec -n keycloak deploy/keycloak -- /opt/keycloak/bin/kcadm.sh"
+$KCADM config credentials --server http://localhost:8080 --realm master \
+  --user "$KEYCLOAK_ADMIN" --password "$KEYCLOAK_ADMIN_PASSWORD"
+
+# Create user and add to group
+NEW_UID=$($KCADM create users -r k8s \
+  -s username=alice \
+  -s email=alice@example.com \
+  -s firstName=Alice \
+  -s lastName=Smith \
+  -s enabled=true -i)
+$KCADM set-password -r k8s --username alice --new-password 'Alice@K8s123'
+
+GID=$($KCADM get groups -r k8s | grep -A1 k8s-developers | grep id | cut -d'"' -f4)
+$KCADM update users/$NEW_UID/groups/$GID -r k8s -s realm=k8s -s userId=$NEW_UID -s groupId=$GID -n
+```
+
+5. Retrieve the `kubeconfig-oidc` from Vault and send it to the user:
+
+```bash
+vagrant ssh storage
+
+export VAULT_ADDR=http://127.0.0.1:8200
+export VAULT_TOKEN=$(sudo cat /etc/vault.d/vault-init.json | grep root_token | cut -d'"' -f4)
+
+vault kv get -field=config secret/k8s-provisioner/kubeconfig-oidc > /tmp/kubeconfig-oidc
+exit
+```
+
+Copy to your Mac:
+
+```bash
+vagrant scp storage:/tmp/kubeconfig-oidc ./kubeconfig-oidc
+```
+
+Send the `kubeconfig-oidc` file to the user.
+
+**Alternative: copy from the Vault UI**
+
+1. Open `http://192.168.56.20:8200` in your browser and log in with the root token
+2. Navigate to **secret → k8s-provisioner → kubeconfig-oidc**
+3. Copy the value of the `config` field
+4. Paste into a new file and save as `~/.kube/kubeconfig-oidc`
+
+**New user: first-time setup (once)**
+
+```bash
+# 1. Install kubelogin
+brew install int128/kubelogin/kubelogin   # macOS
+
+# 2. Add keycloak.local to /etc/hosts (required to reach the OIDC issuer)
+INGRESS_IP=$(vagrant ssh controlplane -c "kubectl get svc -n istio-system istio-ingressgateway -o jsonpath='{.status.loadBalancer.ingress[0].ip}'" 2>/dev/null | tr -d '\r')
+echo "$INGRESS_IP keycloak.local" | sudo tee -a /etc/hosts
+
+# 3. Save the kubeconfig received from admin
+mkdir -p ~/.kube
+cp kubeconfig-oidc ~/.kube/k8s-lab.conf
+export KUBECONFIG=~/.kube/k8s-lab.conf   # add to ~/.zshrc to persist
+
+# 4. First login — opens browser at Keycloak
+kubectl get nodes
+```
+
+Log in with your Keycloak credentials. The token is cached locally; the browser will not open again until it expires (24h).
+
+Verify who you are authenticated as:
+
+```bash
+kubectl auth whoami
+# ATTRIBUTE   VALUE
+# Username    oidc:alice
+# Groups      [oidc:k8s-developers system:authenticated]
+```
+
+**Day-to-day usage:**
+
+```bash
+export KUBECONFIG=~/.kube/k8s-lab.conf
+kubectl get nodes
+kubectl get pods -A
+```
+
+### Grafana SSO
+
+Grafana is configured to use Keycloak for SSO. Click **"Sign in with Keycloak"** on the Grafana login page.
+
+| User | Password | Grafana Role |
+|------|----------|--------------|
+| `k8sadmin` | `vault kv get -field=keycloak_k8sadmin_password secret/k8s-provisioner/api-keys` | Admin |
+| `developer` | `vault kv get -field=keycloak_developer_password secret/k8s-provisioner/api-keys` | Viewer |
+
+- Users in `k8s-admins` group → Grafana `Admin` role
+- All other users → Grafana `Viewer` role
+- Local admin login still works: `admin` / (password from Vault)
+
+### Registering a new application in Keycloak
+
+To protect a new application with Keycloak SSO, create a client in the `k8s` realm.
+
+**Via Admin Console** (`https://keycloak.local/admin`):
+
+1. Login with `admin` credentials
+2. Select realm **k8s** (top-left dropdown)
+3. Go to **Clients** → **Create client**
+4. Fill in:
+   - **Client type**: `OpenID Connect`
+   - **Client ID**: your app name (e.g., `myapp`)
+5. Enable **Client authentication** if your app can keep a secret (confidential client)
+6. Set **Valid redirect URIs**: `https://myapp.local/*`
+7. Set **Web origins**: `https://myapp.local`
+8. Save
+
+**Via kcadm (CLI):**
+
+```bash
+kubectl exec -n keycloak deployment/keycloak -- bash -c '
+KCADM=/opt/keycloak/bin/kcadm.sh
+$KCADM config credentials --server http://localhost:8080 \
+  --realm master --user admin --password Admin@Keycloak123
+
+# Confidential client (server-side apps)
+$KCADM create clients -r k8s \
+  -s clientId=myapp \
+  -s publicClient=false \
+  -s secret=my-client-secret \
+  -s "redirectUris=[\"https://myapp.local/*\"]" \
+  -s enabled=true
+
+# Public client with PKCE (SPAs / CLIs)
+$KCADM create clients -r k8s \
+  -s clientId=myapp-spa \
+  -s publicClient=true \
+  -s "redirectUris=[\"https://myapp.local/*\"]" \
+  -s "attributes={\"pkce.code.challenge.method\":\"S256\"}" \
+  -s enabled=true
+'
+```
+
+**Adding the groups claim to a new client:**
+
+```bash
+kubectl exec -n keycloak deployment/keycloak -- bash -c '
+KCADM=/opt/keycloak/bin/kcadm.sh
+$KCADM config credentials --server http://localhost:8080 \
+  --realm master --user admin --password Admin@Keycloak123
+
+# Get the groups scope ID
+SCOPE_ID=$($KCADM get client-scopes -r k8s --fields id,name \
+  | grep -B2 "\"groups\"" \
+  | grep -oE "[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}" | head -1)
+
+# Get your client ID
+CLIENT_ID=$($KCADM get clients -r k8s --fields id,clientId \
+  | grep -B2 "\"myapp\"" \
+  | grep -oE "[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}" | head -1)
+
+# Associate groups scope
+$KCADM update clients/$CLIENT_ID/optional-client-scopes/$SCOPE_ID -r k8s
+'
+```
+
+The token will then include `"groups": ["k8s-admins"]` (or whichever groups the user belongs to), which your app can use for role-based access control.
+
+---
 
 ## Troubleshooting
 

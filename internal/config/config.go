@@ -21,16 +21,15 @@ type Config struct {
 	Vault      VaultConfig      `yaml:"vault"`
 }
 
-type OllamaConfig struct {
-	APIKey string `yaml:"api_key"` // Ollama cloud API key (from https://ollama.com/settings/keys)
+type VaultConfig struct {
+	Addr  string `yaml:"addr"`
+	Token string `yaml:"token"`
 }
 
-type VaultConfig struct {
-	Enabled  bool   `yaml:"enabled"`
-	Address  string `yaml:"address"`   // Vault API address (http://192.168.56.20:8200)
-	Version  string `yaml:"version"`   // Vault binary version installed on storage node
-	AutoInit bool   `yaml:"auto_init"` // Initialize and unseal automatically during provisioning
-	K8sAuth  bool   `yaml:"k8s_auth"`  // Configure Kubernetes auth method
+func (v VaultConfig) Enabled() bool { return v.Addr != "" }
+
+type OllamaConfig struct {
+	APIKey string `yaml:"api_key"` // Ollama cloud API key (from https://ollama.com/settings/keys)
 }
 
 type ClusterConfig struct {
@@ -74,6 +73,9 @@ type ComponentsConfig struct {
 	Logging      string `yaml:"logging"`
 	Tracing      string `yaml:"tracing"` // Options: otel-tempo, none
 	Karpor       string `yaml:"karpor"`
+	Keycloak     string `yaml:"keycloak"`
+	VPA          string `yaml:"vpa"`  // Options: enabled, disabled
+	KEDA         string `yaml:"keda"` // Options: enabled, disabled
 }
 
 type KarporAIConfig struct {

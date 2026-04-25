@@ -281,6 +281,10 @@ data:
         source_labels = ["__meta_kubernetes_pod_node_name"]
         target_label  = "node"
       }
+      rule {
+        source_labels = ["__meta_kubernetes_pod_label_app"]
+        target_label  = "app"
+      }
       // Drop pods that are not running
       rule {
         source_labels = ["__meta_kubernetes_pod_phase"]
