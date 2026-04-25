@@ -114,7 +114,7 @@ func (k *Keycloak) Install() error {
 	fmt.Println("Installing Keycloak (OIDC Identity Provider)...")
 
 	cpIP := k.config.Network.ControlPlaneIP
-	issuerURL := fmt.Sprintf("http://%s:30080/realms/k8s", cpIP)
+	issuerURL := "http://keycloak.local:30080/realms/k8s"
 
 	creds := k.resolveCredentials()
 
@@ -192,7 +192,7 @@ users:
         - get-token
         - --oidc-issuer-url=%s
         - --oidc-client-id=kubectl
-        - --oidc-use-pkce
+        - --oidc-pkce-method=auto
 `, cpIP, issuerURL)
 
 	vault := NewVaultClient(k.config.Vault.Addr, token)
