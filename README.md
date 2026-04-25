@@ -1614,7 +1614,7 @@ Output example:
     "04d1dead7c6...",
     "150414ae84d..."
   ],
-  "root_token": "hvs.flcBx0hacwkSbeYK7hzSAGqk"
+  "root_token": "hvs.XXXXXXXXXXXXXXXXXXXXXXXXXXXX"
 }
 ```
 
@@ -1634,7 +1634,7 @@ Login with the `root_token` from `vault-init.json`.
 
 ```bash
 export VAULT_ADDR=http://192.168.56.20:8200
-export VAULT_TOKEN=hvs.flcBx0hacwkSbeYK7hzSAGqk   # from vault-init.json
+export VAULT_TOKEN=hvs.XXXXXXXXXXXXXXXXXXXXXXXXXXXX   # from vault-init.json
 
 # List secrets
 vault kv list secret/k8s-provisioner
