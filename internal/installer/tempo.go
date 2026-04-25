@@ -417,7 +417,7 @@ data:
           datasourceUid: loki-uid
           tags:
           - key: service.name
-            value: service
+            value: app
           - key: k8s.namespace.name
             value: namespace
           filterByTraceID: true

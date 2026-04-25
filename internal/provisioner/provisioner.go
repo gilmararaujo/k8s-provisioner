@@ -252,11 +252,36 @@ func (p *Provisioner) InitControlPlane() error {
 		return err
 	}
 
+	// Install cert-manager (TLS certificates for all *.local services)
+	fmt.Println("\n>>> Installing cert-manager...")
+	certInstaller := installer.NewCertManager(cfg, p.exec)
+	if err := certInstaller.Install(); err != nil {
+		fmt.Printf("Warning: cert-manager installation failed: %v\n", err)
+	}
+
 	// Install Metrics Server
 	fmt.Println("\n>>> Installing Metrics Server...")
 	metricsInstaller := installer.NewMetricsServer(cfg, p.exec)
 	if err := metricsInstaller.Install(); err != nil {
 		return err
+	}
+
+	// Install VPA (if enabled)
+	if cfg.Components.VPA == "enabled" {
+		fmt.Println("\n>>> Installing VPA (Vertical Pod Autoscaler)...")
+		vpaInstaller := installer.NewVPA(cfg, p.exec)
+		if err := vpaInstaller.Install(); err != nil {
+			fmt.Printf("Warning: VPA installation failed: %v\n", err)
+		}
+	}
+
+	// Install KEDA (if enabled)
+	if cfg.Components.KEDA == "enabled" {
+		fmt.Println("\n>>> Installing KEDA (Event-Driven Autoscaling)...")
+		kedaInstaller := installer.NewKEDA(cfg, p.exec)
+		if err := kedaInstaller.Install(); err != nil {
+			fmt.Printf("Warning: KEDA installation failed: %v\n", err)
+		}
 	}
 
 	// Install NFS Provisioner (provides nfs-dynamic and nfs-static StorageClasses)
@@ -266,13 +291,18 @@ func (p *Provisioner) InitControlPlane() error {
 		return err
 	}
 
-	// Configure Vault before any component that depends on secrets (Monitoring, Karpor)
-	if cfg.Vault.Enabled && cfg.Vault.AutoInit {
-		fmt.Println("\n>>> Configuring HashiCorp Vault...")
-		vaultInstaller := installer.NewVault(cfg, p.exec)
-		if err := vaultInstaller.Install(); err != nil {
-			fmt.Printf("Warning: Vault configuration failed: %v\n", err)
-		}
+	// Install Vault on storage node (secrets management)
+	fmt.Println("\n>>> Installing Vault (secrets management)...")
+	vaultInstaller := installer.NewVaultInstaller(cfg, p.exec)
+	if err := vaultInstaller.Install(); err != nil {
+		fmt.Printf("Warning: Vault installation failed: %v\n", err)
+	}
+
+	// Install Vault Secrets Operator — syncs Vault secrets into K8s Secrets before components start
+	fmt.Println("\n>>> Installing Vault Secrets Operator...")
+	vsoInstaller := installer.NewVaultSecretsOperator(cfg, p.exec)
+	if err := vsoInstaller.Install(); err != nil {
+		fmt.Printf("Warning: Vault Secrets Operator installation failed: %v\n", err)
 	}
 
 	// Install Monitoring Stack (if enabled)
@@ -304,6 +334,15 @@ func (p *Provisioner) InitControlPlane() error {
 		kialiInstaller := installer.NewKiali(cfg, p.exec)
 		if err := kialiInstaller.Install(); err != nil {
 			fmt.Printf("Warning: Kiali installation failed: %v\n", err)
+		}
+	}
+
+	// Install Keycloak (if enabled) - after monitoring so Grafana OAuth2 can be configured
+	if cfg.Components.Keycloak == "enabled" {
+		fmt.Println("\n>>> Installing Keycloak (OIDC)...")
+		keycloakInstaller := installer.NewKeycloak(cfg, p.exec)
+		if err := keycloakInstaller.Install(); err != nil {
+			fmt.Printf("Warning: Keycloak installation failed: %v\n", err)
 		}
 	}
 

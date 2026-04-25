@@ -25,8 +25,8 @@ func (o *Ollama) isCloudModel() bool {
 
 // resolveAPIKey retorna a API key do Vault (se habilitado) ou do config.yaml.
 func (o *Ollama) resolveAPIKey() string {
-	if o.config.Vault.Enabled {
-		if val, err := FetchSecret(o.config, "ollama_api_key"); err == nil && val != "" {
+	if o.config.Vault.Enabled() {
+		if val, err := FetchSecret(o.config.Vault.Addr, o.config.Vault.Token, "ollama_api_key"); err == nil && val != "" {
 			fmt.Println("Ollama API key loaded from Vault")
 			return val
 		}
@@ -234,12 +234,15 @@ spec:
 }
 
 func (o *Ollama) createAPIKeySecret() error {
+	if out, _ := o.exec.RunShell("kubectl get secret ollama-api-key -n ollama -o name 2>/dev/null"); out != "" {
+		fmt.Println("Ollama API key secret already synced by Vault Secrets Operator, skipping direct creation")
+		return nil
+	}
+
 	apiKey := o.resolveAPIKey()
 	if apiKey == "" {
 		return fmt.Errorf("no API key available (config.yaml or Vault)")
 	}
-
-	_, _ = o.exec.RunShell("kubectl delete secret ollama-api-key -n ollama 2>/dev/null || true")
 
 	cmd := fmt.Sprintf("kubectl create secret generic ollama-api-key -n ollama --from-literal=api-key=%s", apiKey)
 	if _, err := o.exec.RunShell(cmd); err != nil {

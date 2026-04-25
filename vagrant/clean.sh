@@ -37,11 +37,11 @@ for vm in "Storage" "Master" "Node01" "Node02"; do
 done
 
 # 5. Remover box antiga (opcional)
-echo "[5/5] Verificando box bento/debian-12..."
-if vagrant box list | grep -q "bento/debian-12"; then
-  read -p "  Deseja remover a box bento/debian-12 para baixar novamente? (s/N): " choice
+echo "[5/5] Verificando box bento/debian-13..."
+if vagrant box list | grep -q "bento/debian-13"; then
+  read -p "  Deseja remover a box bento/debian-13 para baixar novamente? (s/N): " choice
   if [[ "$choice" =~ ^[Ss]$ ]]; then
-    vagrant box remove bento/debian-12 --all --force 2>/dev/null || true
+    vagrant box remove bento/debian-13 --all --force 2>/dev/null || true
     echo "  - Box removida!"
   else
     echo "  - Box mantida."

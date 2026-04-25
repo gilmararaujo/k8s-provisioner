@@ -312,6 +312,17 @@ spec:
       protocol: HTTP
     hosts:
     - "kiali.local"
+    tls:
+      httpsRedirect: true
+  - port:
+      number: 443
+      name: https
+      protocol: HTTPS
+    tls:
+      mode: SIMPLE
+      credentialName: lab-tls-secret
+    hosts:
+    - "kiali.local"
 ---
 apiVersion: networking.istio.io/v1
 kind: VirtualService
