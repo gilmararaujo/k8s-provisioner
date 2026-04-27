@@ -344,6 +344,18 @@ func (p *Provisioner) InitControlPlane() error {
 		if err := keycloakInstaller.Install(); err != nil {
 			fmt.Printf("Warning: Keycloak installation failed: %v\n", err)
 		}
+
+		// Keycloak applies AuthenticationConfiguration which restarts the API server.
+		// This invalidates the CNI kubeconfig token that calico-node wrote at install
+		// time. Restart the daemonset so each node gets a fresh token before workers join.
+		fmt.Println("\n>>> Refreshing Calico CNI kubeconfig after API server restart...")
+		if _, err := p.exec.RunShell("kubectl rollout restart daemonset/calico-node -n calico-system"); err != nil {
+			fmt.Printf("Warning: calico-node restart failed: %v\n", err)
+		} else {
+			if _, err := p.exec.RunShell("kubectl rollout status daemonset/calico-node -n calico-system --timeout=3m"); err != nil {
+				fmt.Printf("Warning: calico-node rollout status: %v\n", err)
+			}
+		}
 	}
 
 	// Install Karpor (if enabled)
