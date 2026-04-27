@@ -178,7 +178,7 @@ data:
       grafana:
         enabled: true
         internal_url: "http://grafana.monitoring:3000"
-        external_url: "http://grafana.local"%s%s
+        external_url: "https://grafana.local"%s%s
       istio:
         root_namespace: istio-system
         istio_status_enabled: true
