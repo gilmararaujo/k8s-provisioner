@@ -20,7 +20,14 @@ func NewKiali(cfg *config.Config, exec executor.CommandExecutor) *Kiali {
 func (k *Kiali) Install() error {
 	fmt.Println("Installing Kiali (Service Mesh Observability)...")
 
-	if err := k.installKiali(); err != nil {
+	grafanaPassword, err := k.exec.RunShell(
+		"kubectl get secret grafana-admin -n monitoring -o jsonpath='{.data.password}' 2>/dev/null | base64 -d")
+	if err != nil || grafanaPassword == "" {
+		fmt.Println("Warning: could not read grafana-admin secret, Kiali-Grafana integration may require manual auth config")
+		grafanaPassword = ""
+	}
+
+	if err := k.installKiali(grafanaPassword); err != nil {
 		return err
 	}
 
@@ -38,7 +45,7 @@ func (k *Kiali) Install() error {
 	return nil
 }
 
-func (k *Kiali) installKiali() error {
+func (k *Kiali) installKiali(grafanaPassword string) error {
 	tracingEnabled := k.config.Components.Tracing == "otel-tempo"
 	loggingEnabled := k.config.Components.Logging == "loki"
 
@@ -46,6 +53,15 @@ func (k *Kiali) installKiali() error {
 	// - deployment.accessible_namespaces removed → cluster_wide_access: true
 	// - external_services.logging_backend renamed to external_services.logging
 	// - tracing.tempo_config restructured
+	grafanaAuthSection := ""
+	if grafanaPassword != "" {
+		grafanaAuthSection = fmt.Sprintf(`
+        auth:
+          type: basic
+          username: admin
+          password: "%s"`, grafanaPassword)
+	}
+
 	tracingSection := ""
 	if tracingEnabled {
 		tracingSection = `
@@ -178,7 +194,7 @@ data:
       grafana:
         enabled: true
         internal_url: "http://grafana.monitoring:3000"
-        external_url: "https://grafana.local"%s%s
+        external_url: "https://grafana.local"%s%s%s
       istio:
         root_namespace: istio-system
         istio_status_enabled: true
@@ -286,14 +302,14 @@ spec:
     port: 20001
     targetPort: 20001
   selector:
-    app: kiali`, tracingSection, loggingSection)
+    app: kiali`, grafanaAuthSection, tracingSection, loggingSection)
 
 	if err := executor.WriteFile("/tmp/kiali.yaml", kiali); err != nil {
 		return err
 	}
 
-	_, err := k.exec.RunShell("kubectl apply -f /tmp/kiali.yaml")
-	return err
+	_, applyErr := k.exec.RunShell("kubectl apply -f /tmp/kiali.yaml")
+	return applyErr
 }
 
 func (k *Kiali) configureIngress() error {
