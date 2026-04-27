@@ -20,8 +20,17 @@ func NewMonitoring(cfg *config.Config, exec executor.CommandExecutor) *Monitorin
 func (m *Monitoring) Install() error {
 	fmt.Println("Installing Monitoring Stack (Prometheus + Grafana)...")
 
-	// Create monitoring namespace
-	if _, err := m.exec.RunShell("kubectl create namespace monitoring --dry-run=client -o yaml | kubectl apply -f -"); err != nil {
+	// Create monitoring namespace with Istio sidecar injection
+	ns := `apiVersion: v1
+kind: Namespace
+metadata:
+  name: monitoring
+  labels:
+    istio-injection: enabled`
+	if err := executor.WriteFile("/tmp/monitoring-ns.yaml", ns); err != nil {
+		return err
+	}
+	if _, err := m.exec.RunShell("kubectl apply -f /tmp/monitoring-ns.yaml"); err != nil {
 		return err
 	}
 

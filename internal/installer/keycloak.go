@@ -214,7 +214,9 @@ func (k *Keycloak) deployKeycloak(creds keycloakCreds) error {
 	secrets := `apiVersion: v1
 kind: Namespace
 metadata:
-  name: keycloak`
+  name: keycloak
+  labels:
+    istio-injection: enabled`
 
 	rest := `
 ---
