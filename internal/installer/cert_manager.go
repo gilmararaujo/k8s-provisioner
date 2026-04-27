@@ -8,7 +8,6 @@ import (
 	"github.com/techiescamp/k8s-provisioner/internal/executor"
 )
 
-const certManagerVersion = "v1.16.3"
 
 type CertManager struct {
 	config *config.Config
@@ -22,7 +21,11 @@ func NewCertManager(cfg *config.Config, exec executor.CommandExecutor) *CertMana
 func (c *CertManager) Install() error {
 	fmt.Println("Installing cert-manager...")
 
-	url := fmt.Sprintf("https://github.com/cert-manager/cert-manager/releases/download/%s/cert-manager.yaml", certManagerVersion)
+	version := c.config.Versions.CertManager
+	if version == "" {
+		version = "v1.16.3"
+	}
+	url := fmt.Sprintf("https://github.com/cert-manager/cert-manager/releases/download/%s/cert-manager.yaml", version)
 	if _, err := c.exec.RunShell(fmt.Sprintf("kubectl apply -f %s", url)); err != nil {
 		return fmt.Errorf("cert-manager install failed: %w", err)
 	}

@@ -39,16 +39,25 @@ type ClusterConfig struct {
 }
 
 type VersionsConfig struct {
-	Kubernetes string `yaml:"kubernetes"`
-	CriO       string `yaml:"crio"`
-	Calico     string `yaml:"calico"`
-	MetalLB    string `yaml:"metallb"`
-	Istio      string `yaml:"istio"`
-	Karpor     string `yaml:"karpor"`
-	Grafana    string `yaml:"grafana"`
-	Loki       string `yaml:"loki"`
-	Alloy      string `yaml:"alloy"`
-	Tempo      string `yaml:"tempo"`
+	Kubernetes         string `yaml:"kubernetes"`
+	CriO               string `yaml:"crio"`
+	Calico             string `yaml:"calico"`
+	MetalLB            string `yaml:"metallb"`
+	Istio              string `yaml:"istio"`
+	Karpor             string `yaml:"karpor"`
+	Grafana            string `yaml:"grafana"`
+	Loki               string `yaml:"loki"`
+	Alloy              string `yaml:"alloy"`
+	Tempo              string `yaml:"tempo"`
+	OtelCollector      string `yaml:"otel_collector"`
+	Keycloak           string `yaml:"keycloak"`
+	Postgres           string `yaml:"postgres"`
+	Kiali              string `yaml:"kiali"`
+	NodeExporter       string `yaml:"node_exporter"`
+	KubeStateMetrics   string `yaml:"kube_state_metrics"`
+	MetricsServer      string `yaml:"metrics_server"`
+	PrometheusOperator string `yaml:"prometheus_operator"`
+	CertManager        string `yaml:"cert_manager"`
 }
 
 type NetworkConfig struct {

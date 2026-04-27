@@ -257,7 +257,7 @@ spec:
         fsGroup: 999
       containers:
       - name: postgres
-        image: postgres:16
+        image: postgres:%s
         env:
         - name: POSTGRES_DB
           value: keycloak
@@ -344,7 +344,7 @@ spec:
           runAsUser: 65534
       containers:
       - name: keycloak
-        image: quay.io/keycloak/keycloak:26.2
+        image: quay.io/keycloak/keycloak:%s
         args:
         - start
         env:
@@ -423,7 +423,15 @@ spec:
   selector:
     app: keycloak`
 
-	manifests := secrets + rest
+	pgVersion := k.config.Versions.Postgres
+	if pgVersion == "" {
+		pgVersion = "16"
+	}
+	kcVersion := k.config.Versions.Keycloak
+	if kcVersion == "" {
+		kcVersion = "26.2"
+	}
+	manifests := fmt.Sprintf(secrets+rest, pgVersion, kcVersion)
 
 	if err := executor.WriteFile("/tmp/keycloak.yaml", manifests); err != nil {
 		return err

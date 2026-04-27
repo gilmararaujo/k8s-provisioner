@@ -21,6 +21,15 @@ versions:
   loki: "3.7.1"
   alloy: "v1.15.1"
   tempo: "2.10.4"
+  otel_collector: "0.149.0"
+  keycloak: "26.2"
+  postgres: "16"
+  kiali: "v2.24.0"
+  node_exporter: "v1.11.1"
+  kube_state_metrics: "v2.18.0"
+  metrics_server: "v0.7.2"
+  prometheus_operator: "v0.90.1"
+  cert_manager: "v1.16.3"
 
 network:
   interface: "eth1"

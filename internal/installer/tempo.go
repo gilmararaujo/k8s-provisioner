@@ -304,7 +304,7 @@ spec:
         fsGroup: 65534
       containers:
       - name: otel-collector
-        image: otel/opentelemetry-collector-contrib:0.149.0
+        image: otel/opentelemetry-collector-contrib:%s
         imagePullPolicy: IfNotPresent
         securityContext:
           allowPrivilegeEscalation: false
@@ -374,6 +374,12 @@ spec:
   trafficPolicy:
     tls:
       mode: DISABLE`
+
+	otelVersion := t.config.Versions.OtelCollector
+	if otelVersion == "" {
+		otelVersion = "0.149.0"
+	}
+	otel = fmt.Sprintf(otel, otelVersion)
 
 	if err := executor.WriteFile("/tmp/otel-collector.yaml", otel); err != nil {
 		return err

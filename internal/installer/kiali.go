@@ -49,6 +49,11 @@ func (k *Kiali) installKiali(grafanaPassword string) error {
 	tracingEnabled := k.config.Components.Tracing == "otel-tempo"
 	loggingEnabled := k.config.Components.Logging == "loki"
 
+	kialiVersion := k.config.Versions.Kiali
+	if kialiVersion == "" {
+		kialiVersion = "v2.24.0"
+	}
+
 	// Kiali v2.x config changes vs v1.x:
 	// - deployment.accessible_namespaces removed → cluster_wide_access: true
 	// - external_services.logging_backend renamed to external_services.logging
@@ -219,7 +224,7 @@ metadata:
   namespace: istio-system
   labels:
     app: kiali
-    version: v2.24.0
+    version: %s
 spec:
   replicas: 1
   selector:
@@ -229,7 +234,7 @@ spec:
     metadata:
       labels:
         app: kiali
-        version: v2.24.0
+        version: %s
     spec:
       serviceAccountName: kiali
       securityContext:
@@ -239,7 +244,7 @@ spec:
         fsGroup: 1000
       containers:
       - name: kiali
-        image: quay.io/kiali/kiali:v2.24.0
+        image: quay.io/kiali/kiali:%s
         imagePullPolicy: IfNotPresent
         securityContext:
           allowPrivilegeEscalation: false
@@ -302,7 +307,7 @@ spec:
     port: 20001
     targetPort: 20001
   selector:
-    app: kiali`, grafanaAuthSection, tracingSection, loggingSection)
+    app: kiali`, kialiVersion, kialiVersion, kialiVersion, grafanaAuthSection, tracingSection, loggingSection)
 
 	if err := executor.WriteFile("/tmp/kiali.yaml", kiali); err != nil {
 		return err

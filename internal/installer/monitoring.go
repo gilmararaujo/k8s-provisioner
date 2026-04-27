@@ -175,7 +175,11 @@ spec:
 
 func (m *Monitoring) installPrometheusOperator() error {
 	// Using prometheus-operator bundle
-	bundleURL := "https://raw.githubusercontent.com/prometheus-operator/prometheus-operator/v0.90.1/bundle.yaml"
+	promOpVersion := m.config.Versions.PrometheusOperator
+	if promOpVersion == "" {
+		promOpVersion = "v0.90.1"
+	}
+	bundleURL := fmt.Sprintf("https://raw.githubusercontent.com/prometheus-operator/prometheus-operator/%s/bundle.yaml", promOpVersion)
 
 	// Download and modify to use monitoring namespace
 	if _, err := m.exec.RunShell(fmt.Sprintf("curl -sL %s | sed 's/namespace: default/namespace: monitoring/g' | kubectl apply --server-side -f -", bundleURL)); err != nil {
@@ -476,7 +480,7 @@ spec:
         runAsGroup: 65534
       containers:
       - name: node-exporter
-        image: prom/node-exporter:v1.11.1
+        image: prom/node-exporter:%s
         imagePullPolicy: IfNotPresent
         securityContext:
           allowPrivilegeEscalation: false
@@ -551,6 +555,12 @@ spec:
   endpoints:
   - port: metrics
     interval: 30s`
+
+	neVersion := m.config.Versions.NodeExporter
+	if neVersion == "" {
+		neVersion = "v1.11.1"
+	}
+	nodeExporter = fmt.Sprintf(nodeExporter, neVersion)
 
 	if err := executor.WriteFile("/tmp/node-exporter.yaml", nodeExporter); err != nil {
 		return err
@@ -649,7 +659,7 @@ spec:
         fsGroup: 65534
       containers:
       - name: kube-state-metrics
-        image: registry.k8s.io/kube-state-metrics/kube-state-metrics:v2.18.0
+        image: registry.k8s.io/kube-state-metrics/kube-state-metrics:%s
         imagePullPolicy: IfNotPresent
         securityContext:
           allowPrivilegeEscalation: false
@@ -707,6 +717,12 @@ spec:
   endpoints:
   - port: http-metrics
     interval: 30s`
+
+	ksmVersion := m.config.Versions.KubeStateMetrics
+	if ksmVersion == "" {
+		ksmVersion = "v2.18.0"
+	}
+	ksm = fmt.Sprintf(ksm, ksmVersion)
 
 	if err := executor.WriteFile("/tmp/kube-state-metrics.yaml", ksm); err != nil {
 		return err
