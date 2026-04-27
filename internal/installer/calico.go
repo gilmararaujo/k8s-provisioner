@@ -85,15 +85,15 @@ func (c *Calico) waitForTigeraCRDs(timeout time.Duration) error {
 func (c *Calico) waitForReady(timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		out, err := c.exec.RunShell("kubectl get pods -n calico-system -l k8s-app=calico-node -o jsonpath='{.items[*].status.phase}'")
-		if err == nil && out == "Running" {
+		out, err := c.exec.RunShell(
+			"kubectl rollout status daemonset/calico-node -n calico-system --timeout=10s 2>&1")
+		if err == nil && strings.Contains(out, "successfully rolled out") {
 			fmt.Println("Calico is ready!")
 			return nil
 		}
 		fmt.Println("Waiting for Calico pods...")
 		time.Sleep(LongPollInterval)
 	}
-	// Don't fail, just warn
 	fmt.Println("Warning: Calico pods may still be starting")
 	return nil
 }
