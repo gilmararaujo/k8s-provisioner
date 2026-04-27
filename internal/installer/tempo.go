@@ -120,6 +120,7 @@ spec:
     metadata:
       labels:
         app: tempo
+        version: "2.10.4"
     spec:
       serviceAccountName: tempo
       securityContext:

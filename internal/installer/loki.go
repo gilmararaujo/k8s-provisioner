@@ -131,6 +131,7 @@ spec:
     metadata:
       labels:
         app: loki
+        version: "3.7.1"
     spec:
       serviceAccountName: loki
       securityContext:
@@ -328,6 +329,7 @@ spec:
     metadata:
       labels:
         app: alloy
+        version: "v1.15.1"
     spec:
       serviceAccountName: alloy
       securityContext:

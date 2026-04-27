@@ -332,6 +332,7 @@ spec:
     metadata:
       labels:
         app: grafana
+        version: "13.0.1"
     spec:
       serviceAccountName: grafana
       securityContext:
