@@ -332,7 +332,7 @@ spec:
     metadata:
       labels:
         app: grafana
-        version: "13.0.1"
+        version: "%s"
     spec:
       serviceAccountName: grafana
       securityContext:
@@ -342,7 +342,7 @@ spec:
         fsGroup: 472
       containers:
       - name: grafana
-        image: grafana/grafana:13.0.1
+        image: grafana/grafana:%s
         imagePullPolicy: IfNotPresent
         securityContext:
           allowPrivilegeEscalation: false
@@ -400,6 +400,12 @@ spec:
     targetPort: 3000
   selector:
     app: grafana`
+
+	version := m.config.Versions.Grafana
+	if version == "" {
+		version = "13.0.1"
+	}
+	grafana = fmt.Sprintf(grafana, version, version)
 
 	if err := executor.WriteFile("/tmp/grafana.yaml", grafana); err != nil {
 		return err

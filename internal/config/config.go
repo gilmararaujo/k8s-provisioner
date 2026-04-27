@@ -45,6 +45,10 @@ type VersionsConfig struct {
 	MetalLB    string `yaml:"metallb"`
 	Istio      string `yaml:"istio"`
 	Karpor     string `yaml:"karpor"`
+	Grafana    string `yaml:"grafana"`
+	Loki       string `yaml:"loki"`
+	Alloy      string `yaml:"alloy"`
+	Tempo      string `yaml:"tempo"`
 }
 
 type NetworkConfig struct {

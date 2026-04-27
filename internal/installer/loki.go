@@ -131,7 +131,7 @@ spec:
     metadata:
       labels:
         app: loki
-        version: "3.7.1"
+        version: "%s"
     spec:
       serviceAccountName: loki
       securityContext:
@@ -141,7 +141,7 @@ spec:
         runAsUser: 10001
       containers:
       - name: loki
-        image: grafana/loki:3.7.1
+        image: grafana/loki:%s
         imagePullPolicy: IfNotPresent
         securityContext:
           allowPrivilegeEscalation: false
@@ -201,6 +201,12 @@ spec:
     name: grpc
   selector:
     app: loki`
+
+	lokiVersion := l.config.Versions.Loki
+	if lokiVersion == "" {
+		lokiVersion = "3.7.1"
+	}
+	loki = fmt.Sprintf(loki, lokiVersion, lokiVersion)
 
 	if err := executor.WriteFile("/tmp/loki.yaml", loki); err != nil {
 		return err
@@ -329,7 +335,7 @@ spec:
     metadata:
       labels:
         app: alloy
-        version: "v1.15.1"
+        version: "%s"
     spec:
       serviceAccountName: alloy
       securityContext:
@@ -339,7 +345,7 @@ spec:
         fsGroup: 473
       containers:
       - name: alloy
-        image: grafana/alloy:v1.15.1
+        image: grafana/alloy:%s
         imagePullPolicy: IfNotPresent
         securityContext:
           allowPrivilegeEscalation: false
@@ -400,6 +406,12 @@ spec:
     name: http
   selector:
     app: alloy`
+
+	alloyVersion := l.config.Versions.Alloy
+	if alloyVersion == "" {
+		alloyVersion = "v1.15.1"
+	}
+	alloy = fmt.Sprintf(alloy, alloyVersion, alloyVersion)
 
 	if err := executor.WriteFile("/tmp/alloy.yaml", alloy); err != nil {
 		return err

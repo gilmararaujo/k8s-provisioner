@@ -120,7 +120,7 @@ spec:
     metadata:
       labels:
         app: tempo
-        version: "2.10.4"
+        version: "%s"
     spec:
       serviceAccountName: tempo
       securityContext:
@@ -130,7 +130,7 @@ spec:
         runAsGroup: 10001
       containers:
       - name: tempo
-        image: grafana/tempo:2.10.4
+        image: grafana/tempo:%s
         imagePullPolicy: IfNotPresent
         securityContext:
           allowPrivilegeEscalation: false
@@ -195,6 +195,12 @@ spec:
     name: otlp-http
   selector:
     app: tempo`
+
+	version := t.config.Versions.Tempo
+	if version == "" {
+		version = "2.10.4"
+	}
+	tempo = fmt.Sprintf(tempo, version, version)
 
 	if err := executor.WriteFile("/tmp/tempo.yaml", tempo); err != nil {
 		return err
