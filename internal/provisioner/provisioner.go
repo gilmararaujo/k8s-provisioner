@@ -232,10 +232,27 @@ func (p *Provisioner) InitControlPlane() error {
 		return err
 	}
 
-	// Wait for node to be ready
+	// Wait for control plane node to be ready
 	fmt.Println("\n>>> Waiting for node to be ready...")
 	if err := p.waitForNode("controlplane", NodeReadyTimeout); err != nil {
 		return err
+	}
+
+	// Generate join command early so worker nodes can pick it up and join
+	// while the control plane installs cluster-level components in parallel.
+	fmt.Println("\n>>> Generating join command...")
+	if _, err := p.exec.RunShell("kubeadm token create --print-join-command > /vagrant/join-command.sh"); err != nil {
+		return err
+	}
+	if _, err := p.exec.RunShell("chmod +x /vagrant/join-command.sh"); err != nil {
+		return err
+	}
+
+	// Wait for all worker nodes to join before deploying workloads.
+	// Workers pick up /vagrant/join-command.sh as soon as it is written above.
+	fmt.Println("\n>>> Waiting for worker nodes to join the cluster...")
+	if err := p.waitForWorkerNodes(cfg, 45*time.Minute); err != nil {
+		fmt.Printf("Warning: not all worker nodes became ready: %v\n", err)
 	}
 
 	// Install MetalLB
@@ -338,9 +355,10 @@ func (p *Provisioner) InitControlPlane() error {
 	}
 
 	// Install Keycloak (if enabled) - after monitoring so Grafana OAuth2 can be configured
+	var keycloakInstaller *installer.Keycloak
 	if cfg.Components.Keycloak == "enabled" {
 		fmt.Println("\n>>> Installing Keycloak (OIDC)...")
-		keycloakInstaller := installer.NewKeycloak(cfg, p.exec)
+		keycloakInstaller = installer.NewKeycloak(cfg, p.exec)
 		if err := keycloakInstaller.Install(); err != nil {
 			fmt.Printf("Warning: Keycloak installation failed: %v\n", err)
 		}
@@ -376,13 +394,12 @@ func (p *Provisioner) InitControlPlane() error {
 		}
 	}
 
-	// Generate join command
-	fmt.Println("\n>>> Generating join command...")
-	if _, err := p.exec.RunShell("kubeadm token create --print-join-command > /vagrant/join-command.sh"); err != nil {
-		return err
-	}
-	if _, err := p.exec.RunShell("chmod +x /vagrant/join-command.sh"); err != nil {
-		return err
+	// Configure Grafana OAuth2 with Keycloak after all components are installed
+	if keycloakInstaller != nil {
+		fmt.Println("\n>>> Configuring Grafana OAuth2 with Keycloak...")
+		if err := keycloakInstaller.ConfigureGrafanaOAuth(); err != nil {
+			fmt.Printf("Warning: Grafana OAuth2 configuration failed: %v\n", err)
+		}
 	}
 
 	p.printSuccess()
@@ -419,6 +436,32 @@ func (p *Provisioner) JoinWorker() error {
 	}
 
 	return p.exec.RunShellWithOutput(out)
+}
+
+func (p *Provisioner) waitForWorkerNodes(cfg *config.Config, timeout time.Duration) error {
+	var workers []string
+	for _, node := range cfg.Nodes {
+		if node.Role == "worker" {
+			workers = append(workers, node.Name)
+		}
+	}
+	if len(workers) == 0 {
+		return nil
+	}
+	deadline := time.Now().Add(timeout)
+	for _, name := range workers {
+		for time.Now().Before(deadline) {
+			out, err := p.exec.RunShell(fmt.Sprintf(
+				"kubectl get node %s -o jsonpath='{.status.conditions[?(@.type==\"Ready\")].status}' 2>/dev/null", name))
+			if err == nil && out == "True" {
+				fmt.Printf("Node %s is Ready!\n", name)
+				break
+			}
+			fmt.Printf("Waiting for node %s to join...\n", name)
+			time.Sleep(DefaultPollInterval)
+		}
+	}
+	return nil
 }
 
 func (p *Provisioner) waitForNode(name string, timeout time.Duration) error {

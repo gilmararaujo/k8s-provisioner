@@ -118,6 +118,14 @@ func (k *Keycloak) Install() error {
 
 	creds := k.resolveCredentials()
 
+	// Wait for VSO to sync the freshly-written Vault credentials into the keycloak-admin K8s
+	// secret before creating the pod — env vars are captured at container start time and
+	// Keycloak 26.x will not create the admin account if KEYCLOAK_ADMIN is empty.
+	fmt.Println("Waiting for VSO to sync keycloak-admin secret...")
+	if err := k.waitForAdminSecret(2 * time.Minute); err != nil {
+		fmt.Printf("Warning: keycloak-admin secret may not be ready: %v\n", err)
+	}
+
 	fmt.Println("Deploying Keycloak...")
 	if err := k.deployKeycloak(creds); err != nil {
 		return err
@@ -138,19 +146,13 @@ func (k *Keycloak) Install() error {
 		fmt.Printf("Warning: API server patch failed: %v\n", err)
 	}
 
-	if k.config.Components.Monitoring == "prometheus-stack" {
-		fmt.Println("Configuring Grafana OAuth2 with Keycloak...")
-		if err := k.configureGrafanaOAuth(cpIP, creds); err != nil {
-			fmt.Printf("Warning: Grafana OAuth2 configuration failed: %v\n", err)
-		}
-	}
-
 	if k.config.Components.ServiceMesh == "istio" {
 		fmt.Println("Creating Istio Gateway for Keycloak...")
 		if err := k.createGateway(); err != nil {
 			fmt.Printf("Warning: Failed to create Keycloak gateway: %v\n", err)
 		}
 	}
+
 
 	fmt.Println("Storing kubeconfig-oidc in Vault for distribution...")
 	if err := k.storeKubeconfigInVault(cpIP, issuerURL); err != nil {
@@ -160,6 +162,27 @@ func (k *Keycloak) Install() error {
 	fmt.Println("Keycloak installed successfully!")
 	k.printAccessInfo(cpIP, issuerURL)
 	return nil
+}
+
+// ConfigureGrafanaOAuth applies Grafana OAuth2 configuration after Keycloak is fully installed.
+// Called from the provisioner as a separate step so it runs even if Install() had partial failures.
+func (k *Keycloak) ConfigureGrafanaOAuth() error {
+	if k.config.Components.Monitoring != "prometheus-stack" {
+		return nil
+	}
+	cpIP := k.config.Network.ControlPlaneIP
+	creds := k.resolveCredentials()
+
+	fmt.Println("Configuring Grafana OAuth2 with Keycloak...")
+	var oauthErr error
+	for attempt := 1; attempt <= 3; attempt++ {
+		if oauthErr = k.configureGrafanaOAuth(cpIP, creds); oauthErr == nil {
+			break
+		}
+		fmt.Printf("Attempt %d/3 failed: %v — retrying in 20s...\n", attempt, oauthErr)
+		time.Sleep(20 * time.Second)
+	}
+	return oauthErr
 }
 
 func (k *Keycloak) storeKubeconfigInVault(cpIP, issuerURL string) error {
@@ -348,12 +371,12 @@ spec:
         args:
         - start
         env:
-        - name: KEYCLOAK_ADMIN
+        - name: KC_BOOTSTRAP_ADMIN_USERNAME
           valueFrom:
             secretKeyRef:
               name: keycloak-admin
               key: username
-        - name: KEYCLOAK_ADMIN_PASSWORD
+        - name: KC_BOOTSTRAP_ADMIN_PASSWORD
           valueFrom:
             secretKeyRef:
               name: keycloak-admin
@@ -442,12 +465,12 @@ spec:
 }
 
 func (k *Keycloak) waitForReady(timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-
-	// Wait for PostgreSQL
-	for time.Now().Before(deadline) {
-		out, _ := k.exec.RunShell("kubectl get pods -n keycloak -l app=postgres -o jsonpath='{.items[0].status.phase}' 2>/dev/null")
-		if out == "Running" {
+	// Each phase gets its own deadline so a slow postgres (e.g. with Istio sidecar init)
+	// cannot exhaust the budget before Keycloak itself is checked.
+	pgDeadline := time.Now().Add(10 * time.Minute)
+	for time.Now().Before(pgDeadline) {
+		out, _ := k.exec.RunShell("kubectl get pods -n keycloak -l app=postgres -o jsonpath='{.items[0].status.containerStatuses[?(@.name==\"postgres\")].ready}' 2>/dev/null")
+		if strings.TrimSpace(out) == "true" {
 			fmt.Println("PostgreSQL is running!")
 			break
 		}
@@ -455,41 +478,68 @@ func (k *Keycloak) waitForReady(timeout time.Duration) error {
 		time.Sleep(DefaultPollInterval)
 	}
 
-	// Wait for Keycloak pod to be Running
-	for time.Now().Before(deadline) {
+	kcDeadline := time.Now().Add(timeout)
+	for time.Now().Before(kcDeadline) {
 		out, _ := k.exec.RunShell("kubectl get pods -n keycloak -l app=keycloak -o jsonpath='{.items[0].status.phase}' 2>/dev/null")
-		if out == "Running" {
+		if strings.TrimSpace(out) == "Running" {
 			break
 		}
 		fmt.Println("Waiting for Keycloak pod (includes build step)...")
 		time.Sleep(DefaultPollInterval)
 	}
 
-	// Wait for Keycloak health endpoint
-	for time.Now().Before(deadline) {
-		_, err := k.exec.RunShell("kubectl get pod -n keycloak -l app=keycloak -o jsonpath='{.items[0].status.containerStatuses[0].ready}' 2>/dev/null | grep -q true")
-		if err == nil {
+	for time.Now().Before(kcDeadline) {
+		out, _ := k.exec.RunShell("kubectl get pod -n keycloak -l app=keycloak -o jsonpath='{.items[0].status.containerStatuses[?(@.name==\"keycloak\")].ready}' 2>/dev/null")
+		if strings.TrimSpace(out) == "true" {
 			fmt.Println("Keycloak is ready!")
-			return nil
+			break
 		}
 		fmt.Println("Waiting for Keycloak to be healthy...")
 		time.Sleep(DefaultPollInterval)
 	}
 
-	return fmt.Errorf("timeout waiting for Keycloak")
+	// The readiness probe checks port 9000; port 8080 (Admin API) needs a brief extra warm-up.
+	fmt.Println("Keycloak container is ready — waiting 30s for Admin API to initialize...")
+	time.Sleep(30 * time.Second)
+	fmt.Println("Keycloak Admin API should be ready, proceeding...")
+	return nil
+}
+
+// waitForAdminSecret blocks until the keycloak-admin K8s secret (managed by VSO) has a
+// non-empty username field. This prevents a race where the pod is created before VSO has
+// synced the Vault credentials, causing Keycloak to start without an admin account.
+func (k *Keycloak) waitForAdminSecret(timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		out, _ := k.exec.RunShell(`kubectl get secret keycloak-admin -n keycloak -o jsonpath='{.data.username}' 2>/dev/null | base64 -d 2>/dev/null`)
+		if strings.TrimSpace(out) != "" {
+			fmt.Println("keycloak-admin secret synced!")
+			return nil
+		}
+		fmt.Println("Waiting for keycloak-admin secret to be populated by VSO...")
+		time.Sleep(5 * time.Second)
+	}
+	return fmt.Errorf("timeout: keycloak-admin secret not populated within %s", timeout)
 }
 
 func (k *Keycloak) configureRealm(cpIP string, creds keycloakCreds) error {
 	script := fmt.Sprintf(`#!/bin/bash
 set -e
 KCADM=/opt/keycloak/bin/kcadm.sh
+# Credentials are injected directly — no dependency on container env vars or VSO timing.
+ADMIN_USER='%s'
+ADMIN_PASS='%s'
 
 echo "Authenticating to master realm..."
 $KCADM config credentials --server http://localhost:8080 --realm master \
-  --user "$KEYCLOAK_ADMIN" --password "$KEYCLOAK_ADMIN_PASSWORD"
+  --user "$ADMIN_USER" --password "$ADMIN_PASS"
 
 echo "Creating k8s realm..."
-$KCADM create realms -s realm=k8s -s enabled=true -s displayName=Kubernetes || echo "Realm may already exist"
+if $KCADM get realms/k8s > /dev/null 2>&1; then
+  echo "k8s realm already exists, skipping"
+else
+  $KCADM create realms -s realm=k8s -s enabled=true -s displayName=Kubernetes
+fi
 
 echo "Creating groups client scope..."
 GROUPS_SCOPE_ID=$($KCADM create client-scopes -r k8s \
@@ -564,7 +614,7 @@ $KCADM update users/$DEV_UID/groups/$DEVS_GID -r k8s \
   -s realm=k8s -s userId=$DEV_UID -s groupId=$DEVS_GID -n
 
 echo "Keycloak realm configuration completed!"
-`, creds.grafanaSecret, creds.k8sAdminPassword, creds.developerPassword)
+`, creds.adminUsername, creds.adminPassword, creds.grafanaSecret, creds.k8sAdminPassword, creds.developerPassword)
 
 	pod, err := k.exec.RunShell("kubectl get pods -n keycloak -l app=keycloak -o jsonpath='{.items[0].metadata.name}'")
 	if err != nil {
@@ -572,7 +622,7 @@ echo "Keycloak realm configuration completed!"
 	}
 	pod = strings.TrimSpace(pod)
 
-	_, err = k.exec.RunShellWithStdin(fmt.Sprintf("kubectl exec -i -n keycloak %s -- bash -s", pod), script)
+	_, err = k.exec.RunShellWithStdin(fmt.Sprintf("kubectl exec -i -n keycloak %s -c keycloak -- bash -s", pod), script)
 	return err
 }
 
@@ -657,7 +707,26 @@ subjects:
 	return err
 }
 
+func (k *Keycloak) waitForSecret(namespace, name string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		_, err := k.exec.RunShell(fmt.Sprintf(
+			"kubectl get secret %s -n %s 2>/dev/null", name, namespace))
+		if err == nil {
+			return nil
+		}
+		fmt.Printf("Waiting for secret %s/%s...\n", namespace, name)
+		time.Sleep(DefaultPollInterval)
+	}
+	return fmt.Errorf("timeout waiting for secret %s/%s", namespace, name)
+}
+
 func (k *Keycloak) configureGrafanaOAuth(cpIP string, creds keycloakCreds) error {
+	// grafana-oidc is synced by VSO from Vault; Grafana pod won't start without it.
+	if err := k.waitForSecret("monitoring", "grafana-oidc", 3*time.Minute); err != nil {
+		return fmt.Errorf("grafana-oidc secret not ready: %w", err)
+	}
+
 	iniLines := []string{
 		"[auth.generic_oauth]",
 		"enabled = true",
@@ -707,19 +776,22 @@ data:
 		return err
 	}
 
-	// Patch Grafana deployment: add volume, volumeMount, env var
-	patch := `[
+	// Patch Grafana deployment: add volume, volumeMount, env var (skip if already applied)
+	alreadyPatched, _ := k.exec.RunShell(`kubectl get deployment grafana -n monitoring -o jsonpath='{.spec.template.spec.volumes[?(@.name=="grafana-ini")].name}' 2>/dev/null`)
+	if strings.TrimSpace(alreadyPatched) != "grafana-ini" {
+		patch := `[
   {"op":"add","path":"/spec/template/spec/volumes/-","value":{"name":"grafana-ini","configMap":{"name":"grafana-ini"}}},
   {"op":"add","path":"/spec/template/spec/containers/0/volumeMounts/-","value":{"name":"grafana-ini","mountPath":"/etc/grafana/grafana.ini","subPath":"grafana.ini"}},
   {"op":"add","path":"/spec/template/spec/containers/0/env/-","value":{"name":"GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET","valueFrom":{"secretKeyRef":{"name":"grafana-oidc","key":"client-secret"}}}}
 ]`
-
-	if err := executor.WriteFile("/tmp/grafana-oidc-patch.json", patch); err != nil {
-		return err
-	}
-
-	if _, err := k.exec.RunShell("kubectl patch deployment grafana -n monitoring --type=json --patch-file=/tmp/grafana-oidc-patch.json"); err != nil {
-		return err
+		if err := executor.WriteFile("/tmp/grafana-oidc-patch.json", patch); err != nil {
+			return err
+		}
+		if _, err := k.exec.RunShell("kubectl patch deployment grafana -n monitoring --type=json --patch-file=/tmp/grafana-oidc-patch.json"); err != nil {
+			return err
+		}
+	} else {
+		fmt.Println("Grafana deployment already patched for OAuth, skipping")
 	}
 
 	_, err := k.exec.RunShell("kubectl rollout restart deployment/grafana -n monitoring")
