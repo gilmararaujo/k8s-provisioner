@@ -11,10 +11,10 @@ import (
 
 type KEDA struct {
 	config *config.Config
-	exec   executor.CommandExecutor
+	exec   executor.ShellExecutor
 }
 
-func NewKEDA(cfg *config.Config, exec executor.CommandExecutor) *KEDA {
+func NewKEDA(cfg *config.Config, exec executor.ShellExecutor) *KEDA {
 	return &KEDA{config: cfg, exec: exec}
 }
 
@@ -53,7 +53,7 @@ func (k *KEDA) installHelm() error {
 		return nil
 	}
 	fmt.Println("Installing Helm...")
-	_, err := k.exec.RunShell("curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash")
+	_, err := k.exec.RunShell("curl -fsSL --connect-timeout 10 --max-time 300 https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash")
 	return err
 }
 

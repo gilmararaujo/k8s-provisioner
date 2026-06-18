@@ -10,17 +10,24 @@ import (
 
 type Kiali struct {
 	config *config.Config
-	exec   executor.CommandExecutor
+	exec   executor.ShellExecutor
 }
 
-func NewKiali(cfg *config.Config, exec executor.CommandExecutor) *Kiali {
+func NewKiali(cfg *config.Config, exec executor.ShellExecutor) *Kiali {
 	return &Kiali{config: cfg, exec: exec}
 }
 
 func (k *Kiali) Install() error {
 	fmt.Println("Installing Kiali (Service Mesh Observability)...")
 
-	if err := k.installKiali(); err != nil {
+	grafanaPassword, err := k.exec.RunShell(
+		"kubectl get secret grafana-admin -n monitoring -o jsonpath='{.data.password}' 2>/dev/null | base64 -d")
+	if err != nil || grafanaPassword == "" {
+		fmt.Println("Warning: could not read grafana-admin secret, Kiali-Grafana integration may require manual auth config")
+		grafanaPassword = ""
+	}
+
+	if err := k.installKiali(grafanaPassword); err != nil {
 		return err
 	}
 
@@ -38,14 +45,28 @@ func (k *Kiali) Install() error {
 	return nil
 }
 
-func (k *Kiali) installKiali() error {
+func (k *Kiali) installKiali(grafanaPassword string) error {
 	tracingEnabled := k.config.Components.Tracing == "otel-tempo"
 	loggingEnabled := k.config.Components.Logging == "loki"
+
+	kialiVersion := k.config.Versions.Kiali
+	if kialiVersion == "" {
+		kialiVersion = "v2.24.0"
+	}
 
 	// Kiali v2.x config changes vs v1.x:
 	// - deployment.accessible_namespaces removed → cluster_wide_access: true
 	// - external_services.logging_backend renamed to external_services.logging
 	// - tracing.tempo_config restructured
+	grafanaAuthSection := ""
+	if grafanaPassword != "" {
+		grafanaAuthSection = fmt.Sprintf(`
+        auth:
+          type: basic
+          username: admin
+          password: "%s"`, grafanaPassword)
+	}
+
 	tracingSection := ""
 	if tracingEnabled {
 		tracingSection = `
@@ -178,7 +199,7 @@ data:
       grafana:
         enabled: true
         internal_url: "http://grafana.monitoring:3000"
-        external_url: "http://grafana.local"%s%s
+        external_url: "https://grafana.local"%s%s%s
       istio:
         root_namespace: istio-system
         istio_status_enabled: true
@@ -203,7 +224,7 @@ metadata:
   namespace: istio-system
   labels:
     app: kiali
-    version: v2.24.0
+    version: %s
 spec:
   replicas: 1
   selector:
@@ -213,7 +234,7 @@ spec:
     metadata:
       labels:
         app: kiali
-        version: v2.24.0
+        version: %s
     spec:
       serviceAccountName: kiali
       securityContext:
@@ -223,7 +244,7 @@ spec:
         fsGroup: 1000
       containers:
       - name: kiali
-        image: quay.io/kiali/kiali:v2.24.0
+        image: quay.io/kiali/kiali:%s
         imagePullPolicy: IfNotPresent
         securityContext:
           allowPrivilegeEscalation: false
@@ -286,14 +307,13 @@ spec:
     port: 20001
     targetPort: 20001
   selector:
-    app: kiali`, tracingSection, loggingSection)
+    app: kiali`, grafanaAuthSection, tracingSection, loggingSection, kialiVersion, kialiVersion, kialiVersion)
 
-	if err := executor.WriteFile("/tmp/kiali.yaml", kiali); err != nil {
-		return err
-	}
-
-	_, err := k.exec.RunShell("kubectl apply -f /tmp/kiali.yaml")
-	return err
+	// The manifest inlines the Grafana admin password (read from the cluster
+	// secret). Pipe via stdin so the credential never lands on disk
+	// world-readable in /tmp, and is never interpolated into a shell command.
+	_, applyErr := k.exec.RunShellWithStdin("kubectl apply -f -", kiali)
+	return applyErr
 }
 
 func (k *Kiali) configureIngress() error {

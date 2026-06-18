@@ -169,29 +169,3 @@ func UnsealWithKey(addr, key string) error {
 	}
 	return nil
 }
-
-// FetchSecret reads a single key from the k8s-provisioner/api-keys KV path.
-// addr and token are vault address and token respectively.
-// Returns ("", err) if Vault is not configured or the key is missing.
-func FetchSecret(addr, token, key string) (string, error) {
-	if addr == "" {
-		return "", fmt.Errorf("vault not configured")
-	}
-	token = ResolveVaultToken(token)
-	if token == "" {
-		return "", fmt.Errorf("vault token not available")
-	}
-	v := NewVaultClient(addr, token)
-	data, err := v.ReadSecret("k8s-provisioner/api-keys")
-	if err != nil {
-		return "", err
-	}
-	if data == nil {
-		return "", fmt.Errorf("secret path not found")
-	}
-	val, ok := data[key]
-	if !ok || val == "" {
-		return "", fmt.Errorf("key %q not found", key)
-	}
-	return val, nil
-}

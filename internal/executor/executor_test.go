@@ -158,3 +158,32 @@ func TestNew(t *testing.T) {
 	exec2 := New(false)
 	assert.False(t, exec2.Verbose)
 }
+
+func TestScrub(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "redacts sshpass password",
+			in:   "sshpass -p 'vagrant' scp file vagrant@host:/tmp/x",
+			want: "sshpass -p '***' scp file vagrant@host:/tmp/x",
+		},
+		{
+			name: "redacts vault token header",
+			in:   "curl -H 'X-Vault-Token: s.abcDEF123' http://vault:8200",
+			want: "curl -H 'X-Vault-Token: ***' http://vault:8200",
+		},
+		{
+			name: "leaves clean strings untouched",
+			in:   "kubectl apply -f -",
+			want: "kubectl apply -f -",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, scrub(tt.in))
+		})
+	}
+}

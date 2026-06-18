@@ -11,10 +11,10 @@ import (
 
 type VPA struct {
 	config *config.Config
-	exec   executor.CommandExecutor
+	exec   executor.ShellExecutor
 }
 
-func NewVPA(cfg *config.Config, exec executor.CommandExecutor) *VPA {
+func NewVPA(cfg *config.Config, exec executor.ShellExecutor) *VPA {
 	return &VPA{config: cfg, exec: exec}
 }
 
@@ -53,7 +53,7 @@ func (v *VPA) installHelm() error {
 		return nil
 	}
 	fmt.Println("Installing Helm...")
-	_, err := v.exec.RunShell("curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash")
+	_, err := v.exec.RunShell("curl -fsSL --connect-timeout 10 --max-time 300 https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash")
 	return err
 }
 

@@ -10,10 +10,10 @@ import (
 
 type Tempo struct {
 	config *config.Config
-	exec   executor.CommandExecutor
+	exec   executor.ShellExecutor
 }
 
-func NewTempo(cfg *config.Config, exec executor.CommandExecutor) *Tempo {
+func NewTempo(cfg *config.Config, exec executor.ShellExecutor) *Tempo {
 	return &Tempo{config: cfg, exec: exec}
 }
 
@@ -120,6 +120,7 @@ spec:
     metadata:
       labels:
         app: tempo
+        version: "%s"
     spec:
       serviceAccountName: tempo
       securityContext:
@@ -129,7 +130,7 @@ spec:
         runAsGroup: 10001
       containers:
       - name: tempo
-        image: grafana/tempo:2.10.4
+        image: grafana/tempo:%s
         imagePullPolicy: IfNotPresent
         securityContext:
           allowPrivilegeEscalation: false
@@ -194,6 +195,12 @@ spec:
     name: otlp-http
   selector:
     app: tempo`
+
+	version := t.config.Versions.Tempo
+	if version == "" {
+		version = "2.10.4"
+	}
+	tempo = fmt.Sprintf(tempo, version, version)
 
 	if err := executor.WriteFile("/tmp/tempo.yaml", tempo); err != nil {
 		return err
@@ -297,7 +304,7 @@ spec:
         fsGroup: 65534
       containers:
       - name: otel-collector
-        image: otel/opentelemetry-collector-contrib:0.149.0
+        image: otel/opentelemetry-collector-contrib:%s
         imagePullPolicy: IfNotPresent
         securityContext:
           allowPrivilegeEscalation: false
@@ -367,6 +374,12 @@ spec:
   trafficPolicy:
     tls:
       mode: DISABLE`
+
+	otelVersion := t.config.Versions.OtelCollector
+	if otelVersion == "" {
+		otelVersion = "0.149.0"
+	}
+	otel = fmt.Sprintf(otel, otelVersion)
 
 	if err := executor.WriteFile("/tmp/otel-collector.yaml", otel); err != nil {
 		return err

@@ -5,16 +5,43 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 )
 
-// CommandExecutor defines command execution operations
-type CommandExecutor interface {
-	Run(name string, args ...string) (string, error)
-	RunWithOutput(name string, args ...string) error
+var (
+	// sshpassRe matches `-p '<password>'` as used in sshpass invocations.
+	sshpassRe = regexp.MustCompile(`-p '[^']*'`)
+	// vaultTokenRe matches a Vault token passed as an HTTP header (stopping at the
+	// next quote or whitespace so surrounding shell quoting is preserved).
+	vaultTokenRe = regexp.MustCompile(`(?i)(X-Vault-Token:\s*)[^\s'"]+`)
+)
+
+// scrub redacts credential material (sshpass passwords, Vault tokens) so it does
+// not leak into error messages or verbose command echoes. Applied to every
+// command string we print and to stderr we surface in errors.
+func scrub(s string) string {
+	s = sshpassRe.ReplaceAllString(s, "-p '***'")
+	s = vaultTokenRe.ReplaceAllString(s, "${1}***")
+	return s
+}
+
+// ShellExecutor defines shell-command execution. It is the narrow surface the
+// installers depend on (they never use the argv-form Run/RunWithOutput), per ISP.
+type ShellExecutor interface {
+	// RunShell runs `sh -c command` and returns stdout. Implementations that do
+	// not execute (e.g. dry-run) return "" and callers must not depend on output.
 	RunShell(command string) (string, error)
 	RunShellWithOutput(command string) error
 	RunShellWithStdin(command string, stdin string) (string, error)
+}
+
+// CommandExecutor adds the argv-form helpers used by host-level provisioning
+// (modprobe, systemctl, …) on top of ShellExecutor.
+type CommandExecutor interface {
+	ShellExecutor
+	Run(name string, args ...string) (string, error)
+	RunWithOutput(name string, args ...string) error
 }
 
 // Executor implements CommandExecutor
@@ -32,7 +59,7 @@ func New(verbose bool) *Executor {
 // Run executes a command and returns the output
 func (e *Executor) Run(name string, args ...string) (string, error) {
 	if e.Verbose {
-		fmt.Printf(">>> %s %s\n", name, strings.Join(args, " "))
+		fmt.Printf(">>> %s\n", scrub(name+" "+strings.Join(args, " ")))
 	}
 
 	cmd := exec.Command(name, args...)
@@ -42,7 +69,7 @@ func (e *Executor) Run(name string, args ...string) (string, error) {
 
 	err := cmd.Run()
 	if err != nil {
-		return "", fmt.Errorf("%v: %s", err, stderr.String())
+		return "", fmt.Errorf("%v: %s", err, scrub(stderr.String()))
 	}
 
 	return stdout.String(), nil
@@ -51,7 +78,7 @@ func (e *Executor) Run(name string, args ...string) (string, error) {
 // RunWithOutput executes a command and streams output to stdout
 func (e *Executor) RunWithOutput(name string, args ...string) error {
 	if e.Verbose {
-		fmt.Printf(">>> %s %s\n", name, strings.Join(args, " "))
+		fmt.Printf(">>> %s\n", scrub(name+" "+strings.Join(args, " ")))
 	}
 
 	cmd := exec.Command(name, args...)
@@ -64,7 +91,7 @@ func (e *Executor) RunWithOutput(name string, args ...string) error {
 // RunShell executes a shell command
 func (e *Executor) RunShell(command string) (string, error) {
 	if e.Verbose {
-		fmt.Printf(">>> sh -c %s\n", command)
+		fmt.Printf(">>> sh -c %s\n", scrub(command))
 	}
 
 	cmd := exec.Command("sh", "-c", command)
@@ -74,7 +101,7 @@ func (e *Executor) RunShell(command string) (string, error) {
 
 	err := cmd.Run()
 	if err != nil {
-		return "", fmt.Errorf("%v: %s", err, stderr.String())
+		return "", fmt.Errorf("%v: %s", err, scrub(stderr.String()))
 	}
 
 	return stdout.String(), nil
@@ -83,7 +110,7 @@ func (e *Executor) RunShell(command string) (string, error) {
 // RunShellWithOutput executes a shell command and streams output
 func (e *Executor) RunShellWithOutput(command string) error {
 	if e.Verbose {
-		fmt.Printf(">>> sh -c %s\n", command)
+		fmt.Printf(">>> sh -c %s\n", scrub(command))
 	}
 
 	cmd := exec.Command("sh", "-c", command)
@@ -116,7 +143,7 @@ func ReadFileContents(path string) (string, error) {
 // RunShellWithStdin executes a shell command with stdin input
 func (e *Executor) RunShellWithStdin(command string, stdin string) (string, error) {
 	if e.Verbose {
-		fmt.Printf(">>> sh -c %s (with stdin)\n", command)
+		fmt.Printf(">>> sh -c %s (with stdin)\n", scrub(command))
 	}
 
 	cmd := exec.Command("sh", "-c", command)
@@ -127,7 +154,7 @@ func (e *Executor) RunShellWithStdin(command string, stdin string) (string, erro
 
 	err := cmd.Run()
 	if err != nil {
-		return "", fmt.Errorf("%v: %s", err, stderr.String())
+		return "", fmt.Errorf("%v: %s", err, scrub(stderr.String()))
 	}
 
 	return stdout.String(), nil

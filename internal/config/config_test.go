@@ -158,6 +158,38 @@ func TestValidate_ValidConfig(t *testing.T) {
 	assert.NoError(t, err)
 }
 
+func TestValidate_ValidComponentEnums(t *testing.T) {
+	cfg := &Config{
+		Cluster:  ClusterConfig{Name: "t", PodCIDR: "10.244.0.0/16", ServiceCIDR: "10.96.0.0/12"},
+		Versions: VersionsConfig{Kubernetes: "1.32", CriO: "v1.32"},
+		Network:  NetworkConfig{Interface: "eth1", ControlPlaneIP: "192.168.56.10"},
+		Storage:  StorageConfig{NFSPath: "/exports"},
+		Nodes:    []NodeConfig{{Name: "cp", Role: "controlplane"}},
+		Components: ComponentsConfig{
+			ServiceMesh: "istio", Monitoring: "prometheus-stack", Logging: "loki",
+			Tracing: "otel-tempo", Karpor: "none", Keycloak: "enabled",
+			VPA: "enabled", KEDA: "none",
+		},
+	}
+
+	assert.NoError(t, cfg.Validate())
+}
+
+func TestValidate_InvalidComponentEnum(t *testing.T) {
+	cfg := &Config{
+		Cluster:    ClusterConfig{Name: "t", PodCIDR: "10.244.0.0/16", ServiceCIDR: "10.96.0.0/12"},
+		Versions:   VersionsConfig{Kubernetes: "1.32", CriO: "v1.32"},
+		Network:    NetworkConfig{Interface: "eth1", ControlPlaneIP: "192.168.56.10"},
+		Storage:    StorageConfig{NFSPath: "/exports"},
+		Nodes:      []NodeConfig{{Name: "cp", Role: "controlplane"}},
+		Components: ComponentsConfig{Monitoring: "prometheus_stack"}, // typo: underscore
+	}
+
+	err := cfg.Validate()
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "components.monitoring 'prometheus_stack' is invalid")
+}
+
 func TestValidate_MissingClusterName(t *testing.T) {
 	cfg := &Config{
 		Cluster: ClusterConfig{
@@ -324,8 +356,8 @@ func TestIsValidIP(t *testing.T) {
 		{"10.0.0.1", true},
 		{"255.255.255.255", true},
 		{"0.0.0.0", true},
-		{"::1", true},                              // IPv6 localhost
-		{"2001:db8::1", true},                      // IPv6
+		{"::1", true},         // IPv6 localhost
+		{"2001:db8::1", true}, // IPv6
 		{"invalid", false},
 		{"192.168.56", false},
 		{"192.168.56.256", false},
@@ -349,7 +381,7 @@ func TestIsValidCIDR(t *testing.T) {
 		{"192.168.0.0/24", true},
 		{"10.0.0.0/8", true},
 		{"0.0.0.0/0", true},
-		{"2001:db8::/32", true},  // IPv6 CIDR
+		{"2001:db8::/32", true}, // IPv6 CIDR
 		{"invalid", false},
 		{"192.168.56.10", false}, // IP without mask
 		{"192.168.56.0/33", false},

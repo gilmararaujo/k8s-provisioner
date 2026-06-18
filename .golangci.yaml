@@ -1,8 +1,20 @@
+run:
+  # CI runs with a cold build cache; the default 1m is too tight now that the
+  # complexity linters (CX-9) are enabled. 5m gives ample headroom.
+  timeout: 5m
+
 linters:
   enable:
     - gosec
     - errcheck
     - govet
+    # Complexity guards (CX-9). Thresholds are set just above today's legitimate
+    # peaks so the baseline stays green; ratchet them DOWN as the flagged
+    # functions are refactored (targets: gocyclo 15, gocognit 20, nestif 4).
+    - gocyclo
+    - gocognit
+    - nestif
+    - funlen
 
 linters-settings:
   gosec:
@@ -21,6 +33,31 @@ linters-settings:
       - G107
       # Hardcoded credentials - YAML manifest strings are not credentials
       - G101
+  gocyclo:
+    # Current peak: Config.Validate = 27 (flat aggregator, CX-5). Ratchet target: 15.
+    min-complexity: 27
+  gocognit:
+    # Current peak: Config.Validate = 33 (flat aggregator, CX-5). Ratchet target: 20.
+    min-complexity: 33
+  nestif:
+    # Flags deeply nested if. Current peak: vault resolveOrGenerate/
+    # resolveOrDefaultStr = 6 (map type-assertion pyramids). Ratchet target: 4.
+    min-complexity: 7
+  funlen:
+    # Length guard for logic-heavy packages. Current peaks (non-installer):
+    # CreateUser 61 stmts, Validate 44 stmts. Ratchet target: lines 80, statements 40.
+    lines: 120
+    statements: 70
+    ignore-comments: true
 
 issues:
   exclude-use-default: false
+  exclude-rules:
+    # funlen: exempt the installer package. By design (the "No Helm" architecture
+    # decision) every component embeds its Kubernetes manifests as Go raw-string
+    # literals, so these functions are long-but-trivial (high LOC, low branching) —
+    # gocyclo/gocognit still guard their actual logic complexity. Remove this
+    # exemption once the Type-B manifests are extracted to const templates (CX-3).
+    - path: internal/installer/
+      linters:
+        - funlen
