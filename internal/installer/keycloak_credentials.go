@@ -50,13 +50,13 @@ func (k *Keycloak) resolveCredentials() (keycloakCreds, error) {
 	// generated value to be written back. (Indexing a nil map yields "", so no
 	// nil check is needed.)
 	updates := map[string]string{}
-	seedOrRead(existing, updates, "keycloak_admin_username", &creds.adminUsername)
-	seedOrRead(existing, updates, "keycloak_admin_password", &creds.adminPassword)
-	seedOrRead(existing, updates, "keycloak_postgres_username", &creds.postgresUsername)
-	seedOrRead(existing, updates, "keycloak_postgres_password", &creds.postgresPassword)
-	seedOrRead(existing, updates, "keycloak_grafana_client_secret", &creds.grafanaSecret)
-	seedOrRead(existing, updates, "keycloak_k8sadmin_password", &creds.k8sAdminPassword)
-	seedOrRead(existing, updates, "keycloak_developer_password", &creds.developerPassword)
+	creds.adminUsername = resolveSecret(existing, updates, "keycloak_admin_username", creds.adminUsername)
+	creds.adminPassword = resolveSecret(existing, updates, "keycloak_admin_password", creds.adminPassword)
+	creds.postgresUsername = resolveSecret(existing, updates, "keycloak_postgres_username", creds.postgresUsername)
+	creds.postgresPassword = resolveSecret(existing, updates, "keycloak_postgres_password", creds.postgresPassword)
+	creds.grafanaSecret = resolveSecret(existing, updates, "keycloak_grafana_client_secret", creds.grafanaSecret)
+	creds.k8sAdminPassword = resolveSecret(existing, updates, "keycloak_k8sadmin_password", creds.k8sAdminPassword)
+	creds.developerPassword = resolveSecret(existing, updates, "keycloak_developer_password", creds.developerPassword)
 
 	if len(updates) > 0 {
 		merged := map[string]string{}
@@ -76,13 +76,14 @@ func (k *Keycloak) resolveCredentials() (keycloakCreds, error) {
 	return creds, nil
 }
 
-// seedOrRead reconciles one secret with Vault: if Vault already holds a non-empty
-// value at key, adopt it into *current; otherwise stage *current (the generated
-// default) in updates to be written back. existing may be nil.
-func seedOrRead(existing, updates map[string]string, key string, current *string) {
+// resolveSecret reconciles one secret with Vault: if Vault already holds a
+// non-empty value at key, that value is returned; otherwise generated (our
+// generated default) is staged in updates to be written back and returned.
+// existing may be nil (indexing a nil map yields "").
+func resolveSecret(existing, updates map[string]string, key, generated string) string {
 	if v := existing[key]; v != "" {
-		*current = v
-		return
+		return v
 	}
-	updates[key] = *current
+	updates[key] = generated
+	return generated
 }

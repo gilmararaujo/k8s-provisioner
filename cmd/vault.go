@@ -92,10 +92,7 @@ func vaultClientFromConfig() (*installer.VaultClient, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("config not loaded")
 	}
-	addr := cfg.Vault.Addr
-	if addr == "" {
-		addr = "http://192.168.56.20:8200"
-	}
+	addr := cfg.VaultAddress()
 	token := installer.ResolveVaultToken(cfg.Vault.Token)
 	if token == "" {
 		return nil, fmt.Errorf("vault token not found — run 'k8s-provisioner vault token' on the controlplane or set vault.token in config.yaml")
@@ -104,7 +101,7 @@ func vaultClientFromConfig() (*installer.VaultClient, error) {
 }
 
 func runVaultToken(_ *cobra.Command, _ []string) error {
-	const initFile = "/etc/k8s-provisioner/vault-init.json"
+	const initFile = installer.VaultInitFileLocal
 
 	data, err := os.ReadFile(initFile)
 	if err != nil {
@@ -138,10 +135,7 @@ func runVaultStatus(_ *cobra.Command, _ []string) error {
 		return fmt.Errorf("vault unreachable or token invalid: %w", err)
 	}
 
-	addr := cfg.Vault.Addr
-	if addr == "" {
-		addr = "http://192.168.56.20:8200"
-	}
+	addr := cfg.VaultAddress()
 	fmt.Printf("Vault is reachable at %s\n", addr)
 	fmt.Println("Token: valid")
 	return nil
@@ -209,7 +203,7 @@ func runVaultSet(_ *cobra.Command, args []string) error {
 }
 
 func runVaultUnseal(_ *cobra.Command, _ []string) error {
-	const initFile = "/etc/k8s-provisioner/vault-init.json"
+	const initFile = installer.VaultInitFileLocal
 
 	data, err := os.ReadFile(initFile)
 	if err != nil {
@@ -227,10 +221,10 @@ func runVaultUnseal(_ *cobra.Command, _ []string) error {
 		return fmt.Errorf("no unseal keys found in %s", initFile)
 	}
 
-	addr := "http://192.168.56.20:8200"
-	if cfg != nil && cfg.Vault.Addr != "" {
-		addr = cfg.Vault.Addr
+	if cfg == nil {
+		return fmt.Errorf("config not loaded")
 	}
+	addr := cfg.VaultAddress()
 
 	threshold := 3
 	if len(init.Keys) < threshold {

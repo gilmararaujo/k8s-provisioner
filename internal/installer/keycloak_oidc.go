@@ -10,7 +10,7 @@ import (
 
 func (k *Keycloak) storeKubeconfigInVault(cpIP, issuerURL string) error {
 	token := ResolveVaultToken(k.config.Vault.Token)
-	if k.config.Vault.Addr == "" || token == "" {
+	if !k.config.Vault.Enabled || k.config.VaultAddress() == "" || token == "" {
 		return fmt.Errorf("vault not configured")
 	}
 
@@ -19,7 +19,7 @@ kind: Config
 clusters:
 - name: k8s-lab
   cluster:
-    server: https://%s:6443
+    server: https://%s:%d
     insecure-skip-tls-verify: true
 contexts:
 - name: k8s-lab
@@ -40,10 +40,10 @@ users:
         - --oidc-client-id=kubectl
         - --oidc-pkce-method=auto
         - --insecure-skip-tls-verify
-        - --listen-address=127.0.0.1:8000
-`, cpIP, issuerURL)
+        - --listen-address=%s
+`, cpIP, apiServerPort, issuerURL, kubeloginListenAddr)
 
-	vault := NewVaultClient(k.config.Vault.Addr, token)
+	vault := NewVaultClient(k.config.VaultAddress(), token)
 	if err := vault.WriteSecret("k8s-provisioner/kubeconfig-oidc", map[string]string{
 		"config": kubeconfig,
 	}); err != nil {
@@ -132,16 +132,16 @@ jwt:
 
 	if patched {
 		fmt.Println("Waiting for API server to restart with OIDC config...")
-		time.Sleep(20 * time.Second)
+		time.Sleep(apiServerRestartWait)
 
-		deadline := time.Now().Add(2 * time.Minute)
+		deadline := time.Now().Add(apiServerHealthTimeout)
 		for time.Now().Before(deadline) {
 			out, err := k.exec.RunShell("kubectl get --raw='/healthz' 2>/dev/null")
 			if err == nil && strings.Contains(out, "ok") {
 				fmt.Println("API server is back online!")
 				break
 			}
-			time.Sleep(DefaultPollInterval)
+			time.Sleep(defaultPollInterval)
 		}
 	}
 

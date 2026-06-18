@@ -14,8 +14,8 @@ import (
 
 // Timeout constants for user operations
 const (
-	CertificateWaitTimeout  = 30 * time.Second
-	CertificatePollInterval = 1 * time.Second
+	certificateWaitTimeout  = 30 * time.Second
+	certificatePollInterval = 1 * time.Second
 )
 
 // Manager orchestrates user creation/deletion by composing focused
@@ -97,7 +97,13 @@ func (m *Manager) CreateUser(cfg UserConfig) error {
 	// Step 6: Create kubeconfig
 	fmt.Println("  Creating kubeconfig...")
 	kubeconfigPath := filepath.Join(userDir, cfg.Username+".kubeconfig")
-	if err := writeUserKubeconfig(m.kubeconfig, cfg.Username, keyPath, certPath, kubeconfigPath); err != nil {
+	if err := writeUserKubeconfig(userKubeconfig{
+		SourceKubeconfig: m.kubeconfig,
+		Username:         cfg.Username,
+		KeyPath:          keyPath,
+		CertPath:         certPath,
+		OutputPath:       kubeconfigPath,
+	}); err != nil {
 		return err
 	}
 	fmt.Printf("  Kubeconfig saved: %s\n", kubeconfigPath)
@@ -175,7 +181,7 @@ func (m *Manager) issueClientCertificate(userDir string, cfg UserConfig) (keyPat
 
 	// Step 5: Wait and get certificate
 	fmt.Println("  Waiting for certificate...")
-	certPEM, err := m.certs.WaitForCertificate(csrName, CertificateWaitTimeout)
+	certPEM, err := m.certs.WaitForCertificate(csrName, certificateWaitTimeout)
 	if err != nil {
 		return "", "", err
 	}

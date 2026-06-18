@@ -30,7 +30,7 @@ func (c *CertManager) Install() error {
 	}
 
 	fmt.Println("Waiting for cert-manager to be ready...")
-	if err := c.waitForReady(DefaultReadyTimeout); err != nil {
+	if err := c.waitForReady(defaultReadyTimeout); err != nil {
 		return err
 	}
 
@@ -45,7 +45,7 @@ func (c *CertManager) Install() error {
 	}
 
 	fmt.Println("Waiting for certificates to be ready...")
-	if err := c.waitForCerts(2 * time.Minute); err != nil {
+	if err := c.waitForCerts(certReadyTimeout); err != nil {
 		fmt.Printf("Warning: certificates may not be ready yet: %v\n", err)
 	}
 
@@ -72,11 +72,11 @@ func (c *CertManager) waitForReady(timeout time.Duration) error {
 		}
 		if running >= 3 {
 			// cert-manager, cainjector, webhook
-			time.Sleep(10 * time.Second) // let webhook register
+			time.Sleep(webhookRegisterWait)
 			return nil
 		}
 		fmt.Println("Waiting for cert-manager pods...")
-		time.Sleep(DefaultPollInterval)
+		time.Sleep(defaultPollInterval)
 	}
 	return fmt.Errorf("timeout waiting for cert-manager")
 }
@@ -124,17 +124,17 @@ spec:
 			break
 		}
 		fmt.Println("Waiting for cert-manager CRDs to be ready...")
-		time.Sleep(10 * time.Second)
+		time.Sleep(defaultPollInterval)
 	}
 
 	// Wait for CA secret to exist
-	deadline := time.Now().Add(60 * time.Second)
+	deadline := time.Now().Add(caSecretWaitTimeout)
 	for time.Now().Before(deadline) {
 		out, _ := c.exec.RunShell("kubectl get secret lab-ca-secret -n cert-manager -o jsonpath='{.metadata.name}' 2>/dev/null")
 		if out == "lab-ca-secret" {
 			return nil
 		}
-		time.Sleep(5 * time.Second)
+		time.Sleep(shortPollInterval)
 	}
 	return fmt.Errorf("timeout waiting for lab CA secret")
 }
@@ -175,7 +175,7 @@ func (c *CertManager) waitForCerts(timeout time.Duration) error {
 			return nil
 		}
 		fmt.Println("Waiting for TLS certificate...")
-		time.Sleep(10 * time.Second)
+		time.Sleep(defaultPollInterval)
 	}
 	return fmt.Errorf("timeout waiting for lab-tls certificate")
 }

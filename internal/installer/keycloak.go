@@ -43,7 +43,7 @@ func (k *Keycloak) Install() error {
 	// secret before creating the pod — env vars are captured at container start time and
 	// Keycloak 26.x will not create the admin account if KEYCLOAK_ADMIN is empty.
 	fmt.Println("Waiting for VSO to sync keycloak-admin secret...")
-	if err := k.waitForAdminSecret(2 * time.Minute); err != nil {
+	if err := k.waitForAdminSecret(adminSecretSyncTimeout); err != nil {
 		fmt.Printf("Warning: keycloak-admin secret may not be ready: %v\n", err)
 	}
 
@@ -53,7 +53,7 @@ func (k *Keycloak) Install() error {
 	}
 
 	fmt.Println("Waiting for Keycloak to be ready (first start includes build step, ~5-8 min)...")
-	if err := k.waitForReady(20 * time.Minute); err != nil {
+	if err := k.waitForReady(keycloakStartTimeout); err != nil {
 		return fmt.Errorf("keycloak did not become ready: %w", err)
 	}
 
@@ -103,7 +103,7 @@ func (k *Keycloak) ConfigureGrafanaOAuth() error {
 			break
 		}
 		fmt.Printf("Attempt %d/3 failed: %v — retrying in 20s...\n", attempt, oauthErr)
-		time.Sleep(20 * time.Second)
+		time.Sleep(oauthRetryDelay)
 	}
 	return oauthErr
 }
@@ -119,7 +119,7 @@ func (k *Keycloak) waitForReady(timeout time.Duration) error {
 			break
 		}
 		fmt.Println("Waiting for PostgreSQL...")
-		time.Sleep(DefaultPollInterval)
+		time.Sleep(defaultPollInterval)
 	}
 
 	// Wait for Keycloak Deployment rollout — reliable for pods with Istio sidecars
@@ -131,7 +131,7 @@ func (k *Keycloak) waitForReady(timeout time.Duration) error {
 			return nil
 		}
 		fmt.Println("Waiting for Keycloak to be healthy (first start includes build step)...")
-		time.Sleep(DefaultPollInterval)
+		time.Sleep(defaultPollInterval)
 	}
 
 	return fmt.Errorf("timeout waiting for Keycloak to be ready")
@@ -149,7 +149,7 @@ func (k *Keycloak) waitForAdminSecret(timeout time.Duration) error {
 			return nil
 		}
 		fmt.Println("Waiting for keycloak-admin secret to be populated by VSO...")
-		time.Sleep(5 * time.Second)
+		time.Sleep(shortPollInterval)
 	}
 	return fmt.Errorf("timeout: keycloak-admin secret not populated within %s", timeout)
 }
@@ -163,7 +163,7 @@ func (k *Keycloak) waitForSecret(namespace, name string, timeout time.Duration) 
 			return nil
 		}
 		fmt.Printf("Waiting for secret %s/%s...\n", namespace, name)
-		time.Sleep(DefaultPollInterval)
+		time.Sleep(defaultPollInterval)
 	}
 	return fmt.Errorf("timeout waiting for secret %s/%s", namespace, name)
 }
@@ -196,8 +196,8 @@ func (k *Keycloak) printAccessInfo(cpIP, issuerURL string) {
     --exec-arg=--oidc-client-id=kubectl \
     --exec-arg=--oidc-pkce-method=auto \
     --exec-arg=--insecure-skip-tls-verify \
-    --exec-arg=--listen-address=127.0.0.1:8000
-`, issuerURL)
+    --exec-arg=--listen-address=%s
+`, issuerURL, kubeloginListenAddr)
 	fmt.Println("\nTest login:")
 	fmt.Println("  kubectl get nodes --user=oidc")
 	fmt.Println("\n--- Grafana SSO ---")

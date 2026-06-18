@@ -41,7 +41,7 @@ func (t *Tempo) Install() error {
 	}
 
 	fmt.Println("Waiting for tracing stack to be ready...")
-	if err := t.waitForReady(DefaultReadyTimeout); err != nil {
+	if err := t.waitForReady(defaultReadyTimeout); err != nil {
 		fmt.Printf("Warning: %v\n", err)
 	}
 
@@ -487,7 +487,7 @@ func (t *Tempo) waitForReady(timeout time.Duration) error {
 		out, _ := t.exec.RunShell("kubectl get pods -n monitoring -l app=tempo -o jsonpath='{.items[0].status.phase}' 2>/dev/null")
 		if out != "Running" {
 			fmt.Println("Waiting for Tempo...")
-			time.Sleep(DefaultPollInterval)
+			time.Sleep(defaultPollInterval)
 			continue
 		}
 		fmt.Println("Tracing stack is ready!")

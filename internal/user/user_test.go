@@ -8,6 +8,9 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	rbac "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
@@ -19,34 +22,19 @@ func TestCertIssuer_CreateCSR(t *testing.T) {
 	c := newCertIssuer(fake.NewClientset())
 
 	key, err := c.GenerateKey()
-	if err != nil {
-		t.Fatalf("GenerateKey: %v", err)
-	}
+	require.NoError(t, err)
 
 	csrPEM, err := c.CreateCSR(key, "alice", []string{"devs", "qa"})
-	if err != nil {
-		t.Fatalf("CreateCSR: %v", err)
-	}
+	require.NoError(t, err)
 
 	block, _ := pem.Decode(csrPEM)
-	if block == nil {
-		t.Fatal("CreateCSR did not produce a PEM block")
-	}
+	require.NotNil(t, block, "CreateCSR did not produce a PEM block")
 	req, err := x509.ParseCertificateRequest(block.Bytes)
-	if err != nil {
-		t.Fatalf("ParseCertificateRequest: %v", err)
-	}
-	if req.Subject.CommonName != "alice" {
-		t.Errorf("CommonName = %q, want alice", req.Subject.CommonName)
-	}
+	require.NoError(t, err)
+
+	assert.Equal(t, "alice", req.Subject.CommonName)
 	// x509 may reorder multi-valued RDNs, so compare as a set.
-	gotOrgs := map[string]bool{}
-	for _, o := range req.Subject.Organization {
-		gotOrgs[o] = true
-	}
-	if len(gotOrgs) != 2 || !gotOrgs["devs"] || !gotOrgs["qa"] {
-		t.Errorf("Organization = %v, want {devs, qa}", req.Subject.Organization)
-	}
+	assert.ElementsMatch(t, []string{"devs", "qa"}, req.Subject.Organization)
 }
 
 // TestRBACBinder_BindClusterRole verifies the binding is created against the
@@ -55,27 +43,17 @@ func TestRBACBinder_BindClusterRole(t *testing.T) {
 	cs := fake.NewClientset()
 	b := newRBACBinder(cs)
 
-	if err := b.BindClusterRole("alice", []string{"devs"}, "view"); err != nil {
-		t.Fatalf("BindClusterRole: %v", err)
-	}
+	require.NoError(t, b.BindClusterRole("alice", []string{"devs"}, "view"))
 
 	got, err := cs.RbacV1().ClusterRoleBindings().Get(context.TODO(), "alice-view-binding", metav1.GetOptions{})
-	if err != nil {
-		t.Fatalf("expected binding created: %v", err)
-	}
-	if got.RoleRef.Name != "view" {
-		t.Errorf("RoleRef.Name = %q, want view", got.RoleRef.Name)
-	}
+	require.NoError(t, err, "expected binding created")
+	assert.Equal(t, "view", got.RoleRef.Name)
 	// One User subject + one Group subject.
-	if len(got.Subjects) != 2 {
-		t.Fatalf("subjects = %d, want 2 (%+v)", len(got.Subjects), got.Subjects)
-	}
-	if got.Subjects[0].Kind != "User" || got.Subjects[0].Name != "alice" {
-		t.Errorf("subject[0] = %+v, want User/alice", got.Subjects[0])
-	}
-	if got.Subjects[1].Kind != "Group" || got.Subjects[1].Name != "devs" {
-		t.Errorf("subject[1] = %+v, want Group/devs", got.Subjects[1])
-	}
+	require.Len(t, got.Subjects, 2)
+	assert.Equal(t, "User", got.Subjects[0].Kind)
+	assert.Equal(t, "alice", got.Subjects[0].Name)
+	assert.Equal(t, "Group", got.Subjects[1].Kind)
+	assert.Equal(t, "devs", got.Subjects[1].Name)
 }
 
 // TestRBACBinder_CreateRole_Idempotent verifies a duplicate Role create is a
@@ -84,12 +62,8 @@ func TestRBACBinder_CreateRole_Idempotent(t *testing.T) {
 	b := newRBACBinder(fake.NewClientset())
 	rules := GetDefaultDeveloperRules()
 
-	if err := b.CreateRole("developer", "dev", rules); err != nil {
-		t.Fatalf("first CreateRole: %v", err)
-	}
-	if err := b.CreateRole("developer", "dev", rules); err != nil {
-		t.Fatalf("duplicate CreateRole should be a no-op, got: %v", err)
-	}
+	require.NoError(t, b.CreateRole("developer", "dev", rules))
+	require.NoError(t, b.CreateRole("developer", "dev", rules), "duplicate CreateRole should be a no-op")
 }
 
 // TestRBACBinder_DeleteForUser removes only the target user's bindings.
@@ -100,16 +74,12 @@ func TestRBACBinder_DeleteForUser(t *testing.T) {
 	)
 	b := newRBACBinder(cs)
 
-	if err := b.DeleteForUser("alice"); err != nil {
-		t.Fatalf("DeleteForUser: %v", err)
-	}
+	require.NoError(t, b.DeleteForUser("alice"))
 
-	if _, err := cs.RbacV1().ClusterRoleBindings().Get(context.TODO(), "alice-view-binding", metav1.GetOptions{}); err == nil {
-		t.Error("alice's binding should have been deleted")
-	}
-	if _, err := cs.RbacV1().ClusterRoleBindings().Get(context.TODO(), "bob-view-binding", metav1.GetOptions{}); err != nil {
-		t.Errorf("bob's binding should remain: %v", err)
-	}
+	_, err := cs.RbacV1().ClusterRoleBindings().Get(context.TODO(), "alice-view-binding", metav1.GetOptions{})
+	assert.Error(t, err, "alice's binding should have been deleted")
+	_, err = cs.RbacV1().ClusterRoleBindings().Get(context.TODO(), "bob-view-binding", metav1.GetOptions{})
+	assert.NoError(t, err, "bob's binding should remain")
 }
 
 // TestManager_DeleteUser_RemovesLocalArtifacts verifies the orchestrator wires
@@ -119,14 +89,10 @@ func TestManager_DeleteUser_RemovesLocalArtifacts(t *testing.T) {
 	m := NewManager(fake.NewClientset(), filepath.Join(dir, "admin.kubeconfig"), dir)
 
 	userDir := filepath.Join(dir, "alice")
-	if err := os.MkdirAll(userDir, 0750); err != nil {
-		t.Fatalf("setup: %v", err)
-	}
+	require.NoError(t, os.MkdirAll(userDir, 0750))
 
-	if err := m.DeleteUser("alice"); err != nil {
-		t.Fatalf("DeleteUser: %v", err)
-	}
-	if _, err := os.Stat(userDir); !os.IsNotExist(err) {
-		t.Errorf("user dir should be removed, stat err = %v", err)
-	}
+	require.NoError(t, m.DeleteUser("alice"))
+
+	_, err := os.Stat(userDir)
+	assert.True(t, os.IsNotExist(err), "user dir should be removed, stat err = %v", err)
 }

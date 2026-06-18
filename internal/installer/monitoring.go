@@ -48,7 +48,7 @@ metadata:
 
 	// Wait for CRDs to be established
 	fmt.Println("Waiting for CRDs to be established...")
-	time.Sleep(MonitoringInitDelay)
+	time.Sleep(monitoringInitDelay)
 
 	// Install Prometheus instance
 	fmt.Println("Installing Prometheus...")
@@ -82,7 +82,7 @@ metadata:
 
 	// Wait for all components to be ready
 	fmt.Println("Waiting for monitoring stack to be ready...")
-	if err := m.waitForReady(DefaultReadyTimeout); err != nil {
+	if err := m.waitForReady(defaultReadyTimeout); err != nil {
 		return err
 	}
 
@@ -119,7 +119,7 @@ func (m *Monitoring) waitForReady(timeout time.Duration) error {
 		out, _ := m.exec.RunShell("kubectl get pods -n monitoring -l app.kubernetes.io/name=prometheus-operator -o jsonpath='{.items[0].status.phase}' 2>/dev/null")
 		if out != "Running" {
 			fmt.Println("Waiting for Prometheus Operator...")
-			time.Sleep(DefaultPollInterval)
+			time.Sleep(defaultPollInterval)
 			continue
 		}
 
@@ -127,7 +127,7 @@ func (m *Monitoring) waitForReady(timeout time.Duration) error {
 		out, _ = m.exec.RunShell("kubectl get pods -n monitoring -l app=grafana -o jsonpath='{.items[0].status.phase}' 2>/dev/null")
 		if out != "Running" {
 			fmt.Println("Waiting for Grafana...")
-			time.Sleep(DefaultPollInterval)
+			time.Sleep(defaultPollInterval)
 			continue
 		}
 
@@ -153,7 +153,7 @@ func (m *Monitoring) printAccessInfo() {
 	fmt.Println("   - Alertmanager: http://alertmanager.local")
 	fmt.Println("\nGrafana Credentials:")
 	fmt.Println("  User: admin")
-	if m.config.Vault.Enabled() {
+	if m.config.Vault.Enabled {
 		fmt.Println("  Password: (stored in Vault)")
 		fmt.Println("  Retrieve: k8s-provisioner vault get-secret k8s-provisioner/api-keys")
 		fmt.Println("\nAlertmanager Config:")

@@ -21,14 +21,14 @@ type SecretResolver struct {
 // NewSecretResolver builds a resolver from config. If Vault is not configured or
 // the token cannot be resolved, the resolver runs in defaults-only mode.
 func NewSecretResolver(cfg *config.Config) *SecretResolver {
-	if !cfg.Vault.Enabled() {
+	if !cfg.Vault.Enabled {
 		return &SecretResolver{}
 	}
 	token := ResolveVaultToken(cfg.Vault.Token)
 	if token == "" {
 		return &SecretResolver{}
 	}
-	return &SecretResolver{vault: NewVaultClient(cfg.Vault.Addr, token)}
+	return &SecretResolver{vault: NewVaultClient(cfg.VaultAddress(), token)}
 }
 
 // Enabled reports whether a Vault backend is available.

@@ -1,11 +1,53 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestLoad_DerivesIPsFromNodes(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	yaml := `cluster: {name: t, pod_cidr: "10.244.0.0/16", service_cidr: "10.96.0.0/12"}
+versions: {kubernetes: "1.32", crio: "v1.32"}
+network: {interface: eth1}
+storage: {nfs_path: /exports}
+nodes:
+  - {name: cp, ip: "192.168.56.10", role: controlplane}
+  - {name: st, ip: "192.168.56.20", role: storage}
+vault: {enabled: true, addr: ""}
+`
+	require.NoError(t, os.WriteFile(path, []byte(yaml), 0o600))
+
+	cfg, err := Load(path)
+	require.NoError(t, err)
+
+	// controlplane_ip is unset in the file → derived from the controlplane node.
+	assert.Equal(t, "192.168.56.10", cfg.Network.ControlPlaneIP)
+	// storage IP comes from the storage node, no hardcoded fallback.
+	assert.Equal(t, "192.168.56.20", cfg.StorageIP())
+	// vault.addr unset but enabled → derived from the storage node IP.
+	assert.Equal(t, "http://192.168.56.20:8200", cfg.VaultAddress())
+}
+
+func TestValidate_VaultEnabledWithoutResolvableAddress(t *testing.T) {
+	cfg := &Config{
+		Cluster:  ClusterConfig{Name: "t", PodCIDR: "10.244.0.0/16", ServiceCIDR: "10.96.0.0/12"},
+		Versions: VersionsConfig{Kubernetes: "1.32", CriO: "v1.32"},
+		Network:  NetworkConfig{Interface: "eth1", ControlPlaneIP: "192.168.56.10"},
+		Storage:  StorageConfig{NFSPath: "/exports"},
+		Nodes:    []NodeConfig{{Name: "cp", Role: "controlplane"}}, // no storage node, no ip
+		Vault:    VaultConfig{Enabled: true},                       // enabled but addr empty
+	}
+
+	err := cfg.Validate()
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "vault.enabled")
+}
 
 func TestLoad_ValidFile(t *testing.T) {
 	cfg, err := Load("../../testdata/config_valid.yaml")
