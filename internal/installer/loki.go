@@ -36,7 +36,7 @@ func (l *Loki) Install() error {
 	}
 
 	fmt.Println("Waiting for Loki stack to be ready...")
-	if err := l.waitForReady(ShortReadyTimeout); err != nil {
+	if err := l.waitForReady(shortReadyTimeout); err != nil {
 		fmt.Printf("Warning: %v\n", err)
 	}
 
@@ -462,14 +462,14 @@ func (l *Loki) waitForReady(timeout time.Duration) error {
 		out, _ := l.exec.RunShell("kubectl get pods -n monitoring -l app=loki -o jsonpath='{.items[0].status.phase}' 2>/dev/null")
 		if out != "Running" {
 			fmt.Println("Waiting for Loki...")
-			time.Sleep(DefaultPollInterval)
+			time.Sleep(defaultPollInterval)
 			continue
 		}
 
 		out, _ = l.exec.RunShell("kubectl get pods -n monitoring -l app=alloy -o jsonpath='{.items[0].status.phase}' 2>/dev/null")
 		if out != "Running" {
 			fmt.Println("Waiting for Alloy...")
-			time.Sleep(DefaultPollInterval)
+			time.Sleep(defaultPollInterval)
 			continue
 		}
 

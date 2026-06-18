@@ -31,7 +31,7 @@ func (c *Calico) Install() error {
 	// Poll until the Tigera CRDs are registered — a fixed sleep is unreliable
 	// because the operator takes variable time to register them.
 	fmt.Println("Waiting for Tigera CRDs...")
-	if err := c.waitForTigeraCRDs(DefaultReadyTimeout); err != nil {
+	if err := c.waitForTigeraCRDs(defaultReadyTimeout); err != nil {
 		return err
 	}
 
@@ -65,7 +65,7 @@ spec: {}`, c.config.Cluster.PodCIDR)
 
 	// Wait for Calico to be ready
 	fmt.Println("Waiting for Calico to be ready...")
-	return c.waitForReady(DefaultReadyTimeout)
+	return c.waitForReady(defaultReadyTimeout)
 }
 
 func (c *Calico) waitForTigeraCRDs(timeout time.Duration) error {
@@ -77,7 +77,7 @@ func (c *Calico) waitForTigeraCRDs(timeout time.Duration) error {
 			return nil
 		}
 		fmt.Println("Waiting for Tigera CRDs to be registered...")
-		time.Sleep(LongPollInterval)
+		time.Sleep(longPollInterval)
 	}
 	return fmt.Errorf("timeout waiting for Tigera CRDs")
 }
@@ -92,7 +92,7 @@ func (c *Calico) waitForReady(timeout time.Duration) error {
 			return nil
 		}
 		fmt.Println("Waiting for Calico pods...")
-		time.Sleep(LongPollInterval)
+		time.Sleep(longPollInterval)
 	}
 	fmt.Println("Warning: Calico pods may still be starting")
 	return nil

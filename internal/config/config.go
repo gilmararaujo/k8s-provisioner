@@ -23,11 +23,10 @@ type Config struct {
 }
 
 type VaultConfig struct {
-	Addr  string `yaml:"addr"`
-	Token string `yaml:"token"`
+	Enabled bool   `yaml:"enabled"` // toggles Vault; addr is derived when empty
+	Addr    string `yaml:"addr"`    // optional override; empty = derive from storage node
+	Token   string `yaml:"token"`
 }
-
-func (v VaultConfig) Enabled() bool { return v.Addr != "" }
 
 type OllamaConfig struct {
 	APIKey string `yaml:"api_key"` // Ollama cloud API key (from https://ollama.com/settings/keys)
@@ -111,6 +110,15 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 
+	// Node IPs in `nodes:` are the single source of truth. Derive the control
+	// plane IP from the controlplane node when network.controlplane_ip is unset,
+	// so the address is not duplicated in config.yaml.
+	if cfg.Network.ControlPlaneIP == "" {
+		if cp := cfg.GetControlPlane(); cp != nil {
+			cfg.Network.ControlPlaneIP = cp.IP
+		}
+	}
+
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("config validation failed: %w", err)
 	}
@@ -165,32 +173,16 @@ func (c *Config) Validate() error {
 		errors = append(errors, "storage.nfs_path is required")
 	}
 
+	// Vault validation: when enabled, an address must be resolvable (explicit
+	// vault.addr, or a storage node with an ip to derive it from).
+	if c.Vault.Enabled && c.VaultAddress() == "" {
+		errors = append(errors, "vault.enabled is true but no address could be resolved (set vault.addr or define a storage node with an ip)")
+	}
+
 	// Nodes validation
-	if len(c.Nodes) == 0 {
-		errors = append(errors, "at least one node must be defined")
-	}
+	errors = append(errors, validateNodes(c.Nodes)...)
 
-	hasControlPlane := false
-	validRoles := map[string]bool{"storage": true, "controlplane": true, "worker": true}
-
-	for i, node := range c.Nodes {
-		if node.Name == "" {
-			errors = append(errors, fmt.Sprintf("nodes[%d].name is required", i))
-		}
-		if node.Role == "" {
-			errors = append(errors, fmt.Sprintf("nodes[%d].role is required", i))
-		} else if !validRoles[node.Role] {
-			errors = append(errors, fmt.Sprintf("nodes[%d].role '%s' is invalid (must be: storage, controlplane, or worker)", i, node.Role))
-		}
-		if node.Role == "controlplane" {
-			hasControlPlane = true
-		}
-		if node.IP != "" && !isValidIP(node.IP) {
-			errors = append(errors, fmt.Sprintf("nodes[%d].ip '%s' is not a valid IP address", i, node.IP))
-		}
-	}
-
-	if !hasControlPlane {
+	if !hasControlPlaneNode(c.Nodes) {
 		errors = append(errors, "at least one node with role 'controlplane' is required")
 	}
 
@@ -226,6 +218,38 @@ func (c *Config) Validate() error {
 	}
 
 	return nil
+}
+
+// validateNodes checks each node's name, role and (when set) IP format.
+func validateNodes(nodes []NodeConfig) []string {
+	var errs []string
+	if len(nodes) == 0 {
+		errs = append(errs, "at least one node must be defined")
+	}
+	validRoles := map[string]bool{"storage": true, "controlplane": true, "worker": true}
+	for i, node := range nodes {
+		if node.Name == "" {
+			errs = append(errs, fmt.Sprintf("nodes[%d].name is required", i))
+		}
+		if node.Role == "" {
+			errs = append(errs, fmt.Sprintf("nodes[%d].role is required", i))
+		} else if !validRoles[node.Role] {
+			errs = append(errs, fmt.Sprintf("nodes[%d].role '%s' is invalid (must be: storage, controlplane, or worker)", i, node.Role))
+		}
+		if node.IP != "" && !isValidIP(node.IP) {
+			errs = append(errs, fmt.Sprintf("nodes[%d].ip '%s' is not a valid IP address", i, node.IP))
+		}
+	}
+	return errs
+}
+
+func hasControlPlaneNode(nodes []NodeConfig) bool {
+	for _, node := range nodes {
+		if node.Role == "controlplane" {
+			return true
+		}
+	}
+	return false
 }
 
 // isValidIP checks if the string is a valid IPv4 or IPv6 address
@@ -282,6 +306,28 @@ func (c *Config) GetStorageNode() *NodeConfig {
 		}
 	}
 	return nil
+}
+
+// StorageIP returns the storage node IP from config (nodes:), or "" if no
+// storage node is defined. No hardcoded fallback — node IPs are authoritative.
+func (c *Config) StorageIP() string {
+	if n := c.GetStorageNode(); n != nil {
+		return n.IP
+	}
+	return ""
+}
+
+// VaultAddress returns the configured Vault address. vault.addr (which also acts
+// as the Vault enable switch, see VaultConfig.Enabled) takes precedence; when
+// unset it is derived from the storage node IP so no address is hardcoded in Go.
+func (c *Config) VaultAddress() string {
+	if c.Vault.Addr != "" {
+		return c.Vault.Addr
+	}
+	if ip := c.StorageIP(); ip != "" {
+		return fmt.Sprintf("http://%s:8200", ip)
+	}
+	return ""
 }
 
 func (c *Config) GetWorkers() []NodeConfig {

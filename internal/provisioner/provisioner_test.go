@@ -4,6 +4,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/techiescamp/k8s-provisioner/internal/config"
 )
 
@@ -72,10 +75,7 @@ func TestWorkloadPlan_AllEnabled(t *testing.T) {
 		"Karpor",
 	}
 
-	got := planNames(p)
-	if strings.Join(got, ",") != strings.Join(want, ",") {
-		t.Fatalf("plan mismatch:\n got: %v\nwant: %v", got, want)
-	}
+	require.Equal(t, want, planNames(p))
 }
 
 func TestWorkloadPlan_Minimal(t *testing.T) {
@@ -93,10 +93,7 @@ func TestWorkloadPlan_Minimal(t *testing.T) {
 		"Vault Secrets Operator",
 	}
 
-	got := planNames(p)
-	if strings.Join(got, ",") != strings.Join(want, ",") {
-		t.Fatalf("plan mismatch:\n got: %v\nwant: %v", got, want)
-	}
+	require.Equal(t, want, planNames(p))
 }
 
 func TestWorkloadPlan_TracingRequiresMonitoring(t *testing.T) {
@@ -106,9 +103,8 @@ func TestWorkloadPlan_TracingRequiresMonitoring(t *testing.T) {
 	p := NewWithExecutor(cfg, &mockExecutor{}, false)
 
 	for _, name := range planNames(p) {
-		if strings.HasPrefix(name, "Tracing Stack") {
-			t.Fatalf("Tempo should not be planned without monitoring; plan: %v", planNames(p))
-		}
+		require.False(t, strings.HasPrefix(name, "Tracing Stack"),
+			"Tempo should not be planned without monitoring; plan: %v", planNames(p))
 	}
 }
 
@@ -136,9 +132,7 @@ func TestWorkloadPlan_FatalPolicy(t *testing.T) {
 			continue
 		}
 		name := step.build(cfg, p.exec).Name()
-		if step.fatal != wantFatal[name] {
-			t.Errorf("%s: fatal=%v, want %v", name, step.fatal, wantFatal[name])
-		}
+		assert.Equal(t, wantFatal[name], step.fatal, "%s fatal flag", name)
 	}
 }
 
@@ -151,13 +145,8 @@ func TestInstallWorkloads_DryRunPrintsPlanWithoutExecuting(t *testing.T) {
 	p := NewWithExecutor(cfg, mock, false)
 	p.dryRun = true
 
-	if err := p.InstallWorkloads(); err != nil {
-		t.Fatalf("dry-run InstallWorkloads should not error: %v", err)
-	}
-	// The plan path must not run a single shell command (no installer executes).
-	if len(mock.shellCmds) != 0 {
-		t.Fatalf("dry-run must not execute commands, got %d: %v", len(mock.shellCmds), mock.shellCmds)
-	}
+	require.NoError(t, p.InstallWorkloads(), "dry-run InstallWorkloads should not error")
+	require.Empty(t, mock.shellCmds, "dry-run must not execute a single shell command")
 }
 
 func TestWriteFile_DryRunSkips(t *testing.T) {
@@ -165,9 +154,8 @@ func TestWriteFile_DryRunSkips(t *testing.T) {
 	p.dryRun = true
 
 	// A path that would fail if actually written (no such directory).
-	if err := p.writeFile("/nonexistent-dir/should-not-write.conf", "data"); err != nil {
-		t.Fatalf("dry-run writeFile should be a no-op, got: %v", err)
-	}
+	require.NoError(t, p.writeFile("/nonexistent-dir/should-not-write.conf", "data"),
+		"dry-run writeFile should be a no-op")
 }
 
 // TestRefreshCalicoAfterKeycloak verifies the injected executor is actually used
@@ -177,17 +165,12 @@ func TestRefreshCalicoAfterKeycloak(t *testing.T) {
 	mock := &mockExecutor{}
 	p := NewWithExecutor(&config.Config{}, mock, false)
 
-	if err := p.refreshCalicoAfterKeycloak(); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	require.NoError(t, p.refreshCalicoAfterKeycloak())
 
-	if len(mock.shellCmds) != 2 {
-		t.Fatalf("expected 2 shell commands, got %d: %v", len(mock.shellCmds), mock.shellCmds)
-	}
-	if !strings.Contains(mock.shellCmds[0], "rollout restart daemonset/calico-node") {
-		t.Errorf("first command should restart calico-node, got: %s", mock.shellCmds[0])
-	}
-	if !strings.Contains(mock.shellCmds[1], "rollout status daemonset/calico-node") {
-		t.Errorf("second command should poll rollout status, got: %s", mock.shellCmds[1])
-	}
+	// Assert the meaningful commands are present and ordered (restart then
+	// status poll) rather than an exact total count, so a benign extra shell
+	// call doesn't break the test (TST-8).
+	require.NotEmpty(t, mock.shellCmds)
+	assert.Contains(t, mock.shellCmds[0], "rollout restart daemonset/calico-node")
+	assert.Contains(t, mock.shellCmds[len(mock.shellCmds)-1], "rollout status daemonset/calico-node")
 }

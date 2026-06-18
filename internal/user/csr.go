@@ -135,7 +135,7 @@ func (c *certIssuer) WaitForCertificate(name string, timeout time.Duration) ([]b
 			return csr.Status.Certificate, nil
 		}
 
-		time.Sleep(CertificatePollInterval)
+		time.Sleep(certificatePollInterval)
 	}
 
 	return nil, fmt.Errorf("timeout waiting for certificate")

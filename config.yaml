@@ -2,7 +2,8 @@
 # Vault (HashiCorp) - running on storage node
 # token is auto-read from /etc/k8s-provisioner/vault-init.json if left empty
 vault:
-  addr: "http://192.168.56.20:8200"
+  enabled: true
+  addr: ""   # Empty = derived as http://<storage-node-ip>:8200 from nodes:. Set to override.
   token: ""  # Leave empty to auto-resolve from vault-init.json
 
 cluster:
@@ -33,7 +34,8 @@ versions:
 
 network:
   interface: "eth1"
-  controlplane_ip: "192.168.56.10"
+  # controlplane_ip is derived from the controlplane node in `nodes:` (single
+  # source of truth). Set it here only to override that derived value.
   metallb_range: "192.168.56.200-192.168.56.250"
 
 storage:
@@ -44,12 +46,16 @@ storage:
 # Node definitions - IPs should match vagrant/settings.yaml
 nodes:
   - name: "storage"
+    ip: "192.168.56.20"
     role: "storage"
   - name: "controlplane"
+    ip: "192.168.56.10"
     role: "controlplane"
   - name: "node01"
+    ip: "192.168.56.11"
     role: "worker"
   - name: "node02"
+    ip: "192.168.56.12"
     role: "worker"
 
 components:

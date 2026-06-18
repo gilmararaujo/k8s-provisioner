@@ -85,7 +85,7 @@ func (k *Karpor) Install() error {
 
 	// Wait for components to be ready
 	fmt.Println("Waiting for Karpor to be ready...")
-	if err := k.waitForReady(DefaultReadyTimeout); err != nil {
+	if err := k.waitForReady(defaultReadyTimeout); err != nil {
 		fmt.Printf("Warning: %v\n", err)
 	}
 
@@ -320,7 +320,7 @@ func (k *Karpor) waitForReady(timeout time.Duration) error {
 		}
 
 		fmt.Println("Waiting for Karpor pods...")
-		time.Sleep(LongPollInterval)
+		time.Sleep(longPollInterval)
 	}
 
 	// Don't fail, just warn - pods might still be pulling images
