@@ -11,10 +11,10 @@ import (
 
 type Istio struct {
 	config *config.Config
-	exec   executor.CommandExecutor
+	exec   executor.ShellExecutor
 }
 
-func NewIstio(cfg *config.Config, exec executor.CommandExecutor) *Istio {
+func NewIstio(cfg *config.Config, exec executor.ShellExecutor) *Istio {
 	return &Istio{config: cfg, exec: exec}
 }
 
@@ -23,7 +23,7 @@ func (i *Istio) Install() error {
 
 	// Download istioctl
 	fmt.Printf("Downloading Istio %s...\n", version)
-	downloadCmd := fmt.Sprintf("curl -L https://istio.io/downloadIstio | ISTIO_VERSION=%s sh -", version)
+	downloadCmd := fmt.Sprintf("curl -L --connect-timeout 10 --max-time 300 https://istio.io/downloadIstio | ISTIO_VERSION=%s sh -", version)
 	if err := i.exec.RunShellWithOutput(downloadCmd); err != nil {
 		return err
 	}

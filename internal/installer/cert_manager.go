@@ -8,13 +8,12 @@ import (
 	"github.com/techiescamp/k8s-provisioner/internal/executor"
 )
 
-
 type CertManager struct {
 	config *config.Config
-	exec   executor.CommandExecutor
+	exec   executor.ShellExecutor
 }
 
-func NewCertManager(cfg *config.Config, exec executor.CommandExecutor) *CertManager {
+func NewCertManager(cfg *config.Config, exec executor.ShellExecutor) *CertManager {
 	return &CertManager{config: cfg, exec: exec}
 }
 
@@ -50,15 +49,10 @@ func (c *CertManager) Install() error {
 		fmt.Printf("Warning: certificates may not be ready yet: %v\n", err)
 	}
 
-	fmt.Println("Creating cert-manager ServiceMonitor...")
-	if err := c.createServiceMonitor(); err != nil {
-		fmt.Printf("Warning: ServiceMonitor creation failed: %v\n", err)
-	}
-
-	fmt.Println("Creating cert-manager PrometheusRule...")
-	if err := c.createPrometheusRule(); err != nil {
-		fmt.Printf("Warning: PrometheusRule creation failed: %v\n", err)
-	}
+	// NOTE: the cert-manager ServiceMonitor + PrometheusRule are created by the
+	// Monitoring installer (installCertManagerMonitoring), not here. They depend
+	// on the Prometheus Operator CRDs (monitoring.coreos.com/v1), which are only
+	// installed later in the workload order. Creating them here failed silently.
 
 	fmt.Println("cert-manager installed successfully!")
 	c.printCAInstructions()
@@ -207,79 +201,6 @@ func (c *CertManager) printCAInstructions() {
 	fmt.Println()
 	fmt.Println("After trusting, all *.local services will show a green lock in Safari/Chrome.")
 	fmt.Println("========================================")
-}
-
-func (c *CertManager) createServiceMonitor() error {
-	manifest := `apiVersion: monitoring.coreos.com/v1
-kind: ServiceMonitor
-metadata:
-  name: cert-manager
-  namespace: monitoring
-  labels:
-    release: prometheus-stack
-spec:
-  jobLabel: app
-  selector:
-    matchLabels:
-      app: cert-manager
-  namespaceSelector:
-    matchNames:
-    - cert-manager
-  endpoints:
-  - port: tcp-prometheus-servicemonitor
-    path: /metrics
-    interval: 30s
-    scrapeTimeout: 10s`
-
-	if err := executor.WriteFile("/tmp/cert-manager-servicemonitor.yaml", manifest); err != nil {
-		return err
-	}
-	_, err := c.exec.RunShell("kubectl apply -f /tmp/cert-manager-servicemonitor.yaml")
-	return err
-}
-
-func (c *CertManager) createPrometheusRule() error {
-	manifest := `apiVersion: monitoring.coreos.com/v1
-kind: PrometheusRule
-metadata:
-  name: cert-manager
-  namespace: monitoring
-  labels:
-    release: prometheus-stack
-spec:
-  groups:
-  - name: cert-manager
-    rules:
-    - alert: CertificateExpiringSoon
-      expr: certmanager_certificate_expiration_timestamp_seconds - time() < 30 * 24 * 3600
-      for: 1h
-      labels:
-        severity: warning
-      annotations:
-        summary: "Certificado expirando em breve"
-        description: "O certificado {{ $labels.name }} no namespace {{ $labels.namespace }} expira em menos de 30 dias."
-    - alert: CertificateExpiryCritical
-      expr: certmanager_certificate_expiration_timestamp_seconds - time() < 7 * 24 * 3600
-      for: 1h
-      labels:
-        severity: critical
-      annotations:
-        summary: "Certificado expirando criticamente"
-        description: "O certificado {{ $labels.name }} no namespace {{ $labels.namespace }} expira em menos de 7 dias."
-    - alert: CertificateNotReady
-      expr: certmanager_certificate_ready_status{condition="True"} != 1
-      for: 10m
-      labels:
-        severity: critical
-      annotations:
-        summary: "Certificado não está pronto"
-        description: "O certificado {{ $labels.name }} no namespace {{ $labels.namespace }} não está no estado Ready."`
-
-	if err := executor.WriteFile("/tmp/cert-manager-prometheusrule.yaml", manifest); err != nil {
-		return err
-	}
-	_, err := c.exec.RunShell("kubectl apply -f /tmp/cert-manager-prometheusrule.yaml")
-	return err
 }
 
 func splitWords(s string) []string {

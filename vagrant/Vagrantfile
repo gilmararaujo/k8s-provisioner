@@ -22,8 +22,10 @@ Vagrant.configure("2") do |config|
          else 'amd64'
          end
 
-  # Auto-build Go binary before provisioning
-  config.trigger.before [:up, :provision] do |trigger|
+  # Build the Go binary once before provisioning the control plane.
+  # Using only_on ensures a single build regardless of whether the user
+  # runs "vagrant up" (sequential) or "vagrant up --parallel".
+  config.trigger.before [:up, :provision], only_on: "controlplane" do |trigger|
     trigger.name = "Building k8s-provisioner binary for linux-#{ARCH}"
     trigger.run = { inline: "bash -c 'cd .. && make build-linux-#{ARCH}'" }
   end
@@ -239,9 +241,23 @@ VAULTSERVICE
           chmod +x /usr/local/bin/k8s-provisioner
           mkdir -p /etc/k8s-provisioner
           cp /opt/k8s-provisioner/config.yaml /etc/k8s-provisioner/config.yaml
+
           k8s-provisioner provision all -c /etc/k8s-provisioner/config.yaml -v 2>&1 | tee /var/log/k8s-provisioner.log
           exit ${PIPESTATUS[0]}
         SHELL
+
+        # After the last worker joins, install all workloads on the control plane.
+        # At this point all nodes are in the cluster so DaemonSets spread correctly.
+        if vm_config['name'] == "node02"
+          vm.vm.provision "shell", inline: <<-SHELL
+            set -e
+            echo "=== All nodes joined — triggering workload installation on controlplane (192.168.56.10) ==="
+            echo "=== (output below comes from controlplane, not from this node) ==="
+            apt-get install -y sshpass
+            sshpass -p 'vagrant' ssh -o StrictHostKeyChecking=no vagrant@192.168.56.10 \
+              'sudo k8s-provisioner provision workloads -c /etc/k8s-provisioner/config.yaml -v 2>&1 | sudo tee /var/log/k8s-provisioner-workloads.log; exit ${PIPESTATUS[0]}'
+          SHELL
+        end
 
         # Label node01 for AI workloads after joining (only if Karpor AI is enabled)
         if vm_config['name'] == "node01"

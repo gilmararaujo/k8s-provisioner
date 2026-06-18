@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
@@ -11,6 +12,7 @@ import (
 var (
 	cfgFile string
 	verbose bool
+	dryRun  bool
 	cfg     *config.Config
 )
 
@@ -38,10 +40,15 @@ for learning and lab environments. It automates the installation of:
 - MetalLB (LoadBalancer)
 - Istio (Service Mesh)`,
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-		// Skip config loading for commands that don't need it
+		// Skip config loading for commands that don't need it. A missing file is
+		// fine here, but a present-but-malformed config must still surface — leaving
+		// cfg nil would otherwise nil-deref later (e.g. GetConfig consumers).
 		if noConfigCommands[cmd.Name()] {
-			// Try to load config, but don't fail if it doesn't exist
-			cfg, _ = config.Load(cfgFile)
+			c, err := config.Load(cfgFile)
+			if err != nil && !errors.Is(err, os.ErrNotExist) {
+				return fmt.Errorf("invalid config %s: %w", cfgFile, err)
+			}
+			cfg = c
 			return nil
 		}
 
@@ -64,6 +71,7 @@ func Execute() {
 func init() {
 	rootCmd.PersistentFlags().StringVarP(&cfgFile, "config", "c", "/etc/k8s-provisioner/config.yaml", "config file path")
 	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "verbose output")
+	rootCmd.PersistentFlags().BoolVar(&dryRun, "dry-run", false, "preview commands without mutating the host")
 }
 
 func GetConfig() *config.Config {
@@ -72,4 +80,8 @@ func GetConfig() *config.Config {
 
 func IsVerbose() bool {
 	return verbose
+}
+
+func IsDryRun() bool {
+	return dryRun
 }

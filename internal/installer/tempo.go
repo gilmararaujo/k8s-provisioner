@@ -10,10 +10,10 @@ import (
 
 type Tempo struct {
 	config *config.Config
-	exec   executor.CommandExecutor
+	exec   executor.ShellExecutor
 }
 
-func NewTempo(cfg *config.Config, exec executor.CommandExecutor) *Tempo {
+func NewTempo(cfg *config.Config, exec executor.ShellExecutor) *Tempo {
 	return &Tempo{config: cfg, exec: exec}
 }
 

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"slices"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -191,6 +192,33 @@ func (c *Config) Validate() error {
 
 	if !hasControlPlane {
 		errors = append(errors, "at least one node with role 'controlplane' is required")
+	}
+
+	// Component toggles are matched by string equality at use sites, so a typo
+	// (e.g. "prometheus_stack") silently skips the component instead of erroring.
+	// Validate against the documented option sets. Empty = explicitly unset/skip.
+	enumChecks := []struct {
+		name    string
+		value   string
+		allowed []string
+	}{
+		{"components.service_mesh", c.Components.ServiceMesh, []string{"istio", "none"}},
+		{"components.monitoring", c.Components.Monitoring, []string{"prometheus-stack", "none"}},
+		{"components.logging", c.Components.Logging, []string{"loki", "none"}},
+		{"components.tracing", c.Components.Tracing, []string{"otel-tempo", "none"}},
+		{"components.karpor", c.Components.Karpor, []string{"enabled", "disabled", "none"}},
+		{"components.keycloak", c.Components.Keycloak, []string{"enabled", "disabled", "none"}},
+		{"components.vpa", c.Components.VPA, []string{"enabled", "disabled", "none"}},
+		{"components.keda", c.Components.KEDA, []string{"enabled", "disabled", "none"}},
+	}
+	for _, e := range enumChecks {
+		if e.value == "" {
+			continue
+		}
+		if !slices.Contains(e.allowed, e.value) {
+			errors = append(errors, fmt.Sprintf("%s '%s' is invalid (allowed: %s)",
+				e.name, e.value, strings.Join(e.allowed, ", ")))
+		}
 	}
 
 	if len(errors) > 0 {

@@ -59,7 +59,7 @@ components:
   monitoring: "prometheus-stack"  # Options: prometheus-stack, none
   logging: "loki"                 # Options: loki, none (installed with monitoring)
   tracing: "otel-tempo"           # Options: otel-tempo, none (requires monitoring+logging)
-  karpor: "none"                  # Options: enabled, none (requires extra resources: ~1.5 CPU, ~2GB RAM)
+  karpor: "none"                  # Options: none, enabled (requires extra resources: ~1.5 CPU, ~2GB RAM)
   keycloak: "enabled"             # Options: enabled, none (OIDC identity provider for kubectl + Grafana SSO)
   vpa: "enabled"                  # Options: enabled, none (Vertical Pod Autoscaler — adjusts CPU/Memory per pod)
   keda: "enabled"                 # Options: enabled, none (Event-driven autoscaling — scale to zero, Prometheus triggers)

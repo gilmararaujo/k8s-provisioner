@@ -14,12 +14,20 @@ var provisionCmd = &cobra.Command{
 	Long:  `Provision the current node with Kubernetes components based on its role.`,
 }
 
+// newProvisioner builds a Provisioner honoring the global --dry-run flag.
+func newProvisioner() *provisioner.Provisioner {
+	if IsDryRun() {
+		return provisioner.NewDryRun(GetConfig(), IsVerbose())
+	}
+	return provisioner.New(GetConfig(), IsVerbose())
+}
+
 var provisionCommonCmd = &cobra.Command{
 	Use:   "common",
 	Short: "Install common components (CRI-O, kubeadm, kubelet, kubectl)",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		fmt.Println("=== Installing common components ===")
-		p := provisioner.New(GetConfig(), IsVerbose())
+		p := newProvisioner()
 		return p.InstallCommon()
 	},
 }
@@ -29,7 +37,7 @@ var provisionControlPlaneCmd = &cobra.Command{
 	Short: "Initialize the control plane node",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		fmt.Println("=== Initializing control plane ===")
-		p := provisioner.New(GetConfig(), IsVerbose())
+		p := newProvisioner()
 		return p.InitControlPlane()
 	},
 }
@@ -39,8 +47,31 @@ var provisionWorkerCmd = &cobra.Command{
 	Short: "Join this node as a worker",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		fmt.Println("=== Joining cluster as worker ===")
-		p := provisioner.New(GetConfig(), IsVerbose())
+		p := newProvisioner()
 		return p.JoinWorker()
+	},
+}
+
+var provisionInitCmd = &cobra.Command{
+	Use:   "init",
+	Short: "Bootstrap the control plane and generate the worker join command",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		fmt.Println("=== Bootstrapping control plane ===")
+		p := newProvisioner()
+		if err := p.InstallCommon(); err != nil {
+			return err
+		}
+		return p.InitCluster()
+	},
+}
+
+var provisionWorkloadsCmd = &cobra.Command{
+	Use:   "workloads",
+	Short: "Install cluster workloads (MetalLB, Istio, Monitoring, Keycloak...)",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		fmt.Println("=== Installing cluster workloads ===")
+		p := newProvisioner()
+		return p.InstallWorkloads()
 	},
 }
 
@@ -53,7 +84,7 @@ var provisionAllCmd = &cobra.Command{
 			return err
 		}
 
-		p := provisioner.New(GetConfig(), IsVerbose())
+		p := newProvisioner()
 
 		// Install common components
 		fmt.Println("=== Installing common components ===")
@@ -76,8 +107,8 @@ var provisionAllCmd = &cobra.Command{
 		}
 
 		if role == "controlplane" {
-			fmt.Println("=== Initializing control plane ===")
-			return p.InitControlPlane()
+			fmt.Println("=== Bootstrapping control plane ===")
+			return p.InitCluster()
 		} else {
 			fmt.Println("=== Joining cluster as worker ===")
 			return p.JoinWorker()
@@ -90,5 +121,7 @@ func init() {
 	provisionCmd.AddCommand(provisionCommonCmd)
 	provisionCmd.AddCommand(provisionControlPlaneCmd)
 	provisionCmd.AddCommand(provisionWorkerCmd)
+	provisionCmd.AddCommand(provisionInitCmd)
+	provisionCmd.AddCommand(provisionWorkloadsCmd)
 	provisionCmd.AddCommand(provisionAllCmd)
 }

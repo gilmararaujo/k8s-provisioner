@@ -10,10 +10,10 @@ import (
 
 type Kiali struct {
 	config *config.Config
-	exec   executor.CommandExecutor
+	exec   executor.ShellExecutor
 }
 
-func NewKiali(cfg *config.Config, exec executor.CommandExecutor) *Kiali {
+func NewKiali(cfg *config.Config, exec executor.ShellExecutor) *Kiali {
 	return &Kiali{config: cfg, exec: exec}
 }
 
@@ -307,13 +307,12 @@ spec:
     port: 20001
     targetPort: 20001
   selector:
-    app: kiali`, kialiVersion, kialiVersion, kialiVersion, grafanaAuthSection, tracingSection, loggingSection)
+    app: kiali`, grafanaAuthSection, tracingSection, loggingSection, kialiVersion, kialiVersion, kialiVersion)
 
-	if err := executor.WriteFile("/tmp/kiali.yaml", kiali); err != nil {
-		return err
-	}
-
-	_, applyErr := k.exec.RunShell("kubectl apply -f /tmp/kiali.yaml")
+	// The manifest inlines the Grafana admin password (read from the cluster
+	// secret). Pipe via stdin so the credential never lands on disk
+	// world-readable in /tmp, and is never interpolated into a shell command.
+	_, applyErr := k.exec.RunShellWithStdin("kubectl apply -f -", kiali)
 	return applyErr
 }
 

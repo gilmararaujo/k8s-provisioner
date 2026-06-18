@@ -10,10 +10,10 @@ import (
 
 type Loki struct {
 	config *config.Config
-	exec   executor.CommandExecutor
+	exec   executor.ShellExecutor
 }
 
-func NewLoki(cfg *config.Config, exec executor.CommandExecutor) *Loki {
+func NewLoki(cfg *config.Config, exec executor.ShellExecutor) *Loki {
 	return &Loki{config: cfg, exec: exec}
 }
 
