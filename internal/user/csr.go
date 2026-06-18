@@ -1,7 +1,6 @@
 package user
 
 import (
-	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
@@ -65,9 +64,12 @@ func (c *certIssuer) CreateCSR(key *rsa.PrivateKey, username string, groups []st
 // Submit (re)creates the CSR object in the cluster, replacing any existing one
 // with the same name.
 func (c *certIssuer) Submit(name string, csrPEM []byte, expirationDays int) error {
+	ctx, cancel := apiCtx()
+	defer cancel()
+
 	// Delete existing CSR if it exists
 	_ = c.clientset.CertificatesV1().CertificateSigningRequests().Delete(
-		context.TODO(), name, metav1.DeleteOptions{})
+		ctx, name, metav1.DeleteOptions{})
 
 	expirationSeconds := expirationDays * 24 * 60 * 60 // days to seconds
 	expiration := int32(expirationSeconds)             // #nosec G115
@@ -87,7 +89,7 @@ func (c *certIssuer) Submit(name string, csrPEM []byte, expirationDays int) erro
 	}
 
 	_, err := c.clientset.CertificatesV1().CertificateSigningRequests().Create(
-		context.TODO(), csr, metav1.CreateOptions{})
+		ctx, csr, metav1.CreateOptions{})
 	if err != nil {
 		return fmt.Errorf("failed to submit CSR: %w", err)
 	}
@@ -97,8 +99,11 @@ func (c *certIssuer) Submit(name string, csrPEM []byte, expirationDays int) erro
 
 // Approve approves a submitted CSR so the control plane signs it.
 func (c *certIssuer) Approve(name string) error {
+	ctx, cancel := apiCtx()
+	defer cancel()
+
 	csr, err := c.clientset.CertificatesV1().CertificateSigningRequests().Get(
-		context.TODO(), name, metav1.GetOptions{})
+		ctx, name, metav1.GetOptions{})
 	if err != nil {
 		return fmt.Errorf("failed to get CSR: %w", err)
 	}
@@ -112,7 +117,7 @@ func (c *certIssuer) Approve(name string) error {
 	})
 
 	_, err = c.clientset.CertificatesV1().CertificateSigningRequests().UpdateApproval(
-		context.TODO(), name, csr, metav1.UpdateOptions{})
+		ctx, name, csr, metav1.UpdateOptions{})
 	if err != nil {
 		return fmt.Errorf("failed to approve CSR: %w", err)
 	}
@@ -125,8 +130,10 @@ func (c *certIssuer) WaitForCertificate(name string, timeout time.Duration) ([]b
 	deadline := time.Now().Add(timeout)
 
 	for time.Now().Before(deadline) {
+		ctx, cancel := apiCtx()
 		csr, err := c.clientset.CertificatesV1().CertificateSigningRequests().Get(
-			context.TODO(), name, metav1.GetOptions{})
+			ctx, name, metav1.GetOptions{})
+		cancel()
 		if err != nil {
 			return nil, fmt.Errorf("failed to get CSR: %w", err)
 		}
@@ -145,8 +152,11 @@ func (c *certIssuer) WaitForCertificate(name string, timeout time.Duration) ([]b
 // as success (the object is already gone); other errors are returned so callers
 // can report cleanup failures.
 func (c *certIssuer) Delete(name string) error {
+	ctx, cancel := apiCtx()
+	defer cancel()
+
 	err := c.clientset.CertificatesV1().CertificateSigningRequests().Delete(
-		context.TODO(), name, metav1.DeleteOptions{})
+		ctx, name, metav1.DeleteOptions{})
 	if err != nil && !apierrors.IsNotFound(err) {
 		return fmt.Errorf("deleting CSR %s: %w", name, err)
 	}
