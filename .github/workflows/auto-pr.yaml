@@ -14,8 +14,21 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      # Skip the no-op runs caused by main->develop sync merges: only open a PR
+      # when develop actually has commits ahead of main.
+      - name: Check develop is ahead of main
+        id: diff
+        run: |
+          git fetch origin main
+          AHEAD=$(git rev-list --count origin/main..HEAD)
+          echo "ahead=$AHEAD" >> "$GITHUB_OUTPUT"
+          echo "develop is $AHEAD commit(s) ahead of main"
 
       - name: Create Pull Request
+        if: steps.diff.outputs.ahead != '0'
         uses: repo-sync/pull-request@v2
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}

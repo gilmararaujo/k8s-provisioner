@@ -2,6 +2,7 @@ package installer
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -164,7 +165,14 @@ func UnsealWithKey(addr, key string) error {
 	if err != nil {
 		return err
 	}
-	resp, err := http.Post(url, "application/json", bytes.NewBuffer(body)) //nolint:noctx
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewBuffer(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := vaultHTTPClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("vault unreachable at %s: %w", addr, err)
 	}
