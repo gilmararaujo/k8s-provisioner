@@ -1,3 +1,8 @@
+run:
+  # CI runs with a cold build cache; the default 1m is too tight now that the
+  # complexity linters (CX-9) are enabled. 5m gives ample headroom.
+  timeout: 5m
+
 linters:
   enable:
     - gosec
