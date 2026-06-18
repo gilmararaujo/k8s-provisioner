@@ -16,6 +16,11 @@ import (
 	"github.com/techiescamp/k8s-provisioner/internal/executor"
 )
 
+// vaultHTTPClient bounds the Vault bootstrap calls (health/init/unseal/KV setup)
+// so a hung Vault on a freshly-booted storage node fails fast instead of blocking
+// the deadline loops indefinitely (RES-1).
+var vaultHTTPClient = &http.Client{Timeout: 10 * time.Second}
+
 type VaultInstaller struct {
 	config  *config.Config
 	exec    executor.ShellExecutor
@@ -88,7 +93,7 @@ func (v *VaultInstaller) Install() error {
 func (v *VaultInstaller) waitForVault(timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		resp, err := http.Get(v.address + "/v1/sys/health")
+		resp, err := vaultHTTPClient.Get(v.address + "/v1/sys/health")
 		if err == nil {
 			if closeErr := resp.Body.Close(); closeErr != nil {
 				fmt.Printf("Warning: failed to close response body: %v\n", closeErr)
@@ -105,7 +110,7 @@ func (v *VaultInstaller) waitForVault(timeout time.Duration) error {
 }
 
 func (v *VaultInstaller) isInitialized() (bool, error) {
-	resp, err := http.Get(v.address + "/v1/sys/init")
+	resp, err := vaultHTTPClient.Get(v.address + "/v1/sys/init")
 	if err != nil {
 		return false, err
 	}
@@ -464,7 +469,7 @@ func (v *VaultInstaller) vaultRequest(method, path, token string, body interface
 		req.Header.Set("X-Vault-Token", token)
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := vaultHTTPClient.Do(req)
 	if err != nil {
 		return nil, err
 	}

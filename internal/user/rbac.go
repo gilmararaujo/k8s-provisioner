@@ -1,7 +1,6 @@
 package user
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -37,6 +36,9 @@ func subjectsFor(username string, groups []string) []rbac.Subject {
 
 // BindClusterRole binds username (and groups) to a ClusterRole cluster-wide.
 func (b *rbacBinder) BindClusterRole(username string, groups []string, clusterRole string) error {
+	ctx, cancel := apiCtx()
+	defer cancel()
+
 	binding := &rbac.ClusterRoleBinding{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: fmt.Sprintf("%s-%s-binding", username, clusterRole),
@@ -50,7 +52,7 @@ func (b *rbacBinder) BindClusterRole(username string, groups []string, clusterRo
 	}
 
 	_, err := b.clientset.RbacV1().ClusterRoleBindings().Create(
-		context.TODO(), binding, metav1.CreateOptions{})
+		ctx, binding, metav1.CreateOptions{})
 	if err != nil {
 		if strings.Contains(err.Error(), "already exists") {
 			fmt.Printf("  ClusterRoleBinding already exists, skipping...\n")
@@ -64,6 +66,9 @@ func (b *rbacBinder) BindClusterRole(username string, groups []string, clusterRo
 
 // BindRole binds username (and groups) to a Role in a namespace.
 func (b *rbacBinder) BindRole(username string, groups []string, role, namespace string) error {
+	ctx, cancel := apiCtx()
+	defer cancel()
+
 	binding := &rbac.RoleBinding{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      fmt.Sprintf("%s-%s-binding", username, role),
@@ -78,7 +83,7 @@ func (b *rbacBinder) BindRole(username string, groups []string, role, namespace 
 	}
 
 	_, err := b.clientset.RbacV1().RoleBindings(namespace).Create(
-		context.TODO(), binding, metav1.CreateOptions{})
+		ctx, binding, metav1.CreateOptions{})
 	if err != nil {
 		if strings.Contains(err.Error(), "already exists") {
 			fmt.Printf("  RoleBinding already exists, skipping...\n")
@@ -95,11 +100,14 @@ func (b *rbacBinder) BindRole(username string, groups []string, role, namespace 
 // aggregated error so callers can report partial failures instead of silently
 // leaving orphaned bindings (which would keep the deleted user authorized).
 func (b *rbacBinder) DeleteForUser(username string) error {
+	ctx, cancel := apiCtx()
+	defer cancel()
+
 	var errs []error
 
 	// Delete ClusterRoleBindings
 	bindings, err := b.clientset.RbacV1().ClusterRoleBindings().List(
-		context.TODO(), metav1.ListOptions{})
+		ctx, metav1.ListOptions{})
 	if err != nil {
 		errs = append(errs, fmt.Errorf("listing ClusterRoleBindings: %w", err))
 	} else {
@@ -107,7 +115,7 @@ func (b *rbacBinder) DeleteForUser(username string) error {
 			if strings.HasPrefix(binding.Name, username+"-") {
 				fmt.Printf("  Deleting ClusterRoleBinding: %s\n", binding.Name)
 				if err := b.clientset.RbacV1().ClusterRoleBindings().Delete(
-					context.TODO(), binding.Name, metav1.DeleteOptions{}); err != nil {
+					ctx, binding.Name, metav1.DeleteOptions{}); err != nil {
 					errs = append(errs, fmt.Errorf("deleting ClusterRoleBinding %s: %w", binding.Name, err))
 				}
 			}
@@ -116,13 +124,13 @@ func (b *rbacBinder) DeleteForUser(username string) error {
 
 	// Delete RoleBindings in all namespaces
 	namespaces, err := b.clientset.CoreV1().Namespaces().List(
-		context.TODO(), metav1.ListOptions{})
+		ctx, metav1.ListOptions{})
 	if err != nil {
 		errs = append(errs, fmt.Errorf("listing namespaces: %w", err))
 	} else {
 		for _, ns := range namespaces.Items {
 			roleBindings, err := b.clientset.RbacV1().RoleBindings(ns.Name).List(
-				context.TODO(), metav1.ListOptions{})
+				ctx, metav1.ListOptions{})
 			if err != nil {
 				errs = append(errs, fmt.Errorf("listing RoleBindings in %s: %w", ns.Name, err))
 				continue
@@ -131,7 +139,7 @@ func (b *rbacBinder) DeleteForUser(username string) error {
 				if strings.HasPrefix(rb.Name, username+"-") {
 					fmt.Printf("  Deleting RoleBinding: %s/%s\n", ns.Name, rb.Name)
 					if err := b.clientset.RbacV1().RoleBindings(ns.Name).Delete(
-						context.TODO(), rb.Name, metav1.DeleteOptions{}); err != nil {
+						ctx, rb.Name, metav1.DeleteOptions{}); err != nil {
 						errs = append(errs, fmt.Errorf("deleting RoleBinding %s/%s: %w", ns.Name, rb.Name, err))
 					}
 				}
@@ -144,6 +152,9 @@ func (b *rbacBinder) DeleteForUser(username string) error {
 
 // CreateRole creates a namespaced Role with the given policy rules.
 func (b *rbacBinder) CreateRole(name, namespace string, rules []rbac.PolicyRule) error {
+	ctx, cancel := apiCtx()
+	defer cancel()
+
 	role := &rbac.Role{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
@@ -153,7 +164,7 @@ func (b *rbacBinder) CreateRole(name, namespace string, rules []rbac.PolicyRule)
 	}
 
 	_, err := b.clientset.RbacV1().Roles(namespace).Create(
-		context.TODO(), role, metav1.CreateOptions{})
+		ctx, role, metav1.CreateOptions{})
 	if err != nil {
 		if strings.Contains(err.Error(), "already exists") {
 			fmt.Printf("Role '%s' already exists in namespace '%s'\n", name, namespace)
