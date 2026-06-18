@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"slices"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -39,12 +40,25 @@ type ClusterConfig struct {
 }
 
 type VersionsConfig struct {
-	Kubernetes string `yaml:"kubernetes"`
-	CriO       string `yaml:"crio"`
-	Calico     string `yaml:"calico"`
-	MetalLB    string `yaml:"metallb"`
-	Istio      string `yaml:"istio"`
-	Karpor     string `yaml:"karpor"`
+	Kubernetes         string `yaml:"kubernetes"`
+	CriO               string `yaml:"crio"`
+	Calico             string `yaml:"calico"`
+	MetalLB            string `yaml:"metallb"`
+	Istio              string `yaml:"istio"`
+	Karpor             string `yaml:"karpor"`
+	Grafana            string `yaml:"grafana"`
+	Loki               string `yaml:"loki"`
+	Alloy              string `yaml:"alloy"`
+	Tempo              string `yaml:"tempo"`
+	OtelCollector      string `yaml:"otel_collector"`
+	Keycloak           string `yaml:"keycloak"`
+	Postgres           string `yaml:"postgres"`
+	Kiali              string `yaml:"kiali"`
+	NodeExporter       string `yaml:"node_exporter"`
+	KubeStateMetrics   string `yaml:"kube_state_metrics"`
+	MetricsServer      string `yaml:"metrics_server"`
+	PrometheusOperator string `yaml:"prometheus_operator"`
+	CertManager        string `yaml:"cert_manager"`
 }
 
 type NetworkConfig struct {
@@ -178,6 +192,33 @@ func (c *Config) Validate() error {
 
 	if !hasControlPlane {
 		errors = append(errors, "at least one node with role 'controlplane' is required")
+	}
+
+	// Component toggles are matched by string equality at use sites, so a typo
+	// (e.g. "prometheus_stack") silently skips the component instead of erroring.
+	// Validate against the documented option sets. Empty = explicitly unset/skip.
+	enumChecks := []struct {
+		name    string
+		value   string
+		allowed []string
+	}{
+		{"components.service_mesh", c.Components.ServiceMesh, []string{"istio", "none"}},
+		{"components.monitoring", c.Components.Monitoring, []string{"prometheus-stack", "none"}},
+		{"components.logging", c.Components.Logging, []string{"loki", "none"}},
+		{"components.tracing", c.Components.Tracing, []string{"otel-tempo", "none"}},
+		{"components.karpor", c.Components.Karpor, []string{"enabled", "disabled", "none"}},
+		{"components.keycloak", c.Components.Keycloak, []string{"enabled", "disabled", "none"}},
+		{"components.vpa", c.Components.VPA, []string{"enabled", "disabled", "none"}},
+		{"components.keda", c.Components.KEDA, []string{"enabled", "disabled", "none"}},
+	}
+	for _, e := range enumChecks {
+		if e.value == "" {
+			continue
+		}
+		if !slices.Contains(e.allowed, e.value) {
+			errors = append(errors, fmt.Sprintf("%s '%s' is invalid (allowed: %s)",
+				e.name, e.value, strings.Join(e.allowed, ", ")))
+		}
 	}
 
 	if len(errors) > 0 {

@@ -11,11 +11,11 @@ import (
 
 type VaultSecretsOperator struct {
 	config  *config.Config
-	exec    executor.CommandExecutor
+	exec    executor.ShellExecutor
 	address string
 }
 
-func NewVaultSecretsOperator(cfg *config.Config, exec executor.CommandExecutor) *VaultSecretsOperator {
+func NewVaultSecretsOperator(cfg *config.Config, exec executor.ShellExecutor) *VaultSecretsOperator {
 	addr := cfg.Vault.Addr
 	if addr == "" {
 		addr = "http://192.168.56.20:8200"
@@ -65,7 +65,7 @@ func (v *VaultSecretsOperator) installHelm() error {
 		return nil
 	}
 	fmt.Println("Installing Helm...")
-	_, err := v.exec.RunShell("curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash")
+	_, err := v.exec.RunShell("curl -fsSL --connect-timeout 10 --max-time 300 https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash")
 	return err
 }
 
@@ -284,6 +284,7 @@ func (v *VaultSecretsOperator) waitForSecrets(timeout time.Duration) error {
 		"kubectl get secret keycloak-admin -n keycloak 2>/dev/null",
 		"kubectl get secret postgres-credentials -n keycloak 2>/dev/null",
 		"kubectl get secret grafana-admin -n monitoring 2>/dev/null",
+		"kubectl get secret grafana-oidc -n monitoring 2>/dev/null",
 	}
 	if v.config.Ollama.APIKey != "" {
 		checks = append(checks, "kubectl get secret ollama-api-key -n ollama 2>/dev/null")

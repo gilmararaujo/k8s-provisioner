@@ -18,11 +18,11 @@ import (
 
 type VaultInstaller struct {
 	config  *config.Config
-	exec    executor.CommandExecutor
+	exec    executor.ShellExecutor
 	address string
 }
 
-func NewVaultInstaller(cfg *config.Config, exec executor.CommandExecutor) *VaultInstaller {
+func NewVaultInstaller(cfg *config.Config, exec executor.ShellExecutor) *VaultInstaller {
 	addr := cfg.Vault.Addr
 	if addr == "" {
 		addr = "http://192.168.56.20:8200"
@@ -158,8 +158,18 @@ func (v *VaultInstaller) initialize() (string, error) {
 			initData.Keys = append(initData.Keys, s)
 		}
 	}
+	// Persisting the freshly generated unseal keys + root token is the one step
+	// that must not be downgraded to a warning: these secrets cannot be
+	// regenerated, and without them Vault is unrecoverable once it seals. Dump
+	// them to stdout as a last-resort capture, then fail hard.
 	if err := v.saveInitData(initData); err != nil {
-		fmt.Printf("Warning: failed to save vault init data: %v\n", err)
+		fmt.Println("\n!!! CRITICAL: could not persist Vault init data !!!")
+		fmt.Println("!!! Save the following NOW or Vault becomes unrecoverable: !!!")
+		fmt.Printf("root_token: %s\n", rootToken)
+		for i, k := range initData.Keys {
+			fmt.Printf("unseal_key_%d: %s\n", i+1, k)
+		}
+		return "", fmt.Errorf("vault initialized but init data not persisted: %w", err)
 	}
 
 	return rootToken, nil
@@ -346,19 +356,29 @@ func (v *VaultInstaller) storeAPISecrets(token string) error {
 
 	grafanaPassword, err := v.resolveOrGenerate(token, "grafana_admin_password")
 	if err != nil {
-		fmt.Printf("Warning: could not resolve grafana password: %v\n", err)
-		grafanaPassword = "admin123"
+		return fmt.Errorf("resolve grafana admin password: %w", err)
 	}
 	secrets["grafana_admin_password"] = grafanaPassword
 
-	// Keycloak defaults — stored early so VSO can sync them before Keycloak is installed
+	// Keycloak credentials — stored early so VSO can sync them before Keycloak is
+	// installed. Usernames are non-secret constants; every password/secret is
+	// randomly generated on first run (never a hardcoded default) and persisted
+	// here so it survives and is recoverable via `k8s-provisioner vault get`.
 	secrets["keycloak_admin_username"] = v.resolveOrDefaultStr(token, "keycloak_admin_username", "admin")
-	secrets["keycloak_admin_password"] = v.resolveOrDefaultStr(token, "keycloak_admin_password", "Admin@Keycloak123")
 	secrets["keycloak_postgres_username"] = v.resolveOrDefaultStr(token, "keycloak_postgres_username", "keycloak")
-	secrets["keycloak_postgres_password"] = v.resolveOrDefaultStr(token, "keycloak_postgres_password", "Keycloak@Pg123")
-	secrets["keycloak_grafana_client_secret"] = v.resolveOrDefaultStr(token, "keycloak_grafana_client_secret", "grafana-oidc-secret")
-	secrets["keycloak_k8sadmin_password"] = v.resolveOrDefaultStr(token, "keycloak_k8sadmin_password", "Admin@K8s123")
-	secrets["keycloak_developer_password"] = v.resolveOrDefaultStr(token, "keycloak_developer_password", "Dev@K8s123")
+	for _, key := range []string{
+		"keycloak_admin_password",
+		"keycloak_postgres_password",
+		"keycloak_grafana_client_secret",
+		"keycloak_k8sadmin_password",
+		"keycloak_developer_password",
+	} {
+		val, gerr := v.resolveOrGenerate(token, key)
+		if gerr != nil {
+			return fmt.Errorf("generate %s: %w", key, gerr)
+		}
+		secrets[key] = val
+	}
 
 	_, err = v.vaultPost("/v1/secret/data/k8s-provisioner/api-keys", token, map[string]interface{}{
 		"data": secrets,

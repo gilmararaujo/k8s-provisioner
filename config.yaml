@@ -17,6 +17,19 @@ versions:
   metallb: "0.15.3"
   istio: "1.29.2"
   karpor: "0.7.6"
+  grafana: "13.0.1"
+  loki: "3.7.1"
+  alloy: "v1.15.1"
+  tempo: "2.10.4"
+  otel_collector: "0.149.0"
+  keycloak: "26.2"
+  postgres: "16"
+  kiali: "v2.24.0"
+  node_exporter: "v1.11.1"
+  kube_state_metrics: "v2.18.0"
+  metrics_server: "v0.7.2"
+  prometheus_operator: "v0.90.1"
+  cert_manager: "v1.16.3"
 
 network:
   interface: "eth1"
@@ -46,7 +59,7 @@ components:
   monitoring: "prometheus-stack"  # Options: prometheus-stack, none
   logging: "loki"                 # Options: loki, none (installed with monitoring)
   tracing: "otel-tempo"           # Options: otel-tempo, none (requires monitoring+logging)
-  karpor: "none"                  # Options: enabled, none (requires extra resources: ~1.5 CPU, ~2GB RAM)
+  karpor: "none"                  # Options: none, enabled (requires extra resources: ~1.5 CPU, ~2GB RAM)
   keycloak: "enabled"             # Options: enabled, none (OIDC identity provider for kubectl + Grafana SSO)
   vpa: "enabled"                  # Options: enabled, none (Vertical Pod Autoscaler — adjusts CPU/Memory per pod)
   keda: "enabled"                 # Options: enabled, none (Event-driven autoscaling — scale to zero, Prometheus triggers)

@@ -11,10 +11,10 @@ import (
 
 type NFSProvisioner struct {
 	config *config.Config
-	exec   executor.CommandExecutor
+	exec   executor.ShellExecutor
 }
 
-func NewNFSProvisioner(cfg *config.Config, exec executor.CommandExecutor) *NFSProvisioner {
+func NewNFSProvisioner(cfg *config.Config, exec executor.ShellExecutor) *NFSProvisioner {
 	return &NFSProvisioner{config: cfg, exec: exec}
 }
 
@@ -123,7 +123,7 @@ func (n *NFSProvisioner) installHelm() error {
 	}
 
 	fmt.Println("Installing Helm...")
-	installCmd := "curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash"
+	installCmd := "curl -fsSL --connect-timeout 10 --max-time 300 https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash"
 	if err := n.exec.RunShellWithOutput(installCmd); err != nil {
 		return fmt.Errorf("failed to install Helm: %w", err)
 	}

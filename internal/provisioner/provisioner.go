@@ -21,176 +21,40 @@ type Provisioner struct {
 	config  *config.Config
 	exec    executor.CommandExecutor
 	verbose bool
+	dryRun  bool
 }
 
+// New builds a Provisioner with the production executor.
 func New(cfg *config.Config, verbose bool) *Provisioner {
+	return NewWithExecutor(cfg, executor.New(verbose), verbose)
+}
+
+// NewDryRun builds a Provisioner that previews commands without mutating the
+// host. Shell/command calls are printed via the Null-Object executor, file
+// writes are skipped, readiness waits short-circuit, and InstallWorkloads prints
+// the component plan instead of running installers.
+func NewDryRun(cfg *config.Config, verbose bool) *Provisioner {
+	p := NewWithExecutor(cfg, executor.DryRunExecutor{}, verbose)
+	p.dryRun = true
+	return p
+}
+
+// NewWithExecutor builds a Provisioner with an injected executor. Tests pass a
+// mock CommandExecutor here to assert orchestration without touching the host.
+func NewWithExecutor(cfg *config.Config, exec executor.CommandExecutor, verbose bool) *Provisioner {
 	return &Provisioner{
 		config:  cfg,
-		exec:    executor.New(verbose),
+		exec:    exec,
 		verbose: verbose,
 	}
 }
 
-func (p *Provisioner) InstallCommon() error {
-	steps := []struct {
-		name string
-		fn   func() error
-	}{
-		{"Disabling swap", p.disableSwap},
-		{"Loading kernel modules", p.loadKernelModules},
-		{"Configuring sysctl", p.configureSysctl},
-		{"Configuring DNS", p.configureDNS},
-		{"Installing dependencies", p.installDependencies},
-		{"Installing CRI-O", p.installCRIO},
-		{"Installing Kubernetes tools", p.installKubernetesTools},
-	}
-
-	for _, step := range steps {
-		fmt.Printf("\n>>> %s...\n", step.name)
-		if err := step.fn(); err != nil {
-			return fmt.Errorf("%s failed: %w", step.name, err)
-		}
-		fmt.Printf("✓ %s completed\n", step.name)
-	}
-
-	return nil
-}
-
-func (p *Provisioner) disableSwap() error {
-	if _, err := p.exec.RunShell("swapoff -a"); err != nil {
-		return err
-	}
-	if _, err := p.exec.RunShell("sed -i '/ swap / s/^/#/' /etc/fstab"); err != nil {
-		return err
-	}
-	return nil
-}
-
-func (p *Provisioner) loadKernelModules() error {
-	modules := `overlay
-br_netfilter`
-	if err := executor.WriteFile("/etc/modules-load.d/k8s.conf", modules); err != nil {
-		return err
-	}
-
-	if _, err := p.exec.Run("modprobe", "overlay"); err != nil {
-		return err
-	}
-	if _, err := p.exec.Run("modprobe", "br_netfilter"); err != nil {
-		return err
-	}
-	return nil
-}
-
-func (p *Provisioner) configureSysctl() error {
-	sysctl := `net.bridge.bridge-nf-call-iptables  = 1
-net.bridge.bridge-nf-call-ip6tables = 1
-net.ipv4.ip_forward                 = 1`
-
-	if err := executor.WriteFile("/etc/sysctl.d/k8s.conf", sysctl); err != nil {
-		return err
-	}
-
-	_, err := p.exec.RunShell("sysctl --system")
-	return err
-}
-
-func (p *Provisioner) configureDNS() error {
-	// VirtualBox NAT DHCP advertises the host's home router IP as DNS, which is
-	// unreachable from inside the 10.0.2.x NAT network. Override with public resolvers,
-	// prevent dhcpcd from overwriting on renewal, and lock the file with chattr.
-	if _, err := p.exec.RunShell("chattr -i /etc/resolv.conf 2>/dev/null; rm -f /etc/resolv.conf"); err != nil {
-		return err
-	}
-	if err := executor.WriteFile("/etc/resolv.conf", "nameserver 8.8.8.8\nnameserver 1.1.1.1\n"); err != nil {
-		return err
-	}
-	if _, err := p.exec.RunShell("chattr +i /etc/resolv.conf"); err != nil {
-		return err
-	}
-	_, err := p.exec.RunShell(`grep -q 'nohook resolv.conf' /etc/dhcpcd.conf 2>/dev/null || echo 'nohook resolv.conf' >> /etc/dhcpcd.conf`)
-	return err
-}
-
-func (p *Provisioner) installDependencies() error {
-	if _, err := p.exec.RunShell("apt-get update"); err != nil {
-		return err
-	}
-
-	pkgs := "apt-transport-https ca-certificates curl gnupg conntrack ethtool socat"
-	_, err := p.exec.RunShell(fmt.Sprintf("apt-get install -y %s", pkgs))
-	return err
-}
-
-func (p *Provisioner) installCRIO() error {
-	version := p.config.Versions.CriO
-
-	// Add CRI-O repository
-	keyCmd := fmt.Sprintf("curl -fsSL https://download.opensuse.org/repositories/isv:/cri-o:/stable:/%s/deb/Release.key | gpg --dearmor -o /etc/apt/keyrings/cri-o-apt-keyring.gpg", version)
-	if _, err := p.exec.RunShell(keyCmd); err != nil {
-		return err
-	}
-
-	repoLine := fmt.Sprintf("deb [signed-by=/etc/apt/keyrings/cri-o-apt-keyring.gpg] https://download.opensuse.org/repositories/isv:/cri-o:/stable:/%s/deb/ /", version)
-	if err := executor.WriteFile("/etc/apt/sources.list.d/cri-o.list", repoLine); err != nil {
-		return err
-	}
-
-	if _, err := p.exec.RunShell("apt-get update"); err != nil {
-		return err
-	}
-
-	if _, err := p.exec.RunShell("apt-get install -y cri-o"); err != nil {
-		return err
-	}
-
-	if _, err := p.exec.Run("systemctl", "daemon-reload"); err != nil {
-		return err
-	}
-	if _, err := p.exec.Run("systemctl", "enable", "crio"); err != nil {
-		return err
-	}
-	if _, err := p.exec.Run("systemctl", "start", "crio"); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func (p *Provisioner) installKubernetesTools() error {
-	version := p.config.Versions.Kubernetes
-
-	// Add Kubernetes repository
-	keyCmd := fmt.Sprintf("curl -fsSL https://pkgs.k8s.io/core:/stable:/v%s/deb/Release.key | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg", version)
-	if _, err := p.exec.RunShell(keyCmd); err != nil {
-		return err
-	}
-
-	repoLine := fmt.Sprintf("deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v%s/deb/ /", version)
-	if err := executor.WriteFile("/etc/apt/sources.list.d/kubernetes.list", repoLine); err != nil {
-		return err
-	}
-
-	if _, err := p.exec.RunShell("apt-get update"); err != nil {
-		return err
-	}
-
-	if _, err := p.exec.RunShell("apt-get install -y kubelet kubeadm kubectl"); err != nil {
-		return err
-	}
-
-	if _, err := p.exec.RunShell("apt-mark hold kubelet kubeadm kubectl"); err != nil {
-		return err
-	}
-
-	_, err := p.exec.Run("systemctl", "enable", "kubelet")
-	return err
-}
-
-func (p *Provisioner) InitControlPlane() error {
+// InitCluster bootstraps the Kubernetes control plane and generates the join
+// command for worker nodes. It does NOT install any workloads — call
+// InstallWorkloads after all workers have joined.
+func (p *Provisioner) InitCluster() error {
 	cfg := p.config
 
-	// Initialize cluster
 	initCmd := fmt.Sprintf("kubeadm init --apiserver-advertise-address=%s --pod-network-cidr=%s --cri-socket=unix:///var/run/crio/crio.sock --node-name=controlplane",
 		cfg.Network.ControlPlaneIP, cfg.Cluster.PodCIDR)
 
@@ -199,7 +63,6 @@ func (p *Provisioner) InitControlPlane() error {
 		return err
 	}
 
-	// Configure kubectl for vagrant user
 	fmt.Println("\n>>> Configuring kubectl...")
 	cmds := []string{
 		"mkdir -p /home/vagrant/.kube",
@@ -214,169 +77,29 @@ func (p *Provisioner) InitControlPlane() error {
 		}
 	}
 
-	// Remove control-plane taint (ignore error - taint may not exist)
 	fmt.Println("\n>>> Removing control-plane taint...")
 	_, _ = p.exec.RunShell("kubectl taint nodes controlplane node-role.kubernetes.io/control-plane:NoSchedule- 2>/dev/null || true")
 
-	// Patch CoreDNS to use explicit upstream DNS instead of reading /etc/resolv.conf,
-	// which on VirtualBox NAT nodes may contain an unreachable home-router IP.
 	fmt.Println("\n>>> Patching CoreDNS upstream DNS...")
 	if err := p.patchCoreDNS(); err != nil {
 		fmt.Printf("Warning: CoreDNS patch failed: %v\n", err)
 	}
 
-	// Install CNI
 	fmt.Println("\n>>> Installing Calico CNI...")
-	calicoInstaller := installer.NewCalico(cfg, p.exec)
-	if err := calicoInstaller.Install(); err != nil {
-		return err
+	if p.dryRun {
+		fmt.Println("[dry-run] would install Calico CNI")
+	} else {
+		calicoInstaller := installer.NewCalico(cfg, p.exec)
+		if err := calicoInstaller.Install(); err != nil {
+			return err
+		}
 	}
 
-	// Wait for node to be ready
 	fmt.Println("\n>>> Waiting for node to be ready...")
 	if err := p.waitForNode("controlplane", NodeReadyTimeout); err != nil {
 		return err
 	}
 
-	// Install MetalLB
-	fmt.Println("\n>>> Installing MetalLB...")
-	metallbInstaller := installer.NewMetalLB(cfg, p.exec)
-	if err := metallbInstaller.Install(); err != nil {
-		return err
-	}
-
-	// Install Istio
-	fmt.Println("\n>>> Installing Istio...")
-	istioInstaller := installer.NewIstio(cfg, p.exec)
-	if err := istioInstaller.Install(); err != nil {
-		return err
-	}
-
-	// Install cert-manager (TLS certificates for all *.local services)
-	fmt.Println("\n>>> Installing cert-manager...")
-	certInstaller := installer.NewCertManager(cfg, p.exec)
-	if err := certInstaller.Install(); err != nil {
-		fmt.Printf("Warning: cert-manager installation failed: %v\n", err)
-	}
-
-	// Install Metrics Server
-	fmt.Println("\n>>> Installing Metrics Server...")
-	metricsInstaller := installer.NewMetricsServer(cfg, p.exec)
-	if err := metricsInstaller.Install(); err != nil {
-		return err
-	}
-
-	// Install VPA (if enabled)
-	if cfg.Components.VPA == "enabled" {
-		fmt.Println("\n>>> Installing VPA (Vertical Pod Autoscaler)...")
-		vpaInstaller := installer.NewVPA(cfg, p.exec)
-		if err := vpaInstaller.Install(); err != nil {
-			fmt.Printf("Warning: VPA installation failed: %v\n", err)
-		}
-	}
-
-	// Install KEDA (if enabled)
-	if cfg.Components.KEDA == "enabled" {
-		fmt.Println("\n>>> Installing KEDA (Event-Driven Autoscaling)...")
-		kedaInstaller := installer.NewKEDA(cfg, p.exec)
-		if err := kedaInstaller.Install(); err != nil {
-			fmt.Printf("Warning: KEDA installation failed: %v\n", err)
-		}
-	}
-
-	// Install NFS Provisioner (provides nfs-dynamic and nfs-static StorageClasses)
-	fmt.Println("\n>>> Installing NFS Storage Provisioner...")
-	nfsInstaller := installer.NewNFSProvisioner(cfg, p.exec)
-	if err := nfsInstaller.Install(); err != nil {
-		return err
-	}
-
-	// Install Vault on storage node (secrets management)
-	fmt.Println("\n>>> Installing Vault (secrets management)...")
-	vaultInstaller := installer.NewVaultInstaller(cfg, p.exec)
-	if err := vaultInstaller.Install(); err != nil {
-		fmt.Printf("Warning: Vault installation failed: %v\n", err)
-	}
-
-	// Install Vault Secrets Operator — syncs Vault secrets into K8s Secrets before components start
-	fmt.Println("\n>>> Installing Vault Secrets Operator...")
-	vsoInstaller := installer.NewVaultSecretsOperator(cfg, p.exec)
-	if err := vsoInstaller.Install(); err != nil {
-		fmt.Printf("Warning: Vault Secrets Operator installation failed: %v\n", err)
-	}
-
-	// Install Monitoring Stack (if enabled)
-	if cfg.Components.Monitoring == "prometheus-stack" {
-		fmt.Println("\n>>> Installing Monitoring Stack...")
-		monitoringInstaller := installer.NewMonitoring(cfg, p.exec)
-		if err := monitoringInstaller.Install(); err != nil {
-			return err
-		}
-
-		// Install Loki for log aggregation
-		fmt.Println("\n>>> Installing Loki Stack...")
-		lokiInstaller := installer.NewLoki(cfg, p.exec)
-		if err := lokiInstaller.Install(); err != nil {
-			return err
-		}
-
-		// Install Tracing Stack (if enabled)
-		if cfg.Components.Tracing == "otel-tempo" {
-			fmt.Println("\n>>> Installing Tracing Stack (Tempo + OpenTelemetry)...")
-			tempoInstaller := installer.NewTempo(cfg, p.exec)
-			if err := tempoInstaller.Install(); err != nil {
-				fmt.Printf("Warning: Tracing stack installation failed: %v\n", err)
-			}
-		}
-
-		// Install Kiali (service mesh observability — requires Prometheus)
-		fmt.Println("\n>>> Installing Kiali...")
-		kialiInstaller := installer.NewKiali(cfg, p.exec)
-		if err := kialiInstaller.Install(); err != nil {
-			fmt.Printf("Warning: Kiali installation failed: %v\n", err)
-		}
-	}
-
-	// Install Keycloak (if enabled) - after monitoring so Grafana OAuth2 can be configured
-	if cfg.Components.Keycloak == "enabled" {
-		fmt.Println("\n>>> Installing Keycloak (OIDC)...")
-		keycloakInstaller := installer.NewKeycloak(cfg, p.exec)
-		if err := keycloakInstaller.Install(); err != nil {
-			fmt.Printf("Warning: Keycloak installation failed: %v\n", err)
-		}
-
-		// Keycloak applies AuthenticationConfiguration which restarts the API server.
-		// This invalidates the CNI kubeconfig token that calico-node wrote at install
-		// time. Restart the daemonset so each node gets a fresh token before workers join.
-		fmt.Println("\n>>> Refreshing Calico CNI kubeconfig after API server restart...")
-		if _, err := p.exec.RunShell("kubectl rollout restart daemonset/calico-node -n calico-system"); err != nil {
-			fmt.Printf("Warning: calico-node restart failed: %v\n", err)
-		} else {
-			if _, err := p.exec.RunShell("kubectl rollout status daemonset/calico-node -n calico-system --timeout=3m"); err != nil {
-				fmt.Printf("Warning: calico-node rollout status: %v\n", err)
-			}
-		}
-	}
-
-	// Install Karpor (if enabled)
-	if cfg.Components.Karpor == "enabled" {
-		// Install Ollama first if AI is enabled with ollama backend
-		if cfg.KarporAI.Enabled && cfg.KarporAI.Backend == "ollama" {
-			fmt.Println("\n>>> Installing Ollama...")
-			ollamaInstaller := installer.NewOllama(cfg, p.exec)
-			if err := ollamaInstaller.Install(); err != nil {
-				return err
-			}
-		}
-
-		fmt.Println("\n>>> Installing Karpor...")
-		karporInstaller := installer.NewKarpor(cfg, p.exec)
-		if err := karporInstaller.Install(); err != nil {
-			return err
-		}
-	}
-
-	// Generate join command
 	fmt.Println("\n>>> Generating join command...")
 	if _, err := p.exec.RunShell("kubeadm token create --print-join-command > /vagrant/join-command.sh"); err != nil {
 		return err
@@ -385,8 +108,204 @@ func (p *Provisioner) InitControlPlane() error {
 		return err
 	}
 
+	fmt.Println("\n>>> Control plane ready. Workers can now join the cluster.")
+	return nil
+}
+
+// workloadStep declares one component in the install sequence. Ordering,
+// enablement, and failure policy are data here instead of control flow, so the
+// sequence can be read, reordered, and unit-tested in one place.
+type workloadStep struct {
+	// enabled gates the step; nil means always install.
+	enabled func(*config.Config) bool
+	// build constructs the installer for this step.
+	build func(*config.Config, executor.CommandExecutor) installer.Installer
+	// fatal: true aborts the run on failure; false logs a warning and continues.
+	fatal bool
+	// post runs after a successful (or warned) install, for side effects that
+	// must happen immediately after this component (not at the end of the run).
+	post func(*Provisioner) error
+}
+
+// workloadSteps is the ordered install plan executed by InstallWorkloads.
+// Dependency order: networking → mesh → certs → metrics/autoscaling → storage →
+// secrets → observability → identity → AI.
+func (p *Provisioner) workloadSteps() []workloadStep {
+	enabledMonitoring := func(c *config.Config) bool { return c.Components.Monitoring == "prometheus-stack" }
+
+	return []workloadStep{
+		{build: func(c *config.Config, e executor.CommandExecutor) installer.Installer {
+			return installer.NewMetalLB(c, e)
+		}, fatal: true},
+		{build: func(c *config.Config, e executor.CommandExecutor) installer.Installer {
+			return installer.NewIstio(c, e)
+		}, fatal: true},
+		// cert-manager: TLS certificates for all *.local services.
+		{build: func(c *config.Config, e executor.CommandExecutor) installer.Installer {
+			return installer.NewCertManager(c, e)
+		}},
+		{build: func(c *config.Config, e executor.CommandExecutor) installer.Installer {
+			return installer.NewMetricsServer(c, e)
+		}, fatal: true},
+		{
+			enabled: func(c *config.Config) bool { return c.Components.VPA == "enabled" },
+			build:   func(c *config.Config, e executor.CommandExecutor) installer.Installer { return installer.NewVPA(c, e) },
+		},
+		{
+			enabled: func(c *config.Config) bool { return c.Components.KEDA == "enabled" },
+			build:   func(c *config.Config, e executor.CommandExecutor) installer.Installer { return installer.NewKEDA(c, e) },
+		},
+		// NFS provisioner: provides nfs-dynamic and nfs-static StorageClasses.
+		{build: func(c *config.Config, e executor.CommandExecutor) installer.Installer {
+			return installer.NewNFSProvisioner(c, e)
+		}, fatal: true},
+		// Vault runs on the storage node (secrets management).
+		{build: func(c *config.Config, e executor.CommandExecutor) installer.Installer {
+			return installer.NewVaultInstaller(c, e)
+		}},
+		// VSO syncs Vault secrets into K8s Secrets before components start.
+		{build: func(c *config.Config, e executor.CommandExecutor) installer.Installer {
+			return installer.NewVaultSecretsOperator(c, e)
+		}},
+		{enabled: enabledMonitoring, build: func(c *config.Config, e executor.CommandExecutor) installer.Installer {
+			return installer.NewMonitoring(c, e)
+		}, fatal: true},
+		{enabled: enabledMonitoring, build: func(c *config.Config, e executor.CommandExecutor) installer.Installer { return installer.NewLoki(c, e) }, fatal: true},
+		{
+			// Tracing requires the monitoring stack and otel-tempo enabled.
+			enabled: func(c *config.Config) bool { return enabledMonitoring(c) && c.Components.Tracing == "otel-tempo" },
+			build: func(c *config.Config, e executor.CommandExecutor) installer.Installer {
+				return installer.NewTempo(c, e)
+			},
+		},
+		// Kiali: service mesh observability — requires Prometheus.
+		{enabled: enabledMonitoring, build: func(c *config.Config, e executor.CommandExecutor) installer.Installer {
+			return installer.NewKiali(c, e)
+		}},
+		{
+			// Keycloak after monitoring so Grafana OAuth2 can be configured later.
+			enabled: func(c *config.Config) bool { return c.Components.Keycloak == "enabled" },
+			build: func(c *config.Config, e executor.CommandExecutor) installer.Installer {
+				return installer.NewKeycloak(c, e)
+			},
+			post: (*Provisioner).refreshCalicoAfterKeycloak,
+		},
+		{
+			// Ollama before Karpor when AI is enabled with the ollama backend.
+			enabled: func(c *config.Config) bool {
+				return c.Components.Karpor == "enabled" && c.KarporAI.Enabled && c.KarporAI.Backend == "ollama"
+			},
+			build: func(c *config.Config, e executor.CommandExecutor) installer.Installer {
+				return installer.NewOllama(c, e)
+			},
+			fatal: true,
+		},
+		{
+			enabled: func(c *config.Config) bool { return c.Components.Karpor == "enabled" },
+			build: func(c *config.Config, e executor.CommandExecutor) installer.Installer {
+				return installer.NewKarpor(c, e)
+			},
+			fatal: true,
+		},
+	}
+}
+
+// InstallWorkloads installs all cluster workloads on an already-running cluster
+// where all worker nodes have joined. Called after InitCluster + JoinWorker.
+func (p *Provisioner) InstallWorkloads() error {
+	cfg := p.config
+
+	if p.dryRun {
+		return p.printWorkloadPlan()
+	}
+
+	// Keep the Keycloak installer to configure Grafana OAuth2 after every other
+	// component is up (Grafana must already exist).
+	var keycloak *installer.Keycloak
+
+	for _, step := range p.workloadSteps() {
+		if step.enabled != nil && !step.enabled(cfg) {
+			continue
+		}
+
+		inst := step.build(cfg, p.exec)
+		fmt.Printf("\n>>> Installing %s...\n", inst.Name())
+		if err := inst.Install(); err != nil {
+			if step.fatal {
+				return fmt.Errorf("%s installation failed: %w", inst.Name(), err)
+			}
+			fmt.Printf("Warning: %s installation failed: %v\n", inst.Name(), err)
+		}
+
+		if kc, ok := inst.(*installer.Keycloak); ok {
+			keycloak = kc
+		}
+
+		if step.post != nil {
+			if err := step.post(p); err != nil {
+				if step.fatal {
+					return fmt.Errorf("%s post-install failed: %w", inst.Name(), err)
+				}
+				fmt.Printf("Warning: %s post-install failed: %v\n", inst.Name(), err)
+			}
+		}
+	}
+
+	// Configure Grafana OAuth2 with Keycloak after all components are installed.
+	if keycloak != nil {
+		fmt.Println("\n>>> Configuring Grafana OAuth2 with Keycloak...")
+		if err := keycloak.ConfigureGrafanaOAuth(); err != nil {
+			fmt.Printf("Warning: Grafana OAuth2 configuration failed: %v\n", err)
+		}
+	}
+
 	p.printSuccess()
 	return nil
+}
+
+// printWorkloadPlan lists the components that would be installed (respecting
+// enablement) and their failure policy, without running any installer. Used by
+// the dry-run path, where executing installers would block on readiness waits.
+func (p *Provisioner) printWorkloadPlan() error {
+	fmt.Println("\n[dry-run] Workload install plan:")
+	for _, step := range p.workloadSteps() {
+		if step.enabled != nil && !step.enabled(p.config) {
+			continue
+		}
+		policy := "warn-on-failure"
+		if step.fatal {
+			policy = "fatal-on-failure"
+		}
+		fmt.Printf("  - %s (%s)\n", step.build(p.config, p.exec).Name(), policy)
+	}
+	if p.config.Components.Keycloak == "enabled" {
+		fmt.Println("  - (post) configure Grafana OAuth2 with Keycloak")
+	}
+	return nil
+}
+
+// refreshCalicoAfterKeycloak restarts calico-node after Keycloak installs the
+// AuthenticationConfiguration that restarts the API server. That restart
+// invalidates the CNI kubeconfig token calico-node wrote at install time, so
+// each node needs a fresh token before workers join. Failures are non-fatal.
+func (p *Provisioner) refreshCalicoAfterKeycloak() error {
+	fmt.Println("\n>>> Refreshing Calico CNI kubeconfig after API server restart...")
+	if _, err := p.exec.RunShell("kubectl rollout restart daemonset/calico-node -n calico-system"); err != nil {
+		fmt.Printf("Warning: calico-node restart failed: %v\n", err)
+		return nil
+	}
+	if _, err := p.exec.RunShell("kubectl rollout status daemonset/calico-node -n calico-system --timeout=3m"); err != nil {
+		fmt.Printf("Warning: calico-node rollout status: %v\n", err)
+	}
+	return nil
+}
+
+// InitControlPlane is kept for backward compatibility and runs InitCluster + InstallWorkloads.
+func (p *Provisioner) InitControlPlane() error {
+	if err := p.InitCluster(); err != nil {
+		return err
+	}
+	return p.InstallWorkloads()
 }
 
 func (p *Provisioner) JoinWorker() error {
@@ -422,6 +341,10 @@ func (p *Provisioner) JoinWorker() error {
 }
 
 func (p *Provisioner) waitForNode(name string, timeout time.Duration) error {
+	if p.dryRun {
+		fmt.Printf("[dry-run] skip waiting for node %s\n", name)
+		return nil
+	}
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		out, err := p.exec.RunShell(fmt.Sprintf("kubectl get node %s -o jsonpath='{.status.conditions[?(@.type==\"Ready\")].status}'", name))
@@ -434,6 +357,10 @@ func (p *Provisioner) waitForNode(name string, timeout time.Duration) error {
 }
 
 func (p *Provisioner) waitForAPIServer(ip string, timeout time.Duration) error {
+	if p.dryRun {
+		fmt.Printf("[dry-run] skip waiting for API server at %s:6443\n", ip)
+		return nil
+	}
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		_, err := p.exec.RunShell(fmt.Sprintf("nc -z %s 6443", ip))

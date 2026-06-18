@@ -11,28 +11,21 @@ import (
 
 type Karpor struct {
 	config *config.Config
-	exec   executor.CommandExecutor
+	exec   executor.ShellExecutor
 }
 
 // resolveAuthToken retorna o auth token do Vault (se habilitado) ou do config.yaml.
 func (k *Karpor) resolveAuthToken() string {
-	if k.config.Vault.Enabled() {
-		if val, err := FetchSecret(k.config.Vault.Addr, k.config.Vault.Token, "karpor_auth_token"); err == nil && val != "" {
-			fmt.Println("Karpor auth token loaded from Vault")
-			return val
-		}
-		// Fallback: try ollama_api_key for cloud models
-		if val, err := FetchSecret(k.config.Vault.Addr, k.config.Vault.Token, "ollama_api_key"); err == nil && val != "" {
-			return val
-		}
+	def := k.config.KarporAI.AuthToken
+	if def == "" {
+		def = k.config.Ollama.APIKey
 	}
-	if k.config.KarporAI.AuthToken != "" {
-		return k.config.KarporAI.AuthToken
-	}
-	return k.config.Ollama.APIKey
+	// Vault keys tried in order; karpor_auth_token first, then ollama_api_key
+	// (used for cloud models). Falls back to the config-derived default.
+	return NewSecretResolver(k.config).Resolve("Karpor auth token", def, "karpor_auth_token", "ollama_api_key")
 }
 
-func NewKarpor(cfg *config.Config, exec executor.CommandExecutor) *Karpor {
+func NewKarpor(cfg *config.Config, exec executor.ShellExecutor) *Karpor {
 	return &Karpor{config: cfg, exec: exec}
 }
 
@@ -60,19 +53,7 @@ func (k *Karpor) Install() error {
 
 	// Create namespace with Helm labels to avoid conflicts
 	fmt.Println("Creating Karpor namespace...")
-	nsManifest := `apiVersion: v1
-kind: Namespace
-metadata:
-  name: karpor
-  labels:
-    app.kubernetes.io/managed-by: Helm
-  annotations:
-    meta.helm.sh/release-name: karpor
-    meta.helm.sh/release-namespace: karpor`
-	if err := executor.WriteFile("/tmp/karpor-ns.yaml", nsManifest); err != nil {
-		return err
-	}
-	if _, err := k.exec.RunShell("kubectl apply -f /tmp/karpor-ns.yaml"); err != nil {
+	if err := k.createNamespace(); err != nil {
 		return err
 	}
 
@@ -82,84 +63,9 @@ metadata:
 		return err
 	}
 
-	// Build Helm install/upgrade command (without --wait, we'll wait ourselves)
+	// Install via Helm (base resource/storage flags + optional AI flags).
 	fmt.Println("Installing Karpor via Helm...")
-	helmArgs := fmt.Sprintf("helm upgrade --install karpor kusionstack/karpor -n karpor --version %s", k.config.Versions.Karpor)
-
-	// Configure storage class for etcd and elasticsearch (static - uses pre-created PVs with claimRef)
-	helmArgs += " --set etcd.persistence.storageClass=nfs-static"
-	helmArgs += " --set elasticsearch.persistence.storageClass=nfs-static"
-
-	// For amd64, use the chart's default version which works well
-
-	// Reduce elasticsearch resources to fit in smaller nodes
-	helmArgs += " --set elasticsearch.resources.requests.cpu=500m"
-	helmArgs += " --set elasticsearch.resources.requests.memory=1Gi"
-	helmArgs += " --set elasticsearch.resources.limits.cpu=1"
-	helmArgs += " --set elasticsearch.resources.limits.memory=2Gi"
-
-	// Reduce etcd resources
-	helmArgs += " --set etcd.resources.requests.cpu=100m"
-	helmArgs += " --set etcd.resources.requests.memory=256Mi"
-	helmArgs += " --set etcd.resources.limits.cpu=500m"
-	helmArgs += " --set etcd.resources.limits.memory=512Mi"
-
-	// Add AI configuration if enabled
-	if k.config.KarporAI.Enabled {
-		// Disable AI proxy (required by chart)
-		helmArgs += " --set server.ai.proxy.enabled=false"
-
-		// For Ollama, we use "openai" backend since Ollama provides OpenAI-compatible API
-		backend := k.config.KarporAI.Backend
-		baseURL := k.config.KarporAI.BaseURL
-		authToken := k.resolveAuthToken()
-		model := k.config.KarporAI.Model
-
-		if backend == "ollama" {
-			backend = "openai"
-
-			// Check if using cloud model (e.g., minimax-m2.5:cloud)
-			isCloudModel := strings.HasSuffix(model, ":cloud")
-
-			if isCloudModel {
-				// Cloud models: Ollama proxies to ollama.com
-				// The internal Ollama service handles authentication via OLLAMA_API_KEY
-				if baseURL == "" {
-					baseURL = "http://ollama.ollama.svc:11434"
-				}
-				if authToken == "" {
-					authToken = "not-needed" // Chart requires a value
-				}
-			} else {
-				// Local models: use internal Ollama service directly
-				if baseURL == "" {
-					baseURL = "http://ollama.ollama.svc:11434"
-				}
-				if authToken == "" {
-					authToken = "not-needed"
-				}
-			}
-
-			// Ensure baseURL ends with /v1 for OpenAI compatibility
-			if !strings.HasSuffix(baseURL, "/v1") {
-				baseURL = strings.TrimSuffix(baseURL, "/") + "/v1"
-			}
-		}
-
-		helmArgs += fmt.Sprintf(" --set server.ai.backend=%s", backend)
-
-		if authToken != "" {
-			helmArgs += fmt.Sprintf(" --set server.ai.authToken=%s", authToken)
-		}
-		if baseURL != "" {
-			helmArgs += fmt.Sprintf(" --set server.ai.baseUrl=%s", baseURL)
-		}
-		if model != "" {
-			helmArgs += fmt.Sprintf(" --set server.ai.model=%s", model)
-		}
-	}
-
-	if err := k.exec.RunShellWithOutput(helmArgs); err != nil {
+	if err := k.exec.RunShellWithOutput(k.baseHelmArgs() + k.aiHelmArgs()); err != nil {
 		return err
 	}
 
@@ -192,23 +98,111 @@ metadata:
 	}
 
 	// Wait for Ollama model and restart karpor-server to enable AI
-	if k.config.KarporAI.Enabled && k.config.KarporAI.Backend == "ollama" {
-		fmt.Println("Waiting for Ollama model to be ready...")
-		if err := k.waitForOllamaModel(); err != nil {
-			fmt.Printf("Warning: %v\n", err)
-		} else {
-			fmt.Println("Restarting Karpor server to connect to AI...")
-			_, _ = k.exec.RunShell("kubectl rollout restart deployment/karpor-server -n karpor")
-			// Wait for karpor-server to be ready again
-			time.Sleep(10 * time.Second)
-			_, _ = k.exec.RunShell("kubectl wait --for=condition=Ready pods -l app.kubernetes.io/component=karpor-server -n karpor --timeout=120s")
-			fmt.Println("Karpor AI should be functional now.")
-		}
-	}
+	k.enableAIAfterInstall()
 
 	fmt.Println("Karpor installed successfully!")
 	k.printAccessInfo()
 	return nil
+}
+
+// createNamespace applies the Karpor namespace pre-labelled as Helm-managed so the
+// subsequent `helm upgrade --install` does not conflict over ownership.
+func (k *Karpor) createNamespace() error {
+	nsManifest := `apiVersion: v1
+kind: Namespace
+metadata:
+  name: karpor
+  labels:
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    meta.helm.sh/release-name: karpor
+    meta.helm.sh/release-namespace: karpor`
+	if err := executor.WriteFile("/tmp/karpor-ns.yaml", nsManifest); err != nil {
+		return err
+	}
+	_, err := k.exec.RunShell("kubectl apply -f /tmp/karpor-ns.yaml")
+	return err
+}
+
+// baseHelmArgs builds the static portion of the Karpor helm command: pinned chart
+// version, static storage classes (pre-created PVs with claimRef), and reduced
+// etcd/elasticsearch resource requests/limits to fit smaller lab nodes. The
+// install runs without --wait; readiness is polled separately.
+func (k *Karpor) baseHelmArgs() string {
+	a := fmt.Sprintf("helm upgrade --install karpor kusionstack/karpor -n karpor --version %s", k.config.Versions.Karpor)
+	a += " --set etcd.persistence.storageClass=nfs-static"
+	a += " --set elasticsearch.persistence.storageClass=nfs-static"
+	a += " --set elasticsearch.resources.requests.cpu=500m"
+	a += " --set elasticsearch.resources.requests.memory=1Gi"
+	a += " --set elasticsearch.resources.limits.cpu=1"
+	a += " --set elasticsearch.resources.limits.memory=2Gi"
+	a += " --set etcd.resources.requests.cpu=100m"
+	a += " --set etcd.resources.requests.memory=256Mi"
+	a += " --set etcd.resources.limits.cpu=500m"
+	a += " --set etcd.resources.limits.memory=512Mi"
+	return a
+}
+
+// aiHelmArgs builds the AI-related helm flags, or "" when AI is disabled. The
+// Ollama backend maps to the chart's OpenAI-compatible "openai" backend pointed at
+// the in-cluster Ollama service (which handles ollama.com auth via OLLAMA_API_KEY
+// for both local and ":cloud" models).
+func (k *Karpor) aiHelmArgs() string {
+	if !k.config.KarporAI.Enabled {
+		return ""
+	}
+
+	backend := k.config.KarporAI.Backend
+	baseURL := k.config.KarporAI.BaseURL
+	authToken := k.resolveAuthToken()
+	model := k.config.KarporAI.Model
+
+	if backend == "ollama" {
+		backend = "openai"
+		if baseURL == "" {
+			baseURL = "http://ollama.ollama.svc:11434"
+		}
+		if authToken == "" {
+			authToken = "not-needed" // chart requires a value
+		}
+		// Ensure baseURL ends with /v1 for OpenAI compatibility.
+		if !strings.HasSuffix(baseURL, "/v1") {
+			baseURL = strings.TrimSuffix(baseURL, "/") + "/v1"
+		}
+	}
+
+	args := " --set server.ai.proxy.enabled=false" // disable AI proxy (required by chart)
+	args += fmt.Sprintf(" --set server.ai.backend=%s", backend)
+	if authToken != "" {
+		args += fmt.Sprintf(" --set server.ai.authToken=%s", authToken)
+	}
+	if baseURL != "" {
+		args += fmt.Sprintf(" --set server.ai.baseUrl=%s", baseURL)
+	}
+	if model != "" {
+		args += fmt.Sprintf(" --set server.ai.model=%s", model)
+	}
+	return args
+}
+
+// enableAIAfterInstall waits for the Ollama model to be pulled, then restarts
+// karpor-server so it connects to the AI backend. No-op unless AI is enabled with
+// the ollama backend; all failures are non-fatal warnings.
+func (k *Karpor) enableAIAfterInstall() {
+	if !k.config.KarporAI.Enabled || k.config.KarporAI.Backend != "ollama" {
+		return
+	}
+	fmt.Println("Waiting for Ollama model to be ready...")
+	if err := k.waitForOllamaModel(); err != nil {
+		fmt.Printf("Warning: %v\n", err)
+		return
+	}
+	fmt.Println("Restarting Karpor server to connect to AI...")
+	_, _ = k.exec.RunShell("kubectl rollout restart deployment/karpor-server -n karpor")
+	// Wait for karpor-server to be ready again
+	time.Sleep(10 * time.Second)
+	_, _ = k.exec.RunShell("kubectl wait --for=condition=Ready pods -l app.kubernetes.io/component=karpor-server -n karpor --timeout=120s")
+	fmt.Println("Karpor AI should be functional now.")
 }
 
 func (k *Karpor) detectArchitecture() string {
@@ -301,7 +295,7 @@ func (k *Karpor) installHelm() error {
 	}
 
 	fmt.Println("Installing Helm...")
-	installCmd := "curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash"
+	installCmd := "curl -fsSL --connect-timeout 10 --max-time 300 https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash"
 	if err := k.exec.RunShellWithOutput(installCmd); err != nil {
 		return fmt.Errorf("failed to install Helm: %w", err)
 	}

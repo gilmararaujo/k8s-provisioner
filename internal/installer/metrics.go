@@ -10,10 +10,10 @@ import (
 
 type MetricsServer struct {
 	config *config.Config
-	exec   executor.CommandExecutor
+	exec   executor.ShellExecutor
 }
 
-func NewMetricsServer(cfg *config.Config, exec executor.CommandExecutor) *MetricsServer {
+func NewMetricsServer(cfg *config.Config, exec executor.ShellExecutor) *MetricsServer {
 	return &MetricsServer{config: cfg, exec: exec}
 }
 
@@ -22,9 +22,13 @@ func (m *MetricsServer) Install() error {
 
 	// Pin to a specific version to avoid GitHub redirect issues and ensure
 	// compatibility with Kubernetes 1.32. v0.7.2 is validated against k8s 1.32.
-	metricsServerURL := "https://github.com/kubernetes-sigs/metrics-server/releases/download/v0.7.2/components.yaml"
+	version := m.config.Versions.MetricsServer
+	if version == "" {
+		version = "v0.7.2"
+	}
+	metricsServerURL := fmt.Sprintf("https://github.com/kubernetes-sigs/metrics-server/releases/download/%s/components.yaml", version)
 
-	if _, err := m.exec.RunShell(fmt.Sprintf("curl -fsSL %s -o /tmp/metrics-server.yaml", metricsServerURL)); err != nil {
+	if _, err := m.exec.RunShell(fmt.Sprintf("curl -fsSL --connect-timeout 10 --max-time 300 %s -o /tmp/metrics-server.yaml", metricsServerURL)); err != nil {
 		return fmt.Errorf("failed to download metrics-server manifest: %w", err)
 	}
 

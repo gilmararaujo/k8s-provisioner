@@ -10,10 +10,10 @@ import (
 
 type Ollama struct {
 	config *config.Config
-	exec   executor.CommandExecutor
+	exec   executor.ShellExecutor
 }
 
-func NewOllama(cfg *config.Config, exec executor.CommandExecutor) *Ollama {
+func NewOllama(cfg *config.Config, exec executor.ShellExecutor) *Ollama {
 	return &Ollama{config: cfg, exec: exec}
 }
 
@@ -25,13 +25,7 @@ func (o *Ollama) isCloudModel() bool {
 
 // resolveAPIKey retorna a API key do Vault (se habilitado) ou do config.yaml.
 func (o *Ollama) resolveAPIKey() string {
-	if o.config.Vault.Enabled() {
-		if val, err := FetchSecret(o.config.Vault.Addr, o.config.Vault.Token, "ollama_api_key"); err == nil && val != "" {
-			fmt.Println("Ollama API key loaded from Vault")
-			return val
-		}
-	}
-	return o.config.Ollama.APIKey
+	return NewSecretResolver(o.config).Resolve("Ollama API key", o.config.Ollama.APIKey, "ollama_api_key")
 }
 
 // hasAPIKey checks if an Ollama API key is available (Vault or config).
@@ -244,8 +238,18 @@ func (o *Ollama) createAPIKeySecret() error {
 		return fmt.Errorf("no API key available (config.yaml or Vault)")
 	}
 
-	cmd := fmt.Sprintf("kubectl create secret generic ollama-api-key -n ollama --from-literal=api-key=%s", apiKey)
-	if _, err := o.exec.RunShell(cmd); err != nil {
+	// Build the Secret as a manifest and pipe it via stdin so the API key is never
+	// interpolated into a shell command (no injection, no leak in ps/logs).
+	manifest := fmt.Sprintf(`apiVersion: v1
+kind: Secret
+metadata:
+  name: ollama-api-key
+  namespace: ollama
+type: Opaque
+stringData:
+  api-key: %q
+`, apiKey)
+	if _, err := o.exec.RunShellWithStdin("kubectl apply -f -", manifest); err != nil {
 		return fmt.Errorf("failed to create API key secret: %w", err)
 	}
 	fmt.Println("Ollama API key secret created successfully")

@@ -129,7 +129,7 @@ func runUserCreate(cmd *cobra.Command, args []string) error {
 	}
 
 	// Create manager
-	manager, err := user.NewManager(userKubeconfig, userOutputDir)
+	manager, err := user.NewManagerFromKubeconfig(userKubeconfig, userOutputDir)
 	if err != nil {
 		return fmt.Errorf("failed to create user manager: %w", err)
 	}
@@ -150,7 +150,7 @@ func runUserCreate(cmd *cobra.Command, args []string) error {
 func runUserDelete(cmd *cobra.Command, args []string) error {
 	username := args[0]
 
-	manager, err := user.NewManager(userKubeconfig, userOutputDir)
+	manager, err := user.NewManagerFromKubeconfig(userKubeconfig, userOutputDir)
 	if err != nil {
 		return fmt.Errorf("failed to create user manager: %w", err)
 	}
@@ -159,7 +159,7 @@ func runUserDelete(cmd *cobra.Command, args []string) error {
 }
 
 func runUserList(cmd *cobra.Command, args []string) error {
-	manager, err := user.NewManager(userKubeconfig, userOutputDir)
+	manager, err := user.NewManagerFromKubeconfig(userKubeconfig, userOutputDir)
 	if err != nil {
 		return fmt.Errorf("failed to create user manager: %w", err)
 	}
@@ -170,7 +170,7 @@ func runUserList(cmd *cobra.Command, args []string) error {
 func runUserCreateRole(cmd *cobra.Command, args []string) error {
 	roleName := args[0]
 
-	manager, err := user.NewManager(userKubeconfig, userOutputDir)
+	manager, err := user.NewManagerFromKubeconfig(userKubeconfig, userOutputDir)
 	if err != nil {
 		return fmt.Errorf("failed to create user manager: %w", err)
 	}

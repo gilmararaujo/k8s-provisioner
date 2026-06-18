@@ -112,7 +112,7 @@ func runVaultToken(_ *cobra.Command, _ []string) error {
 	}
 
 	var init struct {
-		RootToken string `json:"root_token"`
+		RootToken string   `json:"root_token"`
 		Keys      []string `json:"keys"`
 	}
 	if err := json.Unmarshal(data, &init); err != nil {
