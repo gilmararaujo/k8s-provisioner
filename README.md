@@ -12,8 +12,11 @@ Kubernetes cluster provisioner written in Go for lab environments. Supports macO
 | CNI | Calico 3.31.5 |
 | LoadBalancer | MetalLB 0.15.3 |
 | Service Mesh | Istio 1.29.2 + Kiali 2.24.0 |
+| TLS / Certificates | cert-manager v1.16.3 |
 | Storage | NFS Server + Dynamic Provisioner |
 | Secrets Management | HashiCorp Vault |
+| Secrets Sync | Vault Secrets Operator (VSO) |
+| Autoscaling | HPA (native) + VPA + KEDA |
 | Metrics | Metrics Server + Prometheus Operator 0.90.1 |
 | Monitoring | Prometheus + Grafana 13.0.1 + node-exporter 1.11.1 |
 | Logging | Loki 3.7.1 + Grafana Alloy 1.15.1 |
@@ -66,73 +69,112 @@ choco install virtualbox vagrant kubernetes-cli golang
 
 ## Architecture
 
+### Cluster topology (Vagrant / VirtualBox)
+
 ```
-  ┌─────────────────────────────────────────────────────────────────────┐
-  │                         192.168.56.0/24                             │
-  │                                                                     │
-  │  ┌──────────────────┐                  ┌────────────────────────┐   │
-  │  │    Storage       │── NFS mount ────►│    ControlPlane        │   │
-  │  │  192.168.56.20   │◄─ Vault auth ────│    192.168.56.10       │   │
-  │  │──────────────────│                  │────────────────────────│   │
-  │  │  NFS Server      │                  │  kubeadm · Calico      │   │
-  │  │  Vault :8200     │                  │  MetalLB · Istio       │   │
-  │  └────────┬─────────┘                  │  Prometheus · Loki     │   │
-  │           │                            └──────────┬─────────────┘   │
-  │           │ NFS mount                             │                 │
-  │           │ Vault auth                       kubeadm join           │
-  │           │                             ┌─────────┴────────┐        │
-  │           │                        ┌────┴──────┐    ┌───────┴─────┐  │
-  │           ├───────────────────────►│  Node01   │    │   Node02   │  │
-  │           └───────────────────────►│ .56.11    │    │   .56.12   │  │
-  │                                    │  Worker   │    │   Worker   │  │
-  │                                    │ Ollama    │    │            │  │
-  │                                    │ (opcional)│    │            │  │
-  │                                    └───────────┘    └────────────┘  │
-  └─────────────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────────────┐
+│                              192.168.56.0/24                                 │
+│                                                                              │
+│  ┌──────────────────┐                  ┌──────────────────────────────────┐ │
+│  │    Storage       │── NFS mount ────►│            ControlPlane          │ │
+│  │  192.168.56.20   │◄─ VSO sync ──────│            192.168.56.10         │ │
+│  │──────────────────│   (HTTP :8200)   │──────────────────────────────────│ │
+│  │  NFS Server      │                  │  kubeadm apiserver (OIDC auth)   │ │
+│  │  Vault :8200     │                  │  Calico · MetalLB · Istio · Kiali│ │
+│  │  (systemd,       │                  │  cert-manager · Keycloak · VSO   │ │
+│  │   outside k8s)   │                  │  Prometheus · Grafana · Loki     │ │
+│  └────────┬─────────┘                  │  Tempo · KEDA · VPA · Metrics    │ │
+│           │                            └─────────────────┬────────────────┘ │
+│           │ NFS mount                              kubeadm join             │
+│           │                              ┌─────────────────┴──────────────┐ │
+│           ├─────────────────────────────►│   Node01        │    Node02    │ │
+│           └─────────────────────────────►│   .56.11        │    .56.12    │ │
+│                                          │   Worker        │    Worker    │ │
+│                                          │   Ollama*       │              │ │
+│                                          └─────────────────┴──────────────┘ │
+└────────────────────────────────────────────────────────────────────────────┘
+  * Ollama only when Karpor AI is enabled. The components listed under
+    ControlPlane are installed from there, but their pods are scheduled
+    across all nodes.
 ```
 
-O Vault roda no storage node **fora do cluster Kubernetes**. Isso garante que os secrets continuam acessíveis mesmo que o cluster tenha problemas.
+The Vault runs on the storage node **outside the Kubernetes cluster** (systemd
+service), so secrets survive cluster rebuilds.
+
+### Secrets & authentication flow
+
+**Secrets** — Vault is the single source of truth; the Vault Secrets Operator
+(VSO) bridges it into native Kubernetes Secrets:
+
+```
+Vault (storage :8200, KV v2)        VaultStaticSecret CRD          K8s Secrets
+secret/k8s-provisioner/api-keys ──►  Vault Secrets Operator  ──►   keycloak-admin
+                                                                   postgres-credentials
+                                                                   grafana-admin / grafana-oidc
+```
+
+**Authentication** — `kubectl` logs in against Keycloak; the apiserver validates
+the token natively (no impersonation proxy), and group claims map to RBAC:
+
+```
+kubectl ──(1) oidc-login (PKCE, browser)──►  Keycloak  (realm: k8s)
+   │                                            │  issuer https://keycloak.local/realms/k8s
+   │ (2) id_token  (groups claim)               │
+   ▼                                            ▼
+kube-apiserver ──(3) validates via --authentication-config────────────────
+   │   trusts the cert-manager lab CA; resolves keycloak.local via hostAliases
+   ▼
+RBAC:  group oidc:k8s-admins → cluster-admin    ·    oidc:k8s-developers → view
+```
+
+Grafana reuses the same Keycloak realm for SSO (OAuth2). See
+[Keycloak (Identity Provider / SSO)](#keycloak-identity-provider--sso) for the
+full login walkthrough.
 
 ## Project Structure
 
 ```
 k8s-provisioner/
-├── cmd/                    # CLI commands
-│   ├── root.go
-│   ├── provision.go
-│   ├── status.go
-│   ├── user.go            # User management
-│   ├── vault.go           # Vault commands
-│   └── vbox.go            # VirtualBox management
+├── cmd/                       # CLI commands (Cobra)
+│   ├── root.go                # Loads config.yaml, wires the executor
+│   ├── provision.go           # provision common|controlplane|worker|workloads|all
+│   ├── status.go              # Cluster status
+│   ├── user.go                # User management (X.509 + RBAC)
+│   ├── vault.go               # Vault status / init-info / get-secret
+│   └── vbox.go                # VirtualBox promiscuous mode
 ├── internal/
-│   ├── config/            # YAML config parser
-│   ├── executor/          # Shell command executor
-│   ├── installer/         # Component installers
-│   │   ├── calico.go
-│   │   ├── istio.go
-│   │   ├── karpor.go
-│   │   ├── loki.go
-│   │   ├── metallb.go
-│   │   ├── metrics.go
-│   │   ├── monitoring.go
-│   │   ├── nfs_provisioner.go
-│   │   ├── ollama.go
-│   │   └── vault.go       # Vault init, unseal, k8s auth, secrets
-│   └── provisioner/       # Main provisioning logic
-├── vagrant/               # Vagrant files
-│   ├── Vagrantfile
-│   └── settings.yaml
-├── examples/              # Example manifests
-│   ├── nfs-pv-pvc.yaml
-│   ├── podinfo-app.yaml
-│   ├── vault-secret-app.yaml  # App de exemplo usando Vault
-│   ├── vault-usage.md         # Guia do Vault
-│   └── monitoring-access.md
-├── build/                 # Compiled binaries
-├── config.yaml            # Cluster configuration
-├── go.mod
-├── main.go
-└── Makefile
+│   ├── config/                # config.yaml parser + validation
+│   ├── executor/              # Shell executor (+ dry-run null object)
+│   │   ├── executor.go
+│   │   └── dryrun.go
+│   ├── provisioner/           # Orchestration: InstallCommon → … → InstallWorkloads
+│   │   ├── provisioner.go
+│   │   └── hostprep.go        # swap, kernel modules, sysctl, DNS, CRI-O
+│   ├── installer/             # One installer per component (manifests as Go strings)
+│   │   ├── installer.go       # Installer interface + ordered workloadStep table
+│   │   ├── timeouts.go        # Poll/timeout constants (no fixed sleeps)
+│   │   ├── calico.go  istio.go  metallb.go  metrics.go  nfs_provisioner.go
+│   │   ├── cert_manager.go    # Self-signed lab CA + TLS for *.local
+│   │   ├── keycloak*.go       # OIDC IdP: deploy, realm, gateway, oidc (apiserver), grafana SSO
+│   │   ├── vault.go  vault_client.go  vault_secrets_operator.go  secrets.go
+│   │   ├── monitoring*.go     # Prometheus, Grafana, Alertmanager, exporters, storage, Istio scrape
+│   │   ├── loki.go  tempo.go  kiali.go      # Logs, traces, mesh observability
+│   │   ├── keda.go  vpa.go                  # Autoscaling
+│   │   └── karpor.go  ollama.go             # Explorer + AI backend (opt-in)
+│   ├── user/                  # User mgmt split: cert/rbac/kubeconfig/store
+│   │   └── user.go  csr.go  kubeconfig.go  rbac.go  store.go
+│   └── version/               # Build-time version injection
+├── vagrant/
+│   ├── Vagrantfile            # Builds the linux binary, boots 4 VMs, runs provision
+│   └── settings.yaml          # VM definitions (CPU/RAM/IP per node)
+├── examples/                  # Sample apps & guides
+│   ├── otel-demo-app/         # Go app with full trace → log correlation
+│   ├── hello-app.yaml  podinfo-app.yaml  nfs-pv-pvc.yaml  vault-secret-app.yaml
+│   ├── otel-operator-instrumentation.yaml
+│   └── vault-usage.md  karpor-usage.md  monitoring-access.md
+├── config.yaml                # Single source of truth (versions, CIDRs, toggles, nodes)
+├── VERSION                    # Release version (read by auto-release CI)
+├── main.go  go.mod  Makefile
 ```
 
 ## Pre-built Binaries
