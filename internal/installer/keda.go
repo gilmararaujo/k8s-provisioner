@@ -40,7 +40,7 @@ func (k *KEDA) Install() error {
 	}
 
 	fmt.Println("Waiting for KEDA to be ready...")
-	if err := k.waitForReady(3 * time.Minute); err != nil {
+	if err := k.waitForReady(shortReadyTimeout); err != nil {
 		return fmt.Errorf("keda did not become ready: %w", err)
 	}
 
@@ -67,7 +67,7 @@ func (k *KEDA) waitForReady(timeout time.Duration) error {
 			return nil
 		}
 		fmt.Println("Waiting for KEDA operator...")
-		time.Sleep(DefaultPollInterval)
+		time.Sleep(defaultPollInterval)
 	}
 	return fmt.Errorf("timeout waiting for KEDA operator")
 }

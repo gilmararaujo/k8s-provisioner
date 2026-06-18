@@ -40,7 +40,7 @@ func (n *NFSProvisioner) Install() error {
 
 	// Wait for provisioner to be ready
 	fmt.Println("Waiting for NFS provisioner to be ready...")
-	if err := n.waitForReady(DefaultReadyTimeout); err != nil {
+	if err := n.waitForReady(defaultReadyTimeout); err != nil {
 		fmt.Printf("Warning: %v\n", err)
 	}
 
@@ -138,7 +138,7 @@ func (n *NFSProvisioner) waitForReady(timeout time.Duration) error {
 		if err == nil && out == "Running" {
 			return nil
 		}
-		time.Sleep(DefaultPollInterval)
+		time.Sleep(defaultPollInterval)
 	}
 	return fmt.Errorf("timeout waiting for NFS provisioner")
 }

@@ -23,11 +23,7 @@ type VaultInstaller struct {
 }
 
 func NewVaultInstaller(cfg *config.Config, exec executor.ShellExecutor) *VaultInstaller {
-	addr := cfg.Vault.Addr
-	if addr == "" {
-		addr = "http://192.168.56.20:8200"
-	}
-	return &VaultInstaller{config: cfg, exec: exec, address: addr}
+	return &VaultInstaller{config: cfg, exec: exec, address: cfg.VaultAddress()}
 }
 
 type vaultInitRequest struct {
@@ -43,7 +39,7 @@ type vaultInitResponse struct {
 func (v *VaultInstaller) Install() error {
 	fmt.Println("Configuring HashiCorp Vault on storage node...")
 
-	if err := v.waitForVault(3 * time.Minute); err != nil {
+	if err := v.waitForVault(vaultReadyTimeout); err != nil {
 		return fmt.Errorf("vault not reachable at %s: %w", v.address, err)
 	}
 
@@ -103,7 +99,7 @@ func (v *VaultInstaller) waitForVault(timeout time.Duration) error {
 			}
 		}
 		fmt.Printf("Waiting for Vault at %s...\n", v.address)
-		time.Sleep(ShortPollInterval)
+		time.Sleep(shortPollInterval)
 	}
 	return fmt.Errorf("timed out after %s", timeout)
 }
@@ -177,10 +173,10 @@ func (v *VaultInstaller) initialize() (string, error) {
 
 func (v *VaultInstaller) loadRootToken() (string, error) {
 	// Try reading from storage node via SSH
-	storageIP := "192.168.56.20"
+	storageIP := v.config.StorageIP()
 	out, err := v.exec.RunShell(fmt.Sprintf(
-		"sshpass -p 'vagrant' ssh -o StrictHostKeyChecking=no vagrant@%s 'sudo cat /etc/vault.d/vault-init.json'",
-		storageIP,
+		"sshpass -p 'vagrant' ssh -o StrictHostKeyChecking=no vagrant@%s 'sudo cat %s'",
+		storageIP, VaultInitFileRemote,
 	))
 	if err == nil && out != "" {
 		var init vaultInitResponse
@@ -190,7 +186,7 @@ func (v *VaultInstaller) loadRootToken() (string, error) {
 	}
 
 	// Fallback: local controlplane copy
-	data, err := os.ReadFile("/etc/k8s-provisioner/vault-init.json")
+	data, err := os.ReadFile(VaultInitFileLocal)
 	if err != nil {
 		return "", fmt.Errorf("vault-init.json not found on storage node or controlplane")
 	}
@@ -211,13 +207,13 @@ func (v *VaultInstaller) saveInitData(data vaultInitResponse) error {
 	}
 
 	// Always save locally on controlplane as reliable fallback
-	localPath := "/etc/k8s-provisioner/vault-init.json"
+	localPath := VaultInitFileLocal
 	if err := os.WriteFile(localPath, raw, 0600); err != nil {
 		return fmt.Errorf("failed to save vault-init.json locally: %w", err)
 	}
 
 	// Copy to storage node via scp (avoids shell-escaping issues with JSON)
-	storageIP := "192.168.56.20"
+	storageIP := v.config.StorageIP()
 	if _, err := v.exec.RunShell("apt-get install -y sshpass 2>/dev/null || true"); err != nil {
 		fmt.Printf("Warning: could not install sshpass: %v\n", err)
 	}
@@ -228,8 +224,8 @@ func (v *VaultInstaller) saveInitData(data vaultInitResponse) error {
 	)
 	moveCmd := fmt.Sprintf(
 		"sshpass -p 'vagrant' ssh -o StrictHostKeyChecking=no vagrant@%s "+
-			"'sudo mv /tmp/vault-init.json /etc/vault.d/vault-init.json && sudo chmod 600 /etc/vault.d/vault-init.json'",
-		storageIP,
+			"'sudo mv /tmp/vault-init.json %[2]s && sudo chmod 600 %[2]s'",
+		storageIP, VaultInitFileRemote,
 	)
 
 	if _, err := v.exec.RunShell(scpCmd); err != nil {
@@ -241,7 +237,7 @@ func (v *VaultInstaller) saveInitData(data vaultInitResponse) error {
 		fmt.Printf("Warning: could not move vault-init.json on storage node: %v\n", err)
 	}
 
-	fmt.Printf("Vault init data saved to %s:/etc/vault.d/vault-init.json\n", storageIP)
+	fmt.Printf("Vault init data saved to %s:%s\n", storageIP, VaultInitFileRemote)
 	fmt.Printf("Backup local em: %s\n", localPath)
 	return nil
 }
@@ -312,7 +308,7 @@ subjects:
 		return fmt.Errorf("create SA token: %w", err)
 	}
 
-	k8sHost := fmt.Sprintf("https://%s:6443", v.config.Network.ControlPlaneIP)
+	k8sHost := fmt.Sprintf("https://%s:%d", v.config.Network.ControlPlaneIP, apiServerPort)
 	if _, err := v.vaultPost("/v1/auth/kubernetes/config", token, map[string]interface{}{
 		"kubernetes_host":    k8sHost,
 		"kubernetes_ca_cert": string(caCert),
@@ -501,10 +497,10 @@ func (v *VaultInstaller) printAccessInfo() {
 	fmt.Println(strings.Repeat("=", 50))
 	fmt.Printf("\nVault UI:  %s/ui\n", v.address)
 	fmt.Printf("Vault API: %s\n", v.address)
-	fmt.Println("\nCredenciais salvas em: /etc/k8s-provisioner/vault-init.json")
+	fmt.Printf("\nCredenciais salvas em: %s\n", VaultInitFileLocal)
 	fmt.Println("\nPara usar o Vault:")
 	fmt.Printf("  export VAULT_ADDR=%s\n", v.address)
-	fmt.Println("  export VAULT_TOKEN=$(cat /etc/k8s-provisioner/vault-init.json | jq -r .root_token)")
+	fmt.Printf("  export VAULT_TOKEN=$(cat %s | jq -r .root_token)\n", VaultInitFileLocal)
 	fmt.Println("\nPara ler todos os secrets:")
 	fmt.Println("  vault kv get secret/k8s-provisioner/api-keys")
 	fmt.Println("\nSenha do Grafana:")

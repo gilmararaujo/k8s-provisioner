@@ -40,7 +40,7 @@ func (v *VPA) Install() error {
 	}
 
 	fmt.Println("Waiting for VPA to be ready...")
-	if err := v.waitForReady(3 * time.Minute); err != nil {
+	if err := v.waitForReady(shortReadyTimeout); err != nil {
 		return fmt.Errorf("vpa did not become ready: %w", err)
 	}
 
@@ -67,7 +67,7 @@ func (v *VPA) waitForReady(timeout time.Duration) error {
 			return nil
 		}
 		fmt.Println("Waiting for VPA recommender...")
-		time.Sleep(DefaultPollInterval)
+		time.Sleep(defaultPollInterval)
 	}
 	return fmt.Errorf("timeout waiting for VPA recommender")
 }

@@ -16,11 +16,7 @@ type VaultSecretsOperator struct {
 }
 
 func NewVaultSecretsOperator(cfg *config.Config, exec executor.ShellExecutor) *VaultSecretsOperator {
-	addr := cfg.Vault.Addr
-	if addr == "" {
-		addr = "http://192.168.56.20:8200"
-	}
-	return &VaultSecretsOperator{config: cfg, exec: exec, address: addr}
+	return &VaultSecretsOperator{config: cfg, exec: exec, address: cfg.VaultAddress()}
 }
 
 func (v *VaultSecretsOperator) Install() error {
@@ -35,7 +31,7 @@ func (v *VaultSecretsOperator) Install() error {
 	}
 
 	fmt.Println("Waiting for VSO controller to be ready...")
-	if err := v.waitForVSO(3 * time.Minute); err != nil {
+	if err := v.waitForVSO(shortReadyTimeout); err != nil {
 		return fmt.Errorf("VSO did not become ready: %w", err)
 	}
 
@@ -100,7 +96,7 @@ func (v *VaultSecretsOperator) waitForVSO(timeout time.Duration) error {
 			return nil
 		}
 		fmt.Println("Waiting for VSO controller...")
-		time.Sleep(DefaultPollInterval)
+		time.Sleep(defaultPollInterval)
 	}
 	return fmt.Errorf("timeout waiting for VSO deployment")
 }
@@ -304,7 +300,7 @@ func (v *VaultSecretsOperator) waitForSecrets(timeout time.Duration) error {
 			return nil
 		}
 		fmt.Println("Waiting for secrets to sync...")
-		time.Sleep(DefaultPollInterval)
+		time.Sleep(defaultPollInterval)
 	}
 	return fmt.Errorf("timeout: not all secrets synced within %s", timeout)
 }

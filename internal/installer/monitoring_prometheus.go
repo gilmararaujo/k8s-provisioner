@@ -26,7 +26,7 @@ func (m *Monitoring) installPrometheusOperator() error {
 		if err == nil && out == "Running" {
 			return nil
 		}
-		time.Sleep(ShortPollInterval)
+		time.Sleep(shortPollInterval)
 	}
 
 	return nil

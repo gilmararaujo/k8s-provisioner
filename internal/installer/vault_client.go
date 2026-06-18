@@ -12,8 +12,13 @@ import (
 
 const vaultMount = "secret"
 
-// vaultInitFile is written by the provisioner during Vault initialization.
-const vaultInitFile = "/etc/k8s-provisioner/vault-init.json"
+// Vault init data is written during initialization to two locations.
+const (
+	// VaultInitFileLocal is the controlplane backup copy.
+	VaultInitFileLocal = "/etc/k8s-provisioner/vault-init.json"
+	// VaultInitFileRemote is the canonical copy on the storage node.
+	VaultInitFileRemote = "/etc/vault.d/vault-init.json"
+)
 
 type vaultInitData struct {
 	RootToken string `json:"root_token"`
@@ -25,7 +30,7 @@ func ResolveVaultToken(configToken string) string {
 		return configToken
 	}
 
-	data, err := os.ReadFile(vaultInitFile)
+	data, err := os.ReadFile(VaultInitFileLocal)
 	if err != nil {
 		return ""
 	}

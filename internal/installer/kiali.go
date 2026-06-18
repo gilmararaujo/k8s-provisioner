@@ -36,7 +36,7 @@ func (k *Kiali) Install() error {
 	}
 
 	fmt.Println("Waiting for Kiali to be ready...")
-	if err := k.waitForReady(DefaultReadyTimeout); err != nil {
+	if err := k.waitForReady(defaultReadyTimeout); err != nil {
 		fmt.Printf("Warning: %v\n", err)
 	}
 
@@ -381,7 +381,7 @@ func (k *Kiali) waitForReady(timeout time.Duration) error {
 			return nil
 		}
 		fmt.Println("Waiting for Kiali...")
-		time.Sleep(DefaultPollInterval)
+		time.Sleep(defaultPollInterval)
 	}
 	return fmt.Errorf("timeout waiting for Kiali")
 }
