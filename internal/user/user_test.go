@@ -16,6 +16,59 @@ import (
 	"k8s.io/client-go/kubernetes/fake"
 )
 
+func TestValidateGroups(t *testing.T) {
+	require.NoError(t, validateGroups(nil))
+	require.NoError(t, validateGroups([]string{"devs", "qa"}))
+
+	require.Error(t, validateGroups([]string{"system:masters"}),
+		"system:masters must be rejected")
+	require.Error(t, validateGroups([]string{"devs", "system:authenticated"}),
+		"any system: group must be rejected")
+}
+
+func TestValidateUsername(t *testing.T) {
+	require.NoError(t, validateUsername("joao"))
+	require.NoError(t, validateUsername("dev-1"))
+	require.NoError(t, validateUsername("a"))
+
+	require.Error(t, validateUsername(""), "empty must be rejected")
+	require.Error(t, validateUsername("../../etc/passwd"), "path traversal must be rejected")
+	require.Error(t, validateUsername("foo/bar"), "slash must be rejected")
+	require.Error(t, validateUsername("UPPER"), "uppercase must be rejected")
+	require.Error(t, validateUsername("a.b"), "dot must be rejected")
+	require.Error(t, validateUsername("-lead"), "leading dash must be rejected")
+}
+
+func TestDeleteUser_RejectsTraversingUsername(t *testing.T) {
+	m := NewManager(fake.NewClientset(), "", t.TempDir())
+	err := m.DeleteUser("../../../tmp/evil")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid username")
+}
+
+func TestCreateUser_RejectsTraversingUsername(t *testing.T) {
+	m := NewManager(fake.NewClientset(), "", t.TempDir())
+	err := m.CreateUser(UserConfig{Username: "../../../tmp/evil"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid username")
+}
+
+func TestSubmit_RejectsOutOfRangeExpiration(t *testing.T) {
+	c := newCertIssuer(fake.NewClientset())
+	require.Error(t, c.Submit("bob-csr", []byte("x"), 0), "zero must be rejected")
+	require.Error(t, c.Submit("bob-csr", []byte("x"), -1), "negative must be rejected")
+	require.Error(t, c.Submit("bob-csr", []byte("x"), MaxCertExpirationDays+1), "over max must be rejected")
+	// a valid value passes the bound (fake clientset accepts the Create)
+	require.NoError(t, c.Submit("bob-csr", []byte("x"), 365))
+}
+
+func TestCreateUser_RejectsReservedGroups(t *testing.T) {
+	m := NewManager(fake.NewClientset(), "", t.TempDir())
+	err := m.CreateUser(UserConfig{Username: "eve", Groups: []string{"system:masters"}})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "reserved group")
+}
+
 // TestCertIssuer_CreateCSR verifies the pure-crypto CSR carries the username as
 // CommonName and groups as Organizations.
 func TestCertIssuer_CreateCSR(t *testing.T) {

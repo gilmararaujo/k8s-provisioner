@@ -177,7 +177,7 @@ spec:
         - name: KC_HOSTNAME
           value: https://keycloak.local
         - name: KC_HOSTNAME_STRICT
-          value: "false"
+          value: "true"
         - name: KC_HTTP_PORT
           value: "8080"
         - name: KC_HEALTH_ENABLED
@@ -212,11 +212,10 @@ metadata:
   name: keycloak
   namespace: keycloak
 spec:
-  type: NodePort
+  type: ClusterIP
   ports:
   - port: 8080
     targetPort: 8080
-    nodePort: 30080
     name: http
   selector:
     app: keycloak`

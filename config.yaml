@@ -1,10 +1,25 @@
 # k8s-provisioner configuration
+#
+# SECRETS: do NOT put real secrets in this tracked file. The secret fields below
+# (vault.token, provisioning.ssh_password, karpor_ai.auth_token, ollama.api_key)
+# are placeholders — supply real values via environment variables, which override
+# whatever is here: K8S_PROV_VAULT_TOKEN, K8S_PROV_SSH_PASSWORD, KARPOR_AUTH_TOKEN,
+# OLLAMA_API_KEY (or use a gitignored config.local.yaml).
+#
 # Vault (HashiCorp) - running on storage node
 # token is auto-read from /etc/k8s-provisioner/vault-init.json if left empty
 vault:
   enabled: true
   addr: ""   # Empty = derived as http://<storage-node-ip>:8200 from nodes:. Set to override.
-  token: ""  # Leave empty to auto-resolve from vault-init.json
+  token: ""  # env K8S_PROV_VAULT_TOKEN; empty = auto-resolve from vault-init.json. Never commit a real token.
+
+# Node-to-node SSH used to copy Vault init data from controlplane to the storage
+# node. Defaults target the Vagrant lab box. For non-lab use, set ssh_key_path
+# (preferred) or ssh_password instead of relying on the default Vagrant credential.
+provisioning:
+  ssh_user: ""      # default: vagrant
+  ssh_password: ""  # env K8S_PROV_SSH_PASSWORD; default vagrant; prefer ssh_key_path. Never commit a real password.
+  ssh_key_path: ""  # path to a private key for key-based auth (preferred)
 
 cluster:
   name: "k8s-lab"
@@ -76,7 +91,7 @@ components:
 karpor_ai:
   enabled: false
   backend: "ollama"    # Options: openai, azureopenai, huggingface, ollama
-  auth_token: ""       # API token for the AI backend (not needed for ollama local)
+  auth_token: ""       # env KARPOR_AUTH_TOKEN; not needed for ollama local. Never commit a real token.
   base_url: ""         # Leave empty to use internal Ollama service
   model: "llama3.2:3b" # Local model (runs inside the cluster, ~2GB, better quality)
 
@@ -84,6 +99,6 @@ karpor_ai:
 # Only needed if using Ollama cloud models (e.g., minimax-m2.5:cloud)
 # Requires karpor_ai.enabled: true and karpor_ai.backend: "ollama"
 ollama:
-  api_key: ""          # Get from https://ollama.com/settings/keys (required for :cloud models)
+  api_key: ""          # env OLLAMA_API_KEY (https://ollama.com/settings/keys). Never commit a real key.
   # Cloud models available: minimax-m2.5:cloud, qwen3-coder:480b-cloud, glm-4.7:cloud
   # To use cloud model, set karpor_ai.model to a :cloud variant above

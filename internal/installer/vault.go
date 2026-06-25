@@ -37,8 +37,9 @@ type vaultInitRequest struct {
 }
 
 type vaultInitResponse struct {
-	Keys      []string `json:"keys"`
-	RootToken string   `json:"root_token"`
+	Keys             []string `json:"keys"`
+	RootToken        string   `json:"root_token"`
+	ProvisionerToken string   `json:"provisioner_token,omitempty"`
 }
 
 func (v *VaultInstaller) Install() error {
@@ -152,8 +153,17 @@ func (v *VaultInstaller) initialize() (string, error) {
 		}
 	}
 
+	// Mint a scoped, KV-only token for installers and the `vault` CLI so the
+	// all-powerful root token is not what every component authenticates with. If
+	// this fails we fall back to the root token (ResolveVaultToken prefers the
+	// scoped token but falls back), so a failure here is non-fatal.
+	provToken, perr := v.createProvisionerToken(rootToken)
+	if perr != nil {
+		fmt.Printf("Warning: scoped provisioner token not created (%v) — components will use the root token\n", perr)
+	}
+
 	// Persist init data on controlplane
-	initData := vaultInitResponse{RootToken: rootToken}
+	initData := vaultInitResponse{RootToken: rootToken, ProvisionerToken: provToken}
 	for _, k := range keys {
 		if s, ok := k.(string); ok {
 			initData.Keys = append(initData.Keys, s)
@@ -176,12 +186,68 @@ func (v *VaultInstaller) initialize() (string, error) {
 	return rootToken, nil
 }
 
+// createProvisionerToken creates a KV-only policy and mints a periodic orphan
+// token bound to it. Installers and the `vault` CLI use this token (via
+// ResolveVaultToken) instead of root: if leaked it can read/write secrets under
+// secret/ but cannot touch sys/ or auth/ (i.e. cannot reconfigure Vault, create
+// auth methods, or generate a root token). It is periodic (auto-renews on every
+// use) so routine provisioning keeps it alive.
+func (v *VaultInstaller) createProvisionerToken(rootToken string) (string, error) {
+	policy := `path "secret/data/*" { capabilities = ["create", "read", "update", "delete", "list"] }
+path "secret/metadata/*" { capabilities = ["read", "list", "delete"] }`
+	if _, err := v.vaultPut("/v1/sys/policies/acl/k8s-provisioner-rw", rootToken, map[string]interface{}{
+		"policy": policy,
+	}); err != nil {
+		return "", fmt.Errorf("create provisioner policy: %w", err)
+	}
+
+	resp, err := v.vaultPost("/v1/auth/token/create", rootToken, map[string]interface{}{
+		"policies":     []string{"k8s-provisioner-rw"},
+		"period":       "8760h",
+		"no_parent":    true,
+		"display_name": "k8s-provisioner",
+	})
+	if err != nil {
+		return "", fmt.Errorf("create provisioner token: %w", err)
+	}
+
+	auth, ok := resp["auth"].(map[string]interface{})
+	if !ok {
+		return "", fmt.Errorf("token create: missing auth in response")
+	}
+	tok, _ := auth["client_token"].(string)
+	if tok == "" {
+		return "", fmt.Errorf("token create: empty client_token in response")
+	}
+	return tok, nil
+}
+
+// sshConn builds the SSH/SCP auth pieces for reaching another node, honoring
+// provisioning config. Prefers key-based auth; falls back to a password (default:
+// the Vagrant box credential). Uses StrictHostKeyChecking=accept-new (trust on
+// first use, reject key changes) rather than disabling host-key checking entirely.
+// usesPassword reports whether sshpass is needed (so the caller can install it).
+func (v *VaultInstaller) sshConn() (env, opts, user string, usesPassword bool) {
+	p := v.config.Provisioning
+	user = v.config.SSHUser()
+	opts = "-o StrictHostKeyChecking=accept-new"
+	if p.SSHKeyPath != "" {
+		return "", opts + " -i " + p.SSHKeyPath, user, false
+	}
+	pw := p.SSHPassword
+	if pw == "" {
+		pw = "vagrant"
+	}
+	return fmt.Sprintf("sshpass -p '%s' ", pw), opts, user, true
+}
+
 func (v *VaultInstaller) loadRootToken() (string, error) {
 	// Try reading from storage node via SSH
 	storageIP := v.config.StorageIP()
+	env, opts, user, _ := v.sshConn()
 	out, err := v.exec.RunShell(fmt.Sprintf(
-		"sshpass -p 'vagrant' ssh -o StrictHostKeyChecking=no vagrant@%s 'sudo cat %s'",
-		storageIP, VaultInitFileRemote,
+		"%sssh %s %s@%s 'sudo cat %s'",
+		env, opts, user, storageIP, VaultInitFileRemote,
 	))
 	if err == nil && out != "" {
 		var init vaultInitResponse
@@ -219,18 +285,20 @@ func (v *VaultInstaller) saveInitData(data vaultInitResponse) error {
 
 	// Copy to storage node via scp (avoids shell-escaping issues with JSON)
 	storageIP := v.config.StorageIP()
-	if _, err := v.exec.RunShell("apt-get install -y sshpass 2>/dev/null || true"); err != nil {
-		fmt.Printf("Warning: could not install sshpass: %v\n", err)
+	env, opts, user, usesPassword := v.sshConn()
+	if usesPassword {
+		if _, err := v.exec.RunShell("apt-get install -y sshpass 2>/dev/null || true"); err != nil {
+			fmt.Printf("Warning: could not install sshpass: %v\n", err)
+		}
 	}
 
 	scpCmd := fmt.Sprintf(
-		"sshpass -p 'vagrant' scp -o StrictHostKeyChecking=no %s vagrant@%s:/tmp/vault-init.json",
-		localPath, storageIP,
+		"%sscp %s %s %s@%s:/tmp/vault-init.json",
+		env, opts, localPath, user, storageIP,
 	)
 	moveCmd := fmt.Sprintf(
-		"sshpass -p 'vagrant' ssh -o StrictHostKeyChecking=no vagrant@%s "+
-			"'sudo mv /tmp/vault-init.json %[2]s && sudo chmod 600 %[2]s'",
-		storageIP, VaultInitFileRemote,
+		"%sssh %s %s@%s 'sudo mv /tmp/vault-init.json %s && sudo chmod 600 %s'",
+		env, opts, user, storageIP, VaultInitFileRemote, VaultInitFileRemote,
 	)
 
 	if _, err := v.exec.RunShell(scpCmd); err != nil {

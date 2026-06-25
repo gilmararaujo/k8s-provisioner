@@ -5,12 +5,20 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"time"
 
 	rbac "k8s.io/api/rbac/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
 )
+
+// usernameRe is a DNS-1123 label: the same shape Kubernetes already requires for
+// the CSR/RBAC object names we derive from the username, so nothing otherwise
+// valid is rejected. It also forbids '/' and '.', which is what keeps the
+// username from escaping the artifact directory in store paths (path traversal).
+var usernameRe = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$`)
 
 // Timeout constants for user operations
 const (
@@ -70,8 +78,49 @@ func NewManagerFromKubeconfig(kubeconfig, outputDir string) (*Manager, error) {
 	return NewManager(clientset, kubeconfig, outputDir), nil
 }
 
+// validateGroups rejects Kubernetes-reserved groups that would grant escalated,
+// unmanaged privileges via the issued client certificate. The "system:" prefix
+// is reserved by Kubernetes; "system:masters" in particular is bound to
+// cluster-admin out of the box and bypasses RBAC.
+// validateUsername rejects names that are not a single DNS-1123 label. Beyond
+// matching what Kubernetes will accept for the derived CSR/RBAC objects, this
+// blocks '/' and '..' so a username cannot traverse out of the artifact
+// directory when joined into store paths (e.g. `user delete ../../etc/x` would
+// otherwise reach os.RemoveAll on an arbitrary path).
+func validateUsername(username string) error {
+	if !usernameRe.MatchString(username) {
+		return fmt.Errorf("invalid username %q: must be a DNS-1123 label "+
+			"(lowercase alphanumeric and '-', starting and ending alphanumeric, max 63 chars)", username)
+	}
+	return nil
+}
+
+func validateGroups(groups []string) error {
+	for _, g := range groups {
+		if strings.HasPrefix(g, "system:") {
+			return fmt.Errorf("refusing to issue a certificate for reserved group %q "+
+				"(the \"system:\" prefix is reserved by Kubernetes)", g)
+		}
+	}
+	return nil
+}
+
 func (m *Manager) CreateUser(cfg UserConfig) error {
 	fmt.Printf("Creating user '%s'...\n", cfg.Username)
+
+	// Reject names that could escape the artifact directory or be rejected by
+	// the Kubernetes API once derived into CSR/RBAC object names.
+	if err := validateUsername(cfg.Username); err != nil {
+		return err
+	}
+
+	// A CSR's Organization fields become Kubernetes groups, and this tool
+	// auto-approves whatever it submits. Refuse reserved groups so an operator
+	// cannot silently mint a cluster-admin (system:masters) client cert that
+	// bypasses the RBAC bindings we otherwise manage.
+	if err := validateGroups(cfg.Groups); err != nil {
+		return err
+	}
 
 	userDir := m.store.UserDir(cfg.Username)
 	if err := os.MkdirAll(userDir, 0750); err != nil {
@@ -217,6 +266,12 @@ func (m *Manager) applyRBAC(cfg UserConfig) error {
 
 func (m *Manager) DeleteUser(username string) error {
 	fmt.Printf("Deleting user '%s'...\n", username)
+
+	// Guard the destructive path: store.Remove → os.RemoveAll(filepath.Join(dir,
+	// username)). A traversing name would delete an arbitrary directory.
+	if err := validateUsername(username); err != nil {
+		return err
+	}
 
 	var errs []error
 	if err := m.rbac.DeleteForUser(username); err != nil {
