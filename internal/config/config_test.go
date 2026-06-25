@@ -49,6 +49,49 @@ func TestValidate_VaultEnabledWithoutResolvableAddress(t *testing.T) {
 	assert.Contains(t, err.Error(), "vault.enabled")
 }
 
+func TestValidateSSHPassword(t *testing.T) {
+	assert.NoError(t, validateSSHPassword(""))
+	assert.NoError(t, validateSSHPassword("vagrant"))
+	assert.NoError(t, validateSSHPassword("S3cr3t-Pass_word.123"))
+
+	assert.Error(t, validateSSHPassword("x'; touch /tmp/pwned; echo '"))
+	assert.Error(t, validateSSHPassword("with'quote"))
+	assert.Error(t, validateSSHPassword("with`backtick"))
+	assert.Error(t, validateSSHPassword("with$var"))
+	assert.Error(t, validateSSHPassword("with;semicolon"))
+	assert.Error(t, validateSSHPassword("with\nnewline"))
+}
+
+func TestValidate_RejectsDangerousSSHPassword(t *testing.T) {
+	cfg := &Config{
+		Cluster:      ClusterConfig{Name: "t", PodCIDR: "10.244.0.0/16", ServiceCIDR: "10.96.0.0/12"},
+		Versions:     VersionsConfig{Kubernetes: "1.32", CriO: "v1.32"},
+		Network:      NetworkConfig{Interface: "eth1", ControlPlaneIP: "192.168.56.10"},
+		Storage:      StorageConfig{NFSPath: "/exports"},
+		Nodes:        []NodeConfig{{Name: "cp", Role: "controlplane", IP: "192.168.56.10"}},
+		Provisioning: ProvisioningConfig{SSHPassword: "x'; rm -rf / #"},
+	}
+
+	err := cfg.Validate()
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "provisioning.ssh_password")
+}
+
+func TestApplyEnvSecrets(t *testing.T) {
+	t.Setenv("K8S_PROV_VAULT_TOKEN", "tok-from-env")
+	t.Setenv("OLLAMA_API_KEY", "key-from-env")
+
+	cfg := &Config{}
+	applyEnvSecrets(cfg)
+	assert.Equal(t, "tok-from-env", cfg.Vault.Token, "env must override Vault token")
+	assert.Equal(t, "key-from-env", cfg.Ollama.APIKey, "env must override Ollama key")
+
+	// An unset env var must leave the existing value untouched.
+	cfg2 := &Config{Provisioning: ProvisioningConfig{SSHPassword: "keep-me"}}
+	applyEnvSecrets(cfg2)
+	assert.Equal(t, "keep-me", cfg2.Provisioning.SSHPassword, "unset env must not clear value")
+}
+
 func TestLoad_ValidFile(t *testing.T) {
 	cfg, err := Load("../../testdata/config_valid.yaml")
 

@@ -24,6 +24,16 @@ else
   $KCADM create realms -s realm=k8s -s enabled=true -s displayName=Kubernetes
 fi
 
+# Set explicit session/token lifespans so the timeout is managed by this tool
+# rather than inherited from whatever the Keycloak image defaults to. Values
+# mirror sane Keycloak defaults: 30m SSO idle, 10h SSO max, 5m access token.
+# Run unconditionally (update is idempotent) so it applies to a pre-existing realm too.
+echo "Setting realm session/token lifespans..."
+$KCADM update realms/k8s \
+  -s ssoSessionIdleTimeout=1800 \
+  -s ssoSessionMaxLifespan=36000 \
+  -s accessTokenLifespan=300
+
 echo "Creating groups client scope..."
 GROUPS_SCOPE_ID=$($KCADM create client-scopes -r k8s \
   -s name=groups \

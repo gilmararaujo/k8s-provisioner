@@ -101,9 +101,15 @@ data:
             prefix: index_
             period: 24h
 
+    compactor:
+      working_directory: /data/loki/compactor
+      retention_enabled: true
+      delete_request_store: filesystem
+
     limits_config:
       reject_old_samples: true
       reject_old_samples_max_age: 168h
+      retention_period: 168h
       allow_structured_metadata: true
       volume_enabled: true
 

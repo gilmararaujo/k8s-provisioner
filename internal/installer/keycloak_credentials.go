@@ -1,6 +1,13 @@
 package installer
 
-import "fmt"
+import (
+	"fmt"
+	"os"
+)
+
+// keycloakCredsFile is where generated credentials are written (0600) when Vault
+// is not configured, so they are not echoed into provisioning/CI logs.
+const keycloakCredsFile = "/etc/k8s-provisioner/keycloak-credentials.txt"
 
 func (k *Keycloak) resolveCredentials() (keycloakCreds, error) {
 	// Passwords/secrets default to freshly generated random values, never
@@ -29,11 +36,22 @@ func (k *Keycloak) resolveCredentials() (keycloakCreds, error) {
 	resolver := NewSecretResolver(k.config)
 	if !resolver.Enabled() {
 		fmt.Println("Warning: Vault not configured — generated random Keycloak credentials.")
-		fmt.Println("  SAVE THESE NOW (they are not persisted anywhere):")
-		fmt.Printf("    keycloak admin: %s / %s\n", creds.adminUsername, creds.adminPassword)
-		fmt.Printf("    postgres:       %s / %s\n", creds.postgresUsername, creds.postgresPassword)
-		fmt.Printf("    k8s-admin OIDC: %s\n", creds.k8sAdminPassword)
-		fmt.Printf("    developer OIDC: %s\n", creds.developerPassword)
+		contents := fmt.Sprintf(
+			"keycloak admin: %s / %s\npostgres:       %s / %s\nk8s-admin OIDC: %s\ndeveloper OIDC: %s\n",
+			creds.adminUsername, creds.adminPassword,
+			creds.postgresUsername, creds.postgresPassword,
+			creds.k8sAdminPassword, creds.developerPassword,
+		)
+		// Prefer a 0600 file over stdout so secrets don't end up in CI/provisioning
+		// logs. Fall back to stdout only if the file cannot be written — otherwise
+		// these unrecoverable credentials would be lost entirely.
+		if err := os.WriteFile(keycloakCredsFile, []byte(contents), 0600); err != nil {
+			fmt.Printf("Warning: could not write %s (%v) — printing credentials once instead.\n", keycloakCredsFile, err)
+			fmt.Println("  SAVE THESE NOW (they are not persisted anywhere):")
+			fmt.Print("    " + contents)
+		} else {
+			fmt.Printf("  Credentials written to %s (mode 0600) — back them up; they are not stored in Vault.\n", keycloakCredsFile)
+		}
 		return creds, nil
 	}
 

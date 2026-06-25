@@ -2,9 +2,15 @@ package installer
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/techiescamp/k8s-provisioner/internal/executor"
 )
+
+// grafanaCredsFile is where the generated Grafana admin password is written (0600)
+// when Vault is not configured, so it is not echoed into provisioning/CI logs
+// (mirrors keycloakCredsFile / F-6).
+const grafanaCredsFile = "/etc/k8s-provisioner/grafana-credentials.txt"
 
 func (m *Monitoring) installGrafana() error {
 	password, err := m.resolveGrafanaPassword()
@@ -152,7 +158,16 @@ func (m *Monitoring) resolveGrafanaPassword() (string, error) {
 		return "", fmt.Errorf("generate grafana password: %w", err)
 	}
 	fmt.Println("Warning: Grafana admin password not in Vault — generated a random one.")
-	fmt.Printf("  SAVE THIS NOW (not persisted): admin / %s\n", pw)
+	// Prefer a 0600 file over stdout so the credential doesn't end up in captured
+	// provisioning/CI logs (cluster-up.sh redirects stdout to *.out.txt). Fall back
+	// to stdout only if the file can't be written — otherwise it would be lost.
+	contents := fmt.Sprintf("grafana admin: admin / %s\n", pw)
+	if err := os.WriteFile(grafanaCredsFile, []byte(contents), 0600); err != nil {
+		fmt.Printf("Warning: could not write %s (%v) — printing once instead.\n", grafanaCredsFile, err)
+		fmt.Printf("  SAVE THIS NOW (not persisted): admin / %s\n", pw)
+	} else {
+		fmt.Printf("  Grafana admin password written to %s (mode 0600) — back it up; not stored in Vault.\n", grafanaCredsFile)
+	}
 	return pw, nil
 }
 

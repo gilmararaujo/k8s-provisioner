@@ -49,17 +49,123 @@ func NewWithExecutor(cfg *config.Config, exec executor.CommandExecutor, verbose 
 	}
 }
 
+// auditPolicy is the kube-apiserver audit policy mounted into the control plane.
+// First match wins: drop read/health noise and high-frequency coordination
+// heartbeats (leases/events/endpoints/endpointslices — huge volume, low value),
+// capture security-sensitive objects at full fidelity, exec/attach at Request, and
+// every other mutation at Metadata. Reads of secrets are intentionally not logged
+// (matched by the get/list/watch=None rule first) to bound volume; reorder if
+// secret reads must be audited.
+const auditPolicy = `apiVersion: audit.k8s.io/v1
+kind: Policy
+omitStages:
+  - RequestReceived
+rules:
+  - level: None
+    verbs: ["get", "list", "watch"]
+  - level: None
+    nonResourceURLs: ["/healthz*", "/livez*", "/readyz*", "/version", "/metrics"]
+  - level: None
+    resources:
+      - group: "coordination.k8s.io"
+        resources: ["leases"]
+      - group: ""
+        resources: ["events", "endpoints"]
+      - group: "discovery.k8s.io"
+        resources: ["endpointslices"]
+  - level: RequestResponse
+    resources:
+      - group: ""
+        resources: ["secrets", "serviceaccounts"]
+      - group: "rbac.authorization.k8s.io"
+        resources: ["roles", "rolebindings", "clusterroles", "clusterrolebindings"]
+  - level: Request
+    resources:
+      - group: ""
+        resources: ["pods/exec", "pods/attach", "pods/portforward"]
+  - level: Metadata
+`
+
+// kubeadmConfigTemplate renders InitConfiguration + ClusterConfiguration used in
+// place of bare `kubeadm init` flags, so API server audit logging is wired in
+// cleanly via extraArgs/extraVolumes — kubeadm injects the flags, volume and mount
+// into the static pod manifest idempotently (a sed patch would be far more fragile
+// and could crashloop the API server). %s = advertise address, %s = pod subnet.
+//
+// audit-log-path is "-" (stdout): audit events become part of the kube-apiserver
+// container's stdout, so the existing (non-root, hardened) Alloy DaemonSet collects
+// them via the Kubernetes API — the same path as every other pod log — and ships
+// them to Loki. No file on disk, no privileged log shipper, no host mount for logs.
+// Only the read-only audit-policy volume is needed. (Rotation flags are file-only
+// and therefore omitted; the container runtime handles stdout log rotation.)
+const kubeadmConfigTemplate = `apiVersion: kubeadm.k8s.io/v1beta4
+kind: InitConfiguration
+localAPIEndpoint:
+  advertiseAddress: %s
+nodeRegistration:
+  criSocket: unix:///var/run/crio/crio.sock
+  name: controlplane
+---
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: ClusterConfiguration
+networking:
+  podSubnet: %s
+apiServer:
+  extraArgs:
+  - name: audit-policy-file
+    value: /etc/kubernetes/audit/policy.yaml
+  - name: audit-log-path
+    value: "-"
+  extraVolumes:
+  - name: audit-policy
+    hostPath: /etc/kubernetes/audit
+    mountPath: /etc/kubernetes/audit
+    readOnly: true
+    pathType: DirectoryOrCreate
+`
+
+// writeKubeadmConfig writes the API server audit policy and the kubeadm config to
+// the control-plane node, returning the config path for `kubeadm init --config`.
+// The policy must exist before the API server static pod starts, so it is written
+// first. No-op (returns the path) under dry-run.
+func (p *Provisioner) writeKubeadmConfig() (string, error) {
+	const (
+		auditDir   = "/etc/kubernetes/audit"
+		policyPath = auditDir + "/policy.yaml"
+		configPath = "/etc/kubernetes/kubeadm-config.yaml"
+	)
+
+	if p.dryRun {
+		fmt.Println("[dry-run] would write kubeadm config + API server audit policy")
+		return configPath, nil
+	}
+
+	if _, err := p.exec.RunShell("mkdir -p " + auditDir); err != nil {
+		return "", fmt.Errorf("create audit policy directory: %w", err)
+	}
+	if err := executor.WriteFile(policyPath, auditPolicy); err != nil {
+		return "", fmt.Errorf("write audit policy: %w", err)
+	}
+	config := fmt.Sprintf(kubeadmConfigTemplate, p.config.Network.ControlPlaneIP, p.config.Cluster.PodCIDR)
+	if err := executor.WriteFile(configPath, config); err != nil {
+		return "", fmt.Errorf("write kubeadm config: %w", err)
+	}
+	return configPath, nil
+}
+
 // InitCluster bootstraps the Kubernetes control plane and generates the join
 // command for worker nodes. It does NOT install any workloads — call
 // InstallWorkloads after all workers have joined.
 func (p *Provisioner) InitCluster() error {
 	cfg := p.config
 
-	initCmd := fmt.Sprintf("kubeadm init --apiserver-advertise-address=%s --pod-network-cidr=%s --cri-socket=unix:///var/run/crio/crio.sock --node-name=controlplane",
-		cfg.Network.ControlPlaneIP, cfg.Cluster.PodCIDR)
+	configPath, err := p.writeKubeadmConfig()
+	if err != nil {
+		return fmt.Errorf("prepare kubeadm config: %w", err)
+	}
 
-	fmt.Println("\n>>> Initializing Kubernetes cluster...")
-	if err := p.exec.RunShellWithOutput(initCmd); err != nil {
+	fmt.Println("\n>>> Initializing Kubernetes cluster (with API server audit logging)...")
+	if err := p.exec.RunShellWithOutput("kubeadm init --config=" + configPath); err != nil {
 		return err
 	}
 

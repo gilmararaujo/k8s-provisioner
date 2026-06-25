@@ -17,15 +17,34 @@ type Config struct {
 	Storage    StorageConfig    `yaml:"storage"`
 	Nodes      []NodeConfig     `yaml:"nodes"`
 	Components ComponentsConfig `yaml:"components"`
-	KarporAI   KarporAIConfig   `yaml:"karpor_ai"`
-	Ollama     OllamaConfig     `yaml:"ollama"`
-	Vault      VaultConfig      `yaml:"vault"`
+	KarporAI     KarporAIConfig     `yaml:"karpor_ai"`
+	Ollama       OllamaConfig       `yaml:"ollama"`
+	Vault        VaultConfig        `yaml:"vault"`
+	Provisioning ProvisioningConfig `yaml:"provisioning"`
 }
 
 type VaultConfig struct {
 	Enabled bool   `yaml:"enabled"` // toggles Vault; addr is derived when empty
 	Addr    string `yaml:"addr"`    // optional override; empty = derive from storage node
 	Token   string `yaml:"token"`
+}
+
+// ProvisioningConfig controls node-to-node SSH used to transport Vault init data
+// from the controlplane to the storage node. Defaults target the Vagrant lab box;
+// override ssh_key_path (preferred) or ssh_password for non-lab environments
+// instead of relying on the hard-coded Vagrant credentials.
+type ProvisioningConfig struct {
+	SSHUser     string `yaml:"ssh_user"`     // default: vagrant
+	SSHPassword string `yaml:"ssh_password"` // password auth; ignored when ssh_key_path is set
+	SSHKeyPath  string `yaml:"ssh_key_path"` // private key for key-based auth (preferred)
+}
+
+// SSHUser returns the configured SSH user, defaulting to the Vagrant box user.
+func (c *Config) SSHUser() string {
+	if c.Provisioning.SSHUser != "" {
+		return c.Provisioning.SSHUser
+	}
+	return "vagrant"
 }
 
 type OllamaConfig struct {
@@ -110,6 +129,10 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 
+	// Secrets may be supplied via environment so real values never need to live in
+	// the tracked config.yaml (which carries only empty placeholders). Env wins.
+	applyEnvSecrets(&cfg)
+
 	// Node IPs in `nodes:` are the single source of truth. Derive the control
 	// plane IP from the controlplane node when network.controlplane_ip is unset,
 	// so the address is not duplicated in config.yaml.
@@ -124,6 +147,24 @@ func Load(path string) (*Config, error) {
 	}
 
 	return &cfg, nil
+}
+
+// applyEnvSecrets overrides secret-bearing fields from the environment so real
+// secrets never have to be written into the tracked config.yaml. An empty env
+// var leaves the configured (or placeholder) value untouched.
+func applyEnvSecrets(cfg *Config) {
+	if v := os.Getenv("K8S_PROV_VAULT_TOKEN"); v != "" {
+		cfg.Vault.Token = v
+	}
+	if v := os.Getenv("K8S_PROV_SSH_PASSWORD"); v != "" {
+		cfg.Provisioning.SSHPassword = v
+	}
+	if v := os.Getenv("OLLAMA_API_KEY"); v != "" {
+		cfg.Ollama.APIKey = v
+	}
+	if v := os.Getenv("KARPOR_AUTH_TOKEN"); v != "" {
+		cfg.KarporAI.AuthToken = v
+	}
 }
 
 // Validate checks all required fields and formats
@@ -177,6 +218,11 @@ func (c *Config) Validate() error {
 	// vault.addr, or a storage node with an ip to derive it from).
 	if c.Vault.Enabled && c.VaultAddress() == "" {
 		errors = append(errors, "vault.enabled is true but no address could be resolved (set vault.addr or define a storage node with an ip)")
+	}
+
+	// Provisioning validation
+	if err := validateSSHPassword(c.Provisioning.SSHPassword); err != nil {
+		errors = append(errors, fmt.Sprintf("provisioning.ssh_password: %v", err))
 	}
 
 	// Nodes validation
@@ -250,6 +296,20 @@ func hasControlPlaneNode(nodes []NodeConfig) bool {
 		}
 	}
 	return false
+}
+
+// validateSSHPassword rejects shell-dangerous characters in the SSH password.
+// The password is interpolated into `sshpass -p '<pw>'` and handed to `sh -c`
+// (internal/installer/vault.go), so a single quote breaks out of the quoting and
+// allows command injection; the other characters are rejected as defense in depth
+// and because they also defeat the credential scrubbing applied to log output.
+// Empty is allowed (key-based auth, or the Vagrant default, is used instead).
+func validateSSHPassword(pw string) error {
+	if strings.ContainsAny(pw, "'`$;\n\r") {
+		return fmt.Errorf("must not contain any of ' ` $ ; or newlines " +
+			"(use ssh_key_path for credentials with special characters)")
+	}
+	return nil
 }
 
 // isValidIP checks if the string is a valid IPv4 or IPv6 address

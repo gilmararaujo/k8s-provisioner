@@ -28,3 +28,26 @@ vagrant/id_ed25519*
 # Temporary files
 *.tmp
 *.bak
+
+# Secrets & local state (SEC-2) — never commit credentials or cluster state.
+# testdata/ fixtures are re-included below so test certs/keys stay tracked.
+.env
+*.env
+config.local.yaml
+vault-init.json
+*kubeconfig*
+*.key
+*.pem
+*.crt
+!testdata/**
+
+# Work artifacts & personal notes — never committed (project policy)
+audits/
+.claude/
+CLAUDE.md
+GO_REVIEW.md
+INTERVIEW_CHEATSHEET.md
+INTERVIEW_PREP.md
+K0RDENT_STUDY.md
+PORTFOLIO.md
+WORKSPACE_OPERATOR.md

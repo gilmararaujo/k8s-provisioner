@@ -22,10 +22,14 @@ const (
 )
 
 type vaultInitData struct {
-	RootToken string `json:"root_token"`
+	RootToken        string `json:"root_token"`
+	ProvisionerToken string `json:"provisioner_token"`
 }
 
 // ResolveVaultToken returns the token from config, falling back to vault-init.json.
+// It prefers the scoped provisioner token (KV-only) over the root token; the root
+// token is used only as a fallback for clusters initialized before scoped tokens
+// existed, or if scoped-token creation failed during bootstrap.
 func ResolveVaultToken(configToken string) string {
 	if configToken != "" {
 		return configToken
@@ -41,6 +45,9 @@ func ResolveVaultToken(configToken string) string {
 		return ""
 	}
 
+	if init.ProvisionerToken != "" {
+		return init.ProvisionerToken
+	}
 	return init.RootToken
 }
 
