@@ -54,3 +54,30 @@ spec:
 	_, err := k.exec.RunShell("kubectl apply -f /tmp/keycloak-gateway.yaml")
 	return err
 }
+
+// createPostgresMTLS requires mTLS on the Postgres workload so the Keycloak→Postgres
+// connection (plaintext JDBC, no sslmode) is encrypted by the mesh. The policy is
+// scoped to the postgres pods via selector — Postgres' only clients are the
+// mesh-injected Keycloak pod and the kubelet `exec` readiness probe (network-
+// independent), so STRICT here has near-zero blast radius. Only meaningful with Istio;
+// the caller gates this on ServiceMesh == "istio".
+func (k *Keycloak) createPostgresMTLS() error {
+	manifest := `apiVersion: security.istio.io/v1
+kind: PeerAuthentication
+metadata:
+  name: postgres-mtls
+  namespace: keycloak
+spec:
+  selector:
+    matchLabels:
+      app: postgres
+  mtls:
+    mode: STRICT`
+
+	if err := executor.WriteFile("/tmp/keycloak-postgres-mtls.yaml", manifest); err != nil {
+		return err
+	}
+
+	_, err := k.exec.RunShell("kubectl apply -f /tmp/keycloak-postgres-mtls.yaml")
+	return err
+}

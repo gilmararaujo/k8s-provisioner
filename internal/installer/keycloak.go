@@ -47,6 +47,17 @@ func (k *Keycloak) Install() error {
 		fmt.Printf("Warning: keycloak-admin secret may not be ready: %v\n", err)
 	}
 
+	// Apply the Postgres mTLS policy BEFORE deploying Keycloak so the very first
+	// Keycloak→Postgres connection is already mTLS. Applying it after Keycloak is
+	// running would tear down the established plaintext connections at the cutover
+	// (a transient "connection has been closed" blip before the pool reconnects).
+	if k.config.Components.ServiceMesh == "istio" {
+		fmt.Println("Enforcing mTLS on Postgres (PeerAuthentication STRICT)...")
+		if err := k.createPostgresMTLS(); err != nil {
+			fmt.Printf("Warning: Failed to apply Postgres mTLS PeerAuthentication: %v\n", err)
+		}
+	}
+
 	fmt.Println("Deploying Keycloak...")
 	if err := k.deployKeycloak(creds); err != nil {
 		return err
@@ -80,7 +91,7 @@ func (k *Keycloak) Install() error {
 	}
 
 	fmt.Println("Keycloak installed successfully!")
-	k.printAccessInfo(cpIP, issuerURL)
+	k.printAccessInfo(issuerURL)
 	return nil
 }
 
@@ -168,12 +179,12 @@ func (k *Keycloak) waitForSecret(namespace, name string, timeout time.Duration) 
 	return fmt.Errorf("timeout waiting for secret %s/%s", namespace, name)
 }
 
-func (k *Keycloak) printAccessInfo(cpIP, issuerURL string) {
+func (k *Keycloak) printAccessInfo(issuerURL string) {
 	fmt.Println("\n========================================")
 	fmt.Println("Keycloak Access Information")
 	fmt.Println("========================================")
-	fmt.Printf("\nAdmin Console: http://%s:30080\n", cpIP)
-	fmt.Println("  (or http://keycloak.local via Istio Gateway)")
+	fmt.Println("\nAdmin Console: https://keycloak.local  (Istio Gateway, TLS)")
+	fmt.Println("  Requires a hosts entry for keycloak.local → ingress IP (see README Quick Start step 5).")
 	fmt.Println("\nAdmin credentials (stored in Vault):")
 	fmt.Println("  vault kv get -field=keycloak_admin_username secret/k8s-provisioner/api-keys")
 	fmt.Println("  vault kv get -field=keycloak_admin_password secret/k8s-provisioner/api-keys")
@@ -186,8 +197,13 @@ func (k *Keycloak) printAccessInfo(cpIP, issuerURL string) {
 	fmt.Println("Install kubelogin:")
 	fmt.Println("  brew install int128/kubelogin/kubelogin   # Mac")
 	fmt.Println("  kubectl krew install oidc-login           # via krew")
-	fmt.Println("\nAdd OIDC credentials to kubeconfig:")
-	fmt.Printf(`  kubectl config set-credentials oidc \
+	fmt.Println("\nEasiest: fetch the ready-made kubeconfig (CA-verified, no insecure flags) from Vault:")
+	fmt.Println("  k8s-provisioner vault get k8s-provisioner/kubeconfig-oidc config > ~/.kube/config-oidc")
+	fmt.Println("\nOr add OIDC credentials manually (trust the lab CA — do NOT skip TLS verification):")
+	fmt.Printf(`  # export the lab CA first:
+  k8s-provisioner vault get k8s-provisioner/api-keys >/dev/null  # ensure Vault reachable
+  kubectl get secret lab-ca-secret -n cert-manager -o jsonpath='{.data.tls\.crt}' | base64 -d > ~/.kube/lab-ca.crt
+  kubectl config set-credentials oidc \
     --exec-api-version=client.authentication.k8s.io/v1beta1 \
     --exec-command=kubectl \
     --exec-arg=oidc-login \
@@ -195,9 +211,9 @@ func (k *Keycloak) printAccessInfo(cpIP, issuerURL string) {
     --exec-arg=--oidc-issuer-url=%s \
     --exec-arg=--oidc-client-id=kubectl \
     --exec-arg=--oidc-pkce-method=auto \
-    --exec-arg=--insecure-skip-tls-verify \
+    --exec-arg=--certificate-authority=%s/.kube/lab-ca.crt \
     --exec-arg=--listen-address=%s
-`, issuerURL, kubeloginListenAddr)
+`, issuerURL, "$HOME", kubeloginListenAddr)
 	fmt.Println("\nTest login:")
 	fmt.Println("  kubectl get nodes --user=oidc")
 	fmt.Println("\n--- Grafana SSO ---")

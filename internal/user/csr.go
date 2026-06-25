@@ -61,18 +61,31 @@ func (c *certIssuer) CreateCSR(key *rsa.PrivateKey, username string, groups []st
 	}), nil
 }
 
+// MaxCertExpirationDays caps a certificate's requested lifetime. It keeps the
+// days→seconds→int32 conversion in Submit from overflowing (3650 days ≈ 10y, far
+// below the int32 second ceiling of ~24855 days) and rejects nonsensical/negative
+// values before they reach the Kubernetes CSR API.
+const MaxCertExpirationDays = 3650
+
 // Submit (re)creates the CSR object in the cluster, replacing any existing one
 // with the same name.
 func (c *certIssuer) Submit(name string, csrPEM []byte, expirationDays int) error {
 	ctx, cancel := apiCtx()
 	defer cancel()
 
+	// Defensive bound (the CLI also validates): guarantees the int32 conversion
+	// below cannot overflow or go negative regardless of caller.
+	if expirationDays < 1 || expirationDays > MaxCertExpirationDays {
+		return fmt.Errorf("expiration %d out of range (must be 1..%d days)", expirationDays, MaxCertExpirationDays)
+	}
+
 	// Delete existing CSR if it exists
 	_ = c.clientset.CertificatesV1().CertificateSigningRequests().Delete(
 		ctx, name, metav1.DeleteOptions{})
 
 	expirationSeconds := expirationDays * 24 * 60 * 60 // days to seconds
-	expiration := int32(expirationSeconds)             // #nosec G115
+	// Bounded above by MaxCertExpirationDays, so this conversion cannot overflow. #nosec G115
+	expiration := int32(expirationSeconds)
 
 	csr := &certificates.CertificateSigningRequest{
 		ObjectMeta: metav1.ObjectMeta{

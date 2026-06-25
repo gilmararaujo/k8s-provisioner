@@ -1,17 +1,52 @@
 package installer
 
 import (
+	"encoding/base64"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/techiescamp/k8s-provisioner/internal/executor"
 )
 
+// clusterCABase64 returns the base64-encoded cluster CA (the CA that signs the
+// API server cert), used as certificate-authority-data so the kubeconfig can
+// verify TLS to the API server instead of skipping verification.
+func clusterCABase64() (string, error) {
+	pem, err := os.ReadFile("/etc/kubernetes/pki/ca.crt")
+	if err != nil {
+		return "", fmt.Errorf("read cluster CA: %w", err)
+	}
+	return base64.StdEncoding.EncodeToString(pem), nil
+}
+
+// labCABase64 returns the lab CA (base64 PEM, as stored in lab-ca-secret) that
+// signs the cert Istio serves for https://keycloak.local. kubelogin needs it to
+// verify TLS to the OIDC issuer instead of --insecure-skip-tls-verify.
+func (k *Keycloak) labCABase64() (string, error) {
+	out, err := k.exec.RunShell(
+		"kubectl get secret lab-ca-secret -n cert-manager -o jsonpath='{.data.tls\\.crt}'")
+	b64 := strings.TrimSpace(out)
+	if err != nil || b64 == "" {
+		return "", fmt.Errorf("read lab CA (secret lab-ca-secret in cert-manager): %w", err)
+	}
+	return b64, nil
+}
+
 func (k *Keycloak) storeKubeconfigInVault(cpIP, issuerURL string) error {
 	token := ResolveVaultToken(k.config.Vault.Token)
 	if !k.config.Vault.Enabled || k.config.VaultAddress() == "" || token == "" {
 		return fmt.Errorf("vault not configured")
+	}
+
+	clusterCA, err := clusterCABase64()
+	if err != nil {
+		return err
+	}
+	labCA, err := k.labCABase64()
+	if err != nil {
+		return err
 	}
 
 	kubeconfig := fmt.Sprintf(`apiVersion: v1
@@ -20,7 +55,7 @@ clusters:
 - name: k8s-lab
   cluster:
     server: https://%s:%d
-    insecure-skip-tls-verify: true
+    certificate-authority-data: %s
 contexts:
 - name: k8s-lab
   context:
@@ -39,9 +74,9 @@ users:
         - --oidc-issuer-url=%s
         - --oidc-client-id=kubectl
         - --oidc-pkce-method=auto
-        - --insecure-skip-tls-verify
+        - --certificate-authority-data=%s
         - --listen-address=%s
-`, cpIP, apiServerPort, issuerURL, kubeloginListenAddr)
+`, cpIP, apiServerPort, clusterCA, issuerURL, labCA, kubeloginListenAddr)
 
 	vault := NewVaultClient(k.config.VaultAddress(), token)
 	if err := vault.WriteSecret("k8s-provisioner/kubeconfig-oidc", map[string]string{
@@ -78,7 +113,6 @@ jwt:
     certificateAuthority: |
 %s    audiences:
     - kubectl
-    - account
     audienceMatchPolicy: MatchAny
   claimMappings:
     username:

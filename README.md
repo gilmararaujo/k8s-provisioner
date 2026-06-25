@@ -131,6 +131,29 @@ Grafana reuses the same Keycloak realm for SSO (OAuth2). See
 [Keycloak (Identity Provider / SSO)](#keycloak-identity-provider--sso) for the
 full login walkthrough.
 
+### Security posture (lab) & accepted risks
+
+This is a **lab/learning cluster**, not a production environment. The threat model
+assumes a trusted operator and a trusted local network; nothing is exposed to the
+internet. The following are **deliberate, accepted trade-offs** for that context — they
+are decisions, not oversights — and would need hardening before handling real user data:
+
+- **No TLS on the Keycloak↔Postgres connection** and **no encryption at rest** for the
+  Postgres data (it lives on a plaintext NFS export). Anyone with in-cluster network
+  position or node/NFS filesystem access could read identity data. *Hardening path:* an
+  Istio `PeerAuthentication` scoped to the Postgres workload (mTLS) and an encrypted
+  StorageClass.
+- **Vault runs over plaintext HTTP** (`http://<storage>:8200`) as a systemd service on the
+  storage node, so bootstrap traffic (tokens, credentials) is cleartext on the node
+  network. *Hardening path:* enable TLS on Vault and use `https://…:8200`.
+- **No database backups, audit logging, or retention/erasure policy**, and the Keycloak
+  app uses the owning Postgres account (no least-privilege runtime role). Appropriate for
+  ephemeral lab data; not for production.
+
+Credentials are never hardcoded — they are randomly generated and stored in Vault, synced
+to Kubernetes Secrets via VSO. The Postgres `Service` is `ClusterIP` (not exposed outside
+the cluster).
+
 ## Project Structure
 
 ```
@@ -264,6 +287,77 @@ echo "192.168.56.20 vault.local" | sudo tee -a /etc/hosts
 | `karpor.local` | Karpor Explorer | https://karpor.local | — |
 | `keycloak.local` | Keycloak SSO | https://keycloak.local | `admin` / Vault |
 | `vault.local` | Vault | http://vault.local:8200 | root token from `vault-init.json` |
+
+### 6. Trust the lab CA (removes browser TLS warnings)
+
+All `*.local` services are served over TLS by Istio using a certificate signed by a
+self-signed **lab CA** (`k8s-lab-ca`, managed by cert-manager). Until your machine trusts
+that CA, the browser shows a *"your connection is not private"* warning. Trusting it once
+fixes every `*.local` host (Grafana, Keycloak, Kiali, …) and is required for a clean
+Grafana/Keycloak SSO and a green lock.
+
+> ⚠️ The remote command **must keep the jsonpath single-quoted on the node**, so wrap the
+> whole thing in double quotes. If you single-quote the outer command, `/tmp/lab-ca.crt`
+> comes out empty.
+
+**macOS:**
+
+```bash
+# 1. Export the lab CA from the cluster (run from the vagrant/ directory)
+vagrant ssh controlplane -c \
+  "kubectl get secret lab-ca-secret -n cert-manager -o jsonpath='{.data.tls\.crt}' | base64 -d" \
+  > /tmp/lab-ca.crt
+
+# 2. Sanity-check it (should print: subject= /CN=k8s-lab-ca)
+openssl x509 -in /tmp/lab-ca.crt -noout -subject
+
+# 3. Trust it system-wide, then fully quit & reopen the browser
+sudo security add-trusted-cert -d -r trustRoot \
+  -k /Library/Keychains/System.keychain /tmp/lab-ca.crt
+```
+
+**Linux:**
+
+```bash
+vagrant ssh controlplane -c \
+  "kubectl get secret lab-ca-secret -n cert-manager -o jsonpath='{.data.tls\.crt}' | base64 -d" \
+  | sudo tee /usr/local/share/ca-certificates/k8s-lab-ca.crt > /dev/null
+sudo update-ca-certificates
+```
+
+To verify the chain is correct (expected `Verify return code: 0 (ok)`):
+
+```bash
+echo | openssl s_client -connect grafana.local:443 -servername grafana.local \
+  -CAfile /tmp/lab-ca.crt 2>/dev/null | grep "Verify return code"
+```
+
+### 7. kubectl login via Keycloak (OIDC)
+
+The cluster's API server trusts Keycloak as an OIDC provider. Group → role mapping:
+`k8s-admins` → `cluster-admin`, `k8s-developers` → `view`. A ready-made kubeconfig
+(CA-verified, no `insecure-skip-tls-verify`) is generated and stored in Vault.
+
+```bash
+# Install the kubelogin plugin (one-time)
+brew install int128/kubelogin/kubelogin          # macOS
+kubectl krew install oidc-login                   # or via krew
+
+# Fetch the prepared OIDC kubeconfig from Vault (run from the vagrant/ directory)
+vagrant ssh controlplane -c \
+  'sudo k8s-provisioner vault get k8s-provisioner/kubeconfig-oidc config -c /etc/k8s-provisioner/config.yaml' \
+  > ~/.kube/config-oidc
+
+# Look up the test-user password (group k8s-admins → cluster-admin)
+vagrant ssh controlplane -c \
+  'sudo k8s-provisioner vault get k8s-provisioner/api-keys keycloak_k8sadmin_password -c /etc/k8s-provisioner/config.yaml'
+
+# Use it — a browser opens for Keycloak login (user: k8sadmin)
+KUBECONFIG=~/.kube/config-oidc kubectl get nodes
+```
+
+> Requires steps 5 (`/etc/hosts`) and 6 (trust the lab CA) first, since kubelogin
+> talks to `https://keycloak.local`.
 
 ## CLI Commands
 
@@ -1230,6 +1324,59 @@ sum by (pod) (count_over_time({namespace="default"} |= "error" [5m]))
 | `12611` | Loki & Alloy | Logs with Alloy stats |
 | `15141` | Loki Logs | Simple log viewer |
 
+### API Server Audit Logs
+
+The control plane is bootstrapped with **Kubernetes API server audit logging** enabled. The
+provisioner runs `kubeadm init` from a generated `ClusterConfiguration`
+(`internal/provisioner/provisioner.go`) that sets `--audit-policy-file` and
+`--audit-log-path=-`. Writing to `-` (stdout) means audit events become part of the
+`kube-apiserver` container's log stream, so the **existing Alloy collector ships them to Loki
+via the Kubernetes API — the same path as every other pod log**. No file on disk, no
+privileged log shipper.
+
+**Audit policy** (`/etc/kubernetes/audit/policy.yaml`, first match wins):
+
+| What | Level |
+|------|-------|
+| `get`/`list`/`watch`, health/version/metrics endpoints | `None` (dropped — high volume, low value) |
+| `secrets`, `serviceaccounts`, RBAC roles/bindings (mutations) | `RequestResponse` (full body) |
+| `pods/exec`, `pods/attach`, `pods/portforward` | `Request` |
+| every other create/update/delete/patch | `Metadata` |
+
+> Note: reads of secrets are *not* logged (matched by the `get/list/watch = None` rule first)
+> to bound volume. Reorder the policy if secret reads must be audited.
+
+**View in Grafana (Explore → Loki):**
+
+```logql
+# All API server audit events
+{container="kube-apiserver"} | json | kind = "Event"
+
+# Secret/RBAC mutations only
+{container="kube-apiserver"} | json | objectRef_resource =~ "secrets|roles|rolebindings|clusterroles|clusterrolebindings"
+
+# Who exec'd into a pod
+{container="kube-apiserver"} | json | objectRef_subresource = "exec"
+```
+
+**View on the node (raw):**
+
+```bash
+kubectl logs -n kube-system kube-apiserver-controlplane | grep '"audit.k8s.io/v1"' | jq .
+```
+
+**Verify it works:**
+
+```bash
+kubectl create secret generic audit-test --from-literal=k=v
+# then query Loki/Grafana — a RequestResponse event for 'create secrets' should appear
+```
+
+> Trade-off (lab): audit events are interleaved with the API server's operational logs (filter
+> by `{container="kube-apiserver"}`), and there is no separate on-node audit file. In exchange,
+> audit is shipped off-node to Loki with zero extra infrastructure. For stricter setups, switch
+> `--audit-log-path` to a file with rotation and add a dedicated (privileged) log shipper.
+
 ## Tracing Stack (OpenTelemetry + Grafana Tempo)
 
 Enabled via `components.tracing: "otel-tempo"`, this stack adds distributed tracing to complete the three pillars of observability.
@@ -1863,17 +2010,18 @@ Keycloak provides OIDC authentication for `kubectl` and Single Sign-On (SSO) for
 ### Access
 
 ```bash
-# NodePort — accessible without /etc/hosts
-open http://192.168.56.10:30080
-
-# Or via Istio Gateway (requires /etc/hosts entry — see Quick Start step 5)
+# Via Istio Gateway, TLS (requires /etc/hosts entry — see Quick Start step 5)
 open https://keycloak.local
 ```
+
+The Keycloak `Service` is `ClusterIP` (not exposed outside the cluster); all access is
+through the TLS gateway. Realm/client/user configuration is applied in-cluster via
+`kubectl exec` (`kcadm.sh`), so no external port is needed.
 
 ### Admin credentials
 
 ```
-URL:      http://192.168.56.10:30080  (or https://keycloak.local via Istio)
+URL:      https://keycloak.local  (TLS via Istio Gateway)
 Username: admin
 Password: (from Vault → secret/k8s-provisioner/api-keys → keycloak_admin_password)
 ```

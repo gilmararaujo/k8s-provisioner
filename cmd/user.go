@@ -122,6 +122,10 @@ func runUserCreate(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("--namespace is required when using --role")
 	}
 
+	if userExpiration < 1 || userExpiration > user.MaxCertExpirationDays {
+		return fmt.Errorf("--expiration must be between 1 and %d days", user.MaxCertExpirationDays)
+	}
+
 	if userClusterRole == "" && userRole == "" {
 		fmt.Println("Warning: No --cluster-role or --role specified. User will have no permissions.")
 		fmt.Println("You can add permissions later using kubectl or this tool.")
