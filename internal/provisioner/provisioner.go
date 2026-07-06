@@ -140,6 +140,8 @@ func (p *Provisioner) writeKubeadmConfig() (string, error) {
 		return configPath, nil
 	}
 
+	// Past the dry-run guard above, so these writes go straight through
+	// executor.WriteFile rather than p.writeFile (which re-checks dry-run).
 	if _, err := p.exec.RunShell("mkdir -p " + auditDir); err != nil {
 		return "", fmt.Errorf("create audit policy directory: %w", err)
 	}
@@ -240,43 +242,75 @@ func (p *Provisioner) workloadSteps() []workloadStep {
 	enabledMonitoring := func(c *config.Config) bool { return c.Components.Monitoring == "prometheus-stack" }
 
 	return []workloadStep{
-		{build: func(c *config.Config, e executor.CommandExecutor) installer.Installer {
-			return installer.NewMetalLB(c, e)
-		}, fatal: true},
-		{build: func(c *config.Config, e executor.CommandExecutor) installer.Installer {
-			return installer.NewIstio(c, e)
-		}, fatal: true},
-		// cert-manager: TLS certificates for all *.local services.
-		{build: func(c *config.Config, e executor.CommandExecutor) installer.Installer {
-			return installer.NewCertManager(c, e)
-		}},
-		{build: func(c *config.Config, e executor.CommandExecutor) installer.Installer {
-			return installer.NewMetricsServer(c, e)
-		}, fatal: true},
+		{
+			build: func(c *config.Config, e executor.CommandExecutor) installer.Installer {
+				return installer.NewMetalLB(c, e)
+			},
+			fatal: true,
+		},
+		{
+			build: func(c *config.Config, e executor.CommandExecutor) installer.Installer {
+				return installer.NewIstio(c, e)
+			},
+			fatal: true,
+		},
+		{
+			// cert-manager: TLS certificates for all *.local services.
+			build: func(c *config.Config, e executor.CommandExecutor) installer.Installer {
+				return installer.NewCertManager(c, e)
+			},
+		},
+		{
+			build: func(c *config.Config, e executor.CommandExecutor) installer.Installer {
+				return installer.NewMetricsServer(c, e)
+			},
+			fatal: true,
+		},
 		{
 			enabled: func(c *config.Config) bool { return c.Components.VPA == "enabled" },
-			build:   func(c *config.Config, e executor.CommandExecutor) installer.Installer { return installer.NewVPA(c, e) },
+			build: func(c *config.Config, e executor.CommandExecutor) installer.Installer {
+				return installer.NewVPA(c, e)
+			},
 		},
 		{
 			enabled: func(c *config.Config) bool { return c.Components.KEDA == "enabled" },
-			build:   func(c *config.Config, e executor.CommandExecutor) installer.Installer { return installer.NewKEDA(c, e) },
+			build: func(c *config.Config, e executor.CommandExecutor) installer.Installer {
+				return installer.NewKEDA(c, e)
+			},
 		},
-		// NFS provisioner: provides nfs-dynamic and nfs-static StorageClasses.
-		{build: func(c *config.Config, e executor.CommandExecutor) installer.Installer {
-			return installer.NewNFSProvisioner(c, e)
-		}, fatal: true},
-		// Vault runs on the storage node (secrets management).
-		{build: func(c *config.Config, e executor.CommandExecutor) installer.Installer {
-			return installer.NewVaultInstaller(c, e)
-		}},
-		// VSO syncs Vault secrets into K8s Secrets before components start.
-		{build: func(c *config.Config, e executor.CommandExecutor) installer.Installer {
-			return installer.NewVaultSecretsOperator(c, e)
-		}},
-		{enabled: enabledMonitoring, build: func(c *config.Config, e executor.CommandExecutor) installer.Installer {
-			return installer.NewMonitoring(c, e)
-		}, fatal: true},
-		{enabled: enabledMonitoring, build: func(c *config.Config, e executor.CommandExecutor) installer.Installer { return installer.NewLoki(c, e) }, fatal: true},
+		{
+			// NFS provisioner: provides nfs-dynamic and nfs-static StorageClasses.
+			build: func(c *config.Config, e executor.CommandExecutor) installer.Installer {
+				return installer.NewNFSProvisioner(c, e)
+			},
+			fatal: true,
+		},
+		{
+			// Vault runs on the storage node (secrets management).
+			build: func(c *config.Config, e executor.CommandExecutor) installer.Installer {
+				return installer.NewVaultInstaller(c, e)
+			},
+		},
+		{
+			// VSO syncs Vault secrets into K8s Secrets before components start.
+			build: func(c *config.Config, e executor.CommandExecutor) installer.Installer {
+				return installer.NewVaultSecretsOperator(c, e)
+			},
+		},
+		{
+			enabled: enabledMonitoring,
+			build: func(c *config.Config, e executor.CommandExecutor) installer.Installer {
+				return installer.NewMonitoring(c, e)
+			},
+			fatal: true,
+		},
+		{
+			enabled: enabledMonitoring,
+			build: func(c *config.Config, e executor.CommandExecutor) installer.Installer {
+				return installer.NewLoki(c, e)
+			},
+			fatal: true,
+		},
 		{
 			// Tracing requires the monitoring stack and otel-tempo enabled.
 			enabled: func(c *config.Config) bool { return enabledMonitoring(c) && c.Components.Tracing == "otel-tempo" },
@@ -284,10 +318,13 @@ func (p *Provisioner) workloadSteps() []workloadStep {
 				return installer.NewTempo(c, e)
 			},
 		},
-		// Kiali: service mesh observability — requires Prometheus.
-		{enabled: enabledMonitoring, build: func(c *config.Config, e executor.CommandExecutor) installer.Installer {
-			return installer.NewKiali(c, e)
-		}},
+		{
+			// Kiali: service mesh observability — requires Prometheus.
+			enabled: enabledMonitoring,
+			build: func(c *config.Config, e executor.CommandExecutor) installer.Installer {
+				return installer.NewKiali(c, e)
+			},
+		},
 		{
 			// Keycloak after monitoring so Grafana OAuth2 can be configured later.
 			enabled: func(c *config.Config) bool { return c.Components.Keycloak == "enabled" },

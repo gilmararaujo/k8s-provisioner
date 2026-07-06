@@ -24,11 +24,11 @@ const (
 	// inline literal — see NM-4).
 	keycloakStartTimeout   = 20 * time.Minute // first start includes a build step
 	adminSecretSyncTimeout = 2 * time.Minute  // VSO sync of the keycloak-admin secret
-	oauthRetryDelay        = 20 * time.Second  // backoff between Grafana OAuth attempts
-	apiServerRestartWait   = 20 * time.Second  // settle time before polling /healthz
-	apiServerHealthTimeout = 2 * time.Minute   // apiserver back-online after OIDC patch
-	webhookRegisterWait    = 10 * time.Second  // let the cert-manager webhook register
-	caSecretWaitTimeout    = 60 * time.Second  // wait for the lab CA secret to exist
-	certReadyTimeout       = 2 * time.Minute   // wait for the lab TLS certificate
-	vaultReadyTimeout      = 3 * time.Minute   // wait for Vault to be reachable
+	oauthRetryDelay        = 20 * time.Second // backoff between Grafana OAuth attempts
+	apiServerRestartWait   = 20 * time.Second // settle time before polling /healthz
+	apiServerHealthTimeout = 2 * time.Minute  // apiserver back-online after OIDC patch
+	webhookRegisterWait    = 10 * time.Second // let the cert-manager webhook register
+	caSecretWaitTimeout    = 60 * time.Second // wait for the lab CA secret to exist
+	certReadyTimeout       = 2 * time.Minute  // wait for the lab TLS certificate
+	vaultReadyTimeout      = 3 * time.Minute  // wait for Vault to be reachable
 )

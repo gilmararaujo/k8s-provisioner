@@ -31,15 +31,18 @@ func NewVaultInstaller(cfg *config.Config, exec executor.ShellExecutor) *VaultIn
 	return &VaultInstaller{config: cfg, exec: exec, address: cfg.VaultAddress()}
 }
 
+// vaultKeyShares / vaultKeyThreshold define the Shamir split for the Vault
+// master key: SecretShares unseal keys are generated, of which any
+// SecretThreshold are required to unseal. The unseal loop below reuses
+// vaultKeyThreshold so the two never drift apart.
+const (
+	vaultKeyShares    = 5
+	vaultKeyThreshold = 3
+)
+
 type vaultInitRequest struct {
 	SecretShares    int `json:"secret_shares"`
 	SecretThreshold int `json:"secret_threshold"`
-}
-
-type vaultInitResponse struct {
-	Keys             []string `json:"keys"`
-	RootToken        string   `json:"root_token"`
-	ProvisionerToken string   `json:"provisioner_token,omitempty"`
 }
 
 func (v *VaultInstaller) Install() error {
@@ -75,11 +78,9 @@ func (v *VaultInstaller) Install() error {
 		fmt.Printf("Warning: failed to enable KV secrets engine: %v\n", err)
 	}
 
-	if true {
-		fmt.Println("Configuring Kubernetes auth method...")
-		if err := v.configureK8sAuth(rootToken); err != nil {
-			fmt.Printf("Warning: failed to configure k8s auth: %v\n", err)
-		}
+	fmt.Println("Configuring Kubernetes auth method...")
+	if err := v.configureK8sAuth(rootToken); err != nil {
+		fmt.Printf("Warning: failed to configure k8s auth: %v\n", err)
 	}
 
 	fmt.Println("Storing API secrets in Vault...")
@@ -131,7 +132,7 @@ func (v *VaultInstaller) isInitialized() (bool, error) {
 }
 
 func (v *VaultInstaller) initialize() (string, error) {
-	initReq := vaultInitRequest{SecretShares: 5, SecretThreshold: 3}
+	initReq := vaultInitRequest{SecretShares: vaultKeyShares, SecretThreshold: vaultKeyThreshold}
 	initResp, err := v.vaultPost("/v1/sys/init", "", initReq)
 	if err != nil {
 		return "", fmt.Errorf("init request failed: %w", err)
@@ -144,9 +145,9 @@ func (v *VaultInstaller) initialize() (string, error) {
 		return "", fmt.Errorf("unexpected init response: %v", initResp)
 	}
 
-	// Unseal with first 3 keys (threshold=3)
+	// Unseal with the first vaultKeyThreshold keys.
 	fmt.Println("Unsealing Vault...")
-	for i := 0; i < 3; i++ {
+	for i := 0; i < vaultKeyThreshold; i++ {
 		key, _ := keys[i].(string)
 		if _, err := v.vaultPut("/v1/sys/unseal", "", map[string]interface{}{"key": key}); err != nil {
 			return "", fmt.Errorf("unseal attempt %d failed: %w", i+1, err)
@@ -163,7 +164,7 @@ func (v *VaultInstaller) initialize() (string, error) {
 	}
 
 	// Persist init data on controlplane
-	initData := vaultInitResponse{RootToken: rootToken, ProvisionerToken: provToken}
+	initData := vaultInitData{RootToken: rootToken, ProvisionerToken: provToken}
 	for _, k := range keys {
 		if s, ok := k.(string); ok {
 			initData.Keys = append(initData.Keys, s)
@@ -250,7 +251,7 @@ func (v *VaultInstaller) loadRootToken() (string, error) {
 		env, opts, user, storageIP, VaultInitFileRemote,
 	))
 	if err == nil && out != "" {
-		var init vaultInitResponse
+		var init vaultInitData
 		if jsonErr := json.Unmarshal([]byte(out), &init); jsonErr == nil && init.RootToken != "" {
 			return init.RootToken, nil
 		}
@@ -261,7 +262,7 @@ func (v *VaultInstaller) loadRootToken() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("vault-init.json not found on storage node or controlplane")
 	}
-	var init vaultInitResponse
+	var init vaultInitData
 	if err := json.Unmarshal(data, &init); err != nil {
 		return "", err
 	}
@@ -271,7 +272,7 @@ func (v *VaultInstaller) loadRootToken() (string, error) {
 	return init.RootToken, nil
 }
 
-func (v *VaultInstaller) saveInitData(data vaultInitResponse) error {
+func (v *VaultInstaller) saveInitData(data vaultInitData) error {
 	raw, err := json.MarshalIndent(data, "", "  ")
 	if err != nil {
 		return err
@@ -311,7 +312,7 @@ func (v *VaultInstaller) saveInitData(data vaultInitResponse) error {
 	}
 
 	fmt.Printf("Vault init data saved to %s:%s\n", storageIP, VaultInitFileRemote)
-	fmt.Printf("Backup local em: %s\n", localPath)
+	fmt.Printf("Local backup at: %s\n", localPath)
 	return nil
 }
 
@@ -433,8 +434,8 @@ func (v *VaultInstaller) storeAPISecrets(token string) error {
 	// installed. Usernames are non-secret constants; every password/secret is
 	// randomly generated on first run (never a hardcoded default) and persisted
 	// here so it survives and is recoverable via `k8s-provisioner vault get`.
-	secrets["keycloak_admin_username"] = v.resolveOrDefaultStr(token, "keycloak_admin_username", "admin")
-	secrets["keycloak_postgres_username"] = v.resolveOrDefaultStr(token, "keycloak_postgres_username", "keycloak")
+	secrets["keycloak_admin_username"] = v.resolveOrDefault(token, "keycloak_admin_username", "admin")
+	secrets["keycloak_postgres_username"] = v.resolveOrDefault(token, "keycloak_postgres_username", "keycloak")
 	for _, key := range []string{
 		"keycloak_admin_password",
 		"keycloak_postgres_password",
@@ -460,32 +461,39 @@ func (v *VaultInstaller) storeAPISecrets(token string) error {
 	return nil
 }
 
-// resolveOrDefaultStr returns the existing Vault value for key, or fallback if absent.
-func (v *VaultInstaller) resolveOrDefaultStr(token, key, fallback string) string {
+// lookupSecretValue returns the stored value for key under the api-keys path, or
+// "" if the secret, its KV-v2 envelope, or the key itself is absent. It decodes
+// the nested {"data":{"data":{...}}} KV-v2 response shape in one place.
+func (v *VaultInstaller) lookupSecretValue(token, key string) string {
 	existing, err := v.vaultGet("/v1/secret/data/k8s-provisioner/api-keys", token)
-	if err == nil {
-		if data, ok := existing["data"].(map[string]interface{}); ok {
-			if inner, ok := data["data"].(map[string]interface{}); ok {
-				if val, ok := inner[key].(string); ok && val != "" {
-					return val
-				}
-			}
-		}
+	if err != nil {
+		return ""
+	}
+	data, ok := existing["data"].(map[string]interface{})
+	if !ok {
+		return ""
+	}
+	inner, ok := data["data"].(map[string]interface{})
+	if !ok {
+		return ""
+	}
+	val, _ := inner[key].(string)
+	return val
+}
+
+// resolveOrDefault returns the existing Vault value for key, or fallback if absent.
+func (v *VaultInstaller) resolveOrDefault(token, key, fallback string) string {
+	if val := v.lookupSecretValue(token, key); val != "" {
+		return val
 	}
 	return fallback
 }
 
-// resolveOrGenerate retorna o valor existente no Vault ou gera um novo.
+// resolveOrGenerate returns the existing Vault value for key, or a freshly
+// generated password if none is stored yet.
 func (v *VaultInstaller) resolveOrGenerate(token, key string) (string, error) {
-	existing, err := v.vaultGet("/v1/secret/data/k8s-provisioner/api-keys", token)
-	if err == nil {
-		if data, ok := existing["data"].(map[string]interface{}); ok {
-			if inner, ok := data["data"].(map[string]interface{}); ok {
-				if val, ok := inner[key].(string); ok && val != "" {
-					return val, nil
-				}
-			}
-		}
+	if val := v.lookupSecretValue(token, key); val != "" {
+		return val, nil
 	}
 	return generatePassword(16)
 }
@@ -566,19 +574,19 @@ func (v *VaultInstaller) vaultRequest(method, path, token string, body interface
 
 func (v *VaultInstaller) printAccessInfo() {
 	fmt.Println("\n" + strings.Repeat("=", 50))
-	fmt.Println("   HashiCorp Vault configurado com sucesso!")
+	fmt.Println("   HashiCorp Vault configured successfully!")
 	fmt.Println(strings.Repeat("=", 50))
 	fmt.Printf("\nVault UI:  %s/ui\n", v.address)
 	fmt.Printf("Vault API: %s\n", v.address)
-	fmt.Printf("\nCredenciais salvas em: %s\n", VaultInitFileLocal)
-	fmt.Println("\nPara usar o Vault:")
+	fmt.Printf("\nCredentials saved at: %s\n", VaultInitFileLocal)
+	fmt.Println("\nTo use Vault:")
 	fmt.Printf("  export VAULT_ADDR=%s\n", v.address)
 	fmt.Printf("  export VAULT_TOKEN=$(cat %s | jq -r .root_token)\n", VaultInitFileLocal)
-	fmt.Println("\nPara ler todos os secrets:")
+	fmt.Println("\nTo read all secrets:")
 	fmt.Println("  vault kv get secret/k8s-provisioner/api-keys")
-	fmt.Println("\nSenha do Grafana:")
+	fmt.Println("\nGrafana password:")
 	fmt.Println("  vault kv get -field=grafana_admin_password secret/k8s-provisioner/api-keys")
-	fmt.Println("\nAutenticação Kubernetes (em pods):")
+	fmt.Println("\nKubernetes authentication (in pods):")
 	fmt.Println("  vault write auth/kubernetes/login role=k8s-provisioner jwt=$SA_TOKEN")
 	fmt.Println(strings.Repeat("=", 50))
 }

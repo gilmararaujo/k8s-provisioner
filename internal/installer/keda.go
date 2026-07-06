@@ -74,10 +74,10 @@ func (k *KEDA) waitForReady(timeout time.Duration) error {
 
 func (k *KEDA) printAccessInfo() {
 	fmt.Println("\n" + strings.Repeat("=", 50))
-	fmt.Println("   KEDA instalado!")
+	fmt.Println("   KEDA installed!")
 	fmt.Println(strings.Repeat("=", 50))
-	fmt.Println("\nEscalers disponíveis: Prometheus, Kafka, Redis, RabbitMQ, HTTP, Cron e mais.")
-	fmt.Println("\nExemplo — ScaledObject com Prometheus:")
+	fmt.Println("\nAvailable scalers: Prometheus, Kafka, Redis, RabbitMQ, HTTP, Cron and more.")
+	fmt.Println("\nExample — ScaledObject with Prometheus:")
 	fmt.Println(`  apiVersion: keda.sh/v1alpha1
   kind: ScaledObject
   metadata:
@@ -94,8 +94,8 @@ func (k *KEDA) printAccessInfo() {
         metricName: http_requests_total
         threshold: "100"
         query: sum(rate(http_requests_total[2m]))`)
-	fmt.Println("\nPara verificar:")
+	fmt.Println("\nTo verify:")
 	fmt.Println("  kubectl get scaledobject -A")
-	fmt.Println("  kubectl get hpa -A  # KEDA cria um HPA por baixo")
+	fmt.Println("  kubectl get hpa -A  # KEDA creates an HPA under the hood")
 	fmt.Println(strings.Repeat("=", 50))
 }
