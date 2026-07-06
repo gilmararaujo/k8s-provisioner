@@ -74,10 +74,10 @@ func (v *VPA) waitForReady(timeout time.Duration) error {
 
 func (v *VPA) printAccessInfo() {
 	fmt.Println("\n" + strings.Repeat("=", 50))
-	fmt.Println("   VPA instalado!")
+	fmt.Println("   VPA installed!")
 	fmt.Println(strings.Repeat("=", 50))
-	fmt.Println("\nComponentes: Recommender, Updater, Admission Controller")
-	fmt.Println("\nExemplo — VerticalPodAutoscaler em modo Auto:")
+	fmt.Println("\nComponents: Recommender, Updater, Admission Controller")
+	fmt.Println("\nExample — VerticalPodAutoscaler in Auto mode:")
 	fmt.Println(`  apiVersion: autoscaling.k8s.io/v1
   kind: VerticalPodAutoscaler
   metadata:
@@ -89,7 +89,7 @@ func (v *VPA) printAccessInfo() {
       kind: Deployment
       name: prometheus
     updatePolicy:
-      updateMode: "Auto"   # Recreate, Initial ou Off (só recomendação)
+      updateMode: "Auto"   # Recreate, Initial or Off (recommendation only)
     resourcePolicy:
       containerPolicies:
       - containerName: prometheus
@@ -99,9 +99,9 @@ func (v *VPA) printAccessInfo() {
         maxAllowed:
           cpu: 2
           memory: 2Gi`)
-	fmt.Println("\nPara ver recomendações:")
+	fmt.Println("\nTo view recommendations:")
 	fmt.Println("  kubectl get vpa -A")
 	fmt.Println("  kubectl describe vpa <name> -n <namespace>")
-	fmt.Println("\nAtenção: não use VPA e HPA/KEDA no mesmo deployment.")
+	fmt.Println("\nWarning: do not use VPA and HPA/KEDA on the same deployment.")
 	fmt.Println(strings.Repeat("=", 50))
 }

@@ -11,12 +11,12 @@ import (
 )
 
 type Config struct {
-	Cluster    ClusterConfig    `yaml:"cluster"`
-	Versions   VersionsConfig   `yaml:"versions"`
-	Network    NetworkConfig    `yaml:"network"`
-	Storage    StorageConfig    `yaml:"storage"`
-	Nodes      []NodeConfig     `yaml:"nodes"`
-	Components ComponentsConfig `yaml:"components"`
+	Cluster      ClusterConfig      `yaml:"cluster"`
+	Versions     VersionsConfig     `yaml:"versions"`
+	Network      NetworkConfig      `yaml:"network"`
+	Storage      StorageConfig      `yaml:"storage"`
+	Nodes        []NodeConfig       `yaml:"nodes"`
+	Components   ComponentsConfig   `yaml:"components"`
 	KarporAI     KarporAIConfig     `yaml:"karpor_ai"`
 	Ollama       OllamaConfig       `yaml:"ollama"`
 	Vault        VaultConfig        `yaml:"vault"`
@@ -137,7 +137,7 @@ func Load(path string) (*Config, error) {
 	// plane IP from the controlplane node when network.controlplane_ip is unset,
 	// so the address is not duplicated in config.yaml.
 	if cfg.Network.ControlPlaneIP == "" {
-		if cp := cfg.GetControlPlane(); cp != nil {
+		if cp := cfg.ControlPlaneNode(); cp != nil {
 			cfg.Network.ControlPlaneIP = cp.IP
 		}
 	}
@@ -350,7 +350,7 @@ func validateIPRange(ipRange string) error {
 	return nil
 }
 
-func (c *Config) GetControlPlane() *NodeConfig {
+func (c *Config) ControlPlaneNode() *NodeConfig {
 	for _, node := range c.Nodes {
 		if node.Role == "controlplane" {
 			return &node
@@ -359,7 +359,7 @@ func (c *Config) GetControlPlane() *NodeConfig {
 	return nil
 }
 
-func (c *Config) GetStorageNode() *NodeConfig {
+func (c *Config) StorageNode() *NodeConfig {
 	for _, node := range c.Nodes {
 		if node.Role == "storage" {
 			return &node
@@ -371,7 +371,7 @@ func (c *Config) GetStorageNode() *NodeConfig {
 // StorageIP returns the storage node IP from config (nodes:), or "" if no
 // storage node is defined. No hardcoded fallback — node IPs are authoritative.
 func (c *Config) StorageIP() string {
-	if n := c.GetStorageNode(); n != nil {
+	if n := c.StorageNode(); n != nil {
 		return n.IP
 	}
 	return ""
@@ -390,7 +390,7 @@ func (c *Config) VaultAddress() string {
 	return ""
 }
 
-func (c *Config) GetWorkers() []NodeConfig {
+func (c *Config) Workers() []NodeConfig {
 	var workers []NodeConfig
 	for _, node := range c.Nodes {
 		if node.Role == "worker" {

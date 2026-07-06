@@ -182,24 +182,24 @@ spec:
       labels:
         severity: warning
       annotations:
-        summary: "Certificado expirando em breve"
-        description: "O certificado {{ $labels.name }} no namespace {{ $labels.namespace }} expira em menos de 30 dias."
+        summary: "Certificate expiring soon"
+        description: "Certificate {{ $labels.name }} in namespace {{ $labels.namespace }} expires in less than 30 days."
     - alert: CertificateExpiryCritical
       expr: certmanager_certificate_expiration_timestamp_seconds - time() < 7 * 24 * 3600
       for: 1h
       labels:
         severity: critical
       annotations:
-        summary: "Certificado expirando criticamente"
-        description: "O certificado {{ $labels.name }} no namespace {{ $labels.namespace }} expira em menos de 7 dias."
+        summary: "Certificate expiring critically"
+        description: "Certificate {{ $labels.name }} in namespace {{ $labels.namespace }} expires in less than 7 days."
     - alert: CertificateNotReady
       expr: certmanager_certificate_ready_status{condition="True"} != 1
       for: 10m
       labels:
         severity: critical
       annotations:
-        summary: "Certificado não está pronto"
-        description: "O certificado {{ $labels.name }} no namespace {{ $labels.namespace }} não está no estado Ready."`
+        summary: "Certificate not ready"
+        description: "Certificate {{ $labels.name }} in namespace {{ $labels.namespace }} is not in the Ready state."`
 
 	if err := executor.WriteFile("/tmp/cert-manager-monitoring.yaml", resources); err != nil {
 		return err
