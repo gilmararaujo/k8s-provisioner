@@ -21,9 +21,14 @@ const (
 	VaultInitFileRemote = "/etc/vault.d/vault-init.json"
 )
 
+// vaultInitData models the vault-init.json artifact: the unseal keys and tokens
+// produced during Vault initialization. It is written by the installer and read
+// back by ResolveVaultToken. Keys and the scoped provisioner token are omitted
+// when empty so pre-scoped-token files (root token only) round-trip cleanly.
 type vaultInitData struct {
-	RootToken        string `json:"root_token"`
-	ProvisionerToken string `json:"provisioner_token"`
+	Keys             []string `json:"keys,omitempty"`
+	RootToken        string   `json:"root_token"`
+	ProvisionerToken string   `json:"provisioner_token,omitempty"`
 }
 
 // ResolveVaultToken returns the token from config, falling back to vault-init.json.

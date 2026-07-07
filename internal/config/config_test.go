@@ -135,7 +135,7 @@ func TestLoad_FileNotFound(t *testing.T) {
 	assert.Nil(t, cfg, "Config should be nil on error")
 }
 
-func TestGetControlPlane_Found(t *testing.T) {
+func TestControlPlaneNode_Found(t *testing.T) {
 	cfg := &Config{
 		Nodes: []NodeConfig{
 			{Name: "worker01", IP: "192.168.1.11", Role: "worker"},
@@ -144,15 +144,15 @@ func TestGetControlPlane_Found(t *testing.T) {
 		},
 	}
 
-	cp := cfg.GetControlPlane()
+	cp := cfg.ControlPlaneNode()
 
-	require.NotNil(t, cp, "GetControlPlane should return a node")
+	require.NotNil(t, cp, "ControlPlaneNode should return a node")
 	assert.Equal(t, "master01", cp.Name)
 	assert.Equal(t, "192.168.1.10", cp.IP)
 	assert.Equal(t, "controlplane", cp.Role)
 }
 
-func TestGetControlPlane_NotFound(t *testing.T) {
+func TestControlPlaneNode_NotFound(t *testing.T) {
 	cfg := &Config{
 		Nodes: []NodeConfig{
 			{Name: "worker01", IP: "192.168.1.11", Role: "worker"},
@@ -160,12 +160,12 @@ func TestGetControlPlane_NotFound(t *testing.T) {
 		},
 	}
 
-	cp := cfg.GetControlPlane()
+	cp := cfg.ControlPlaneNode()
 
-	assert.Nil(t, cp, "GetControlPlane should return nil when no controlplane exists")
+	assert.Nil(t, cp, "ControlPlaneNode should return nil when no controlplane exists")
 }
 
-func TestGetWorkers_Multiple(t *testing.T) {
+func TestWorkers_Multiple(t *testing.T) {
 	cfg := &Config{
 		Nodes: []NodeConfig{
 			{Name: "master01", IP: "192.168.1.10", Role: "controlplane"},
@@ -175,7 +175,7 @@ func TestGetWorkers_Multiple(t *testing.T) {
 		},
 	}
 
-	workers := cfg.GetWorkers()
+	workers := cfg.Workers()
 
 	assert.Len(t, workers, 3, "Should return 3 workers")
 
@@ -189,24 +189,24 @@ func TestGetWorkers_Multiple(t *testing.T) {
 	assert.Contains(t, workerNames, "worker03")
 }
 
-func TestGetWorkers_Empty(t *testing.T) {
+func TestWorkers_Empty(t *testing.T) {
 	cfg := &Config{
 		Nodes: []NodeConfig{
 			{Name: "master01", IP: "192.168.1.10", Role: "controlplane"},
 		},
 	}
 
-	workers := cfg.GetWorkers()
+	workers := cfg.Workers()
 
 	assert.Empty(t, workers, "Should return empty slice when no workers")
 }
 
-func TestGetWorkers_NoNodes(t *testing.T) {
+func TestWorkers_NoNodes(t *testing.T) {
 	cfg := &Config{
 		Nodes: []NodeConfig{},
 	}
 
-	workers := cfg.GetWorkers()
+	workers := cfg.Workers()
 
 	assert.Empty(t, workers, "Should return empty slice when no nodes")
 }

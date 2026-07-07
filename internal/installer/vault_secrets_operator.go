@@ -101,23 +101,30 @@ func (v *VaultSecretsOperator) waitForVSO(timeout time.Duration) error {
 	return fmt.Errorf("timeout waiting for VSO deployment")
 }
 
-func (v *VaultSecretsOperator) createKeycloakResources() error {
-	manifest := `apiVersion: v1
+// vsoNamespaceAndAuth returns the Namespace + VaultAuth preamble shared by every
+// VSO manifest: it creates ns and a kubernetes-auth VaultAuth named vault-auth
+// that the VaultStaticSecret resources in that namespace reference via vaultAuthRef.
+func vsoNamespaceAndAuth(ns string) string {
+	return fmt.Sprintf(`apiVersion: v1
 kind: Namespace
 metadata:
-  name: keycloak
+  name: %[1]s
 ---
 apiVersion: secrets.hashicorp.com/v1beta1
 kind: VaultAuth
 metadata:
   name: vault-auth
-  namespace: keycloak
+  namespace: %[1]s
 spec:
   method: kubernetes
   mount: kubernetes
   kubernetes:
     role: k8s-provisioner
-    serviceAccount: default
+    serviceAccount: default`, ns)
+}
+
+func (v *VaultSecretsOperator) createKeycloakResources() error {
+	manifest := vsoNamespaceAndAuth("keycloak") + `
 ---
 apiVersion: secrets.hashicorp.com/v1beta1
 kind: VaultStaticSecret
@@ -169,22 +176,7 @@ spec:
 }
 
 func (v *VaultSecretsOperator) createMonitoringResources() error {
-	manifest := `apiVersion: v1
-kind: Namespace
-metadata:
-  name: monitoring
----
-apiVersion: secrets.hashicorp.com/v1beta1
-kind: VaultAuth
-metadata:
-  name: vault-auth
-  namespace: monitoring
-spec:
-  method: kubernetes
-  mount: kubernetes
-  kubernetes:
-    role: k8s-provisioner
-    serviceAccount: default
+	manifest := vsoNamespaceAndAuth("monitoring") + `
 ---
 apiVersion: secrets.hashicorp.com/v1beta1
 kind: VaultStaticSecret
@@ -232,22 +224,7 @@ spec:
 }
 
 func (v *VaultSecretsOperator) createOllamaResources() error {
-	manifest := `apiVersion: v1
-kind: Namespace
-metadata:
-  name: ollama
----
-apiVersion: secrets.hashicorp.com/v1beta1
-kind: VaultAuth
-metadata:
-  name: vault-auth
-  namespace: ollama
-spec:
-  method: kubernetes
-  mount: kubernetes
-  kubernetes:
-    role: k8s-provisioner
-    serviceAccount: default
+	manifest := vsoNamespaceAndAuth("ollama") + `
 ---
 apiVersion: secrets.hashicorp.com/v1beta1
 kind: VaultStaticSecret
@@ -307,9 +284,9 @@ func (v *VaultSecretsOperator) waitForSecrets(timeout time.Duration) error {
 
 func (v *VaultSecretsOperator) printStatus() {
 	fmt.Println("\n" + strings.Repeat("=", 50))
-	fmt.Println("   Vault Secrets Operator instalado!")
+	fmt.Println("   Vault Secrets Operator installed!")
 	fmt.Println(strings.Repeat("=", 50))
-	fmt.Println("\nRecursos criados:")
+	fmt.Println("\nResources created:")
 	fmt.Println("  VaultStaticSecret/keycloak-admin       → Secret keycloak-admin (keycloak)")
 	fmt.Println("  VaultStaticSecret/postgres-credentials → Secret postgres-credentials (keycloak)")
 	fmt.Println("  VaultStaticSecret/grafana-admin        → Secret grafana-admin (monitoring)")
@@ -317,7 +294,7 @@ func (v *VaultSecretsOperator) printStatus() {
 	if v.config.Ollama.APIKey != "" {
 		fmt.Println("  VaultStaticSecret/ollama-api-key       → Secret ollama-api-key (ollama)")
 	}
-	fmt.Println("\nPara verificar o status dos secrets:")
+	fmt.Println("\nTo check the status of the secrets:")
 	fmt.Println("  kubectl get vaultstaticsecret -A")
 	fmt.Println("  kubectl get secrets -n keycloak")
 	fmt.Println("  kubectl get secrets -n monitoring")
