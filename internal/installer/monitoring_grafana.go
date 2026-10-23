@@ -18,7 +18,7 @@ func (m *Monitoring) installGrafana() error {
 		return err
 	}
 
-	// Cria K8s Secret com a senha (do Vault ou fallback)
+	// Create the K8s Secret with the password (from Vault or the fallback)
 	if err := m.createGrafanaSecret(password); err != nil {
 		return err
 	}
@@ -130,7 +130,7 @@ spec:
 
 	version := m.config.Versions.Grafana
 	if version == "" {
-		version = "13.0.1"
+		version = "13.2.4"
 	}
 	grafana = fmt.Sprintf(grafana, version, version)
 

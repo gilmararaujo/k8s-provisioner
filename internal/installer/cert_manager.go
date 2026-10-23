@@ -22,7 +22,7 @@ func (c *CertManager) Install() error {
 
 	version := c.config.Versions.CertManager
 	if version == "" {
-		version = "v1.16.3"
+		version = "v1.21.2"
 	}
 	url := fmt.Sprintf("https://github.com/cert-manager/cert-manager/releases/download/%s/cert-manager.yaml", version)
 	if _, err := c.exec.RunShell(fmt.Sprintf("kubectl apply -f %s", url)); err != nil {

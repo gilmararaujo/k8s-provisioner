@@ -305,7 +305,8 @@ func (p *Provisioner) workloadSteps() []workloadStep {
 			fatal: true,
 		},
 		{
-			enabled: enabledMonitoring,
+			// Logging (Loki + Alloy) requires the monitoring stack and logging: loki.
+			enabled: func(c *config.Config) bool { return enabledMonitoring(c) && c.Components.Logging == "loki" },
 			build: func(c *config.Config, e executor.CommandExecutor) installer.Installer {
 				return installer.NewLoki(c, e)
 			},

@@ -51,7 +51,7 @@ func (k *Kiali) installKiali(grafanaPassword string) error {
 
 	kialiVersion := k.config.Versions.Kiali
 	if kialiVersion == "" {
-		kialiVersion = "v2.24.0"
+		kialiVersion = "v2.33.0"
 	}
 
 	// Kiali v2.x config changes vs v1.x:

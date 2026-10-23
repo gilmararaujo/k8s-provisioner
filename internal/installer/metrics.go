@@ -21,10 +21,10 @@ func (m *MetricsServer) Install() error {
 	fmt.Println("Installing Metrics Server...")
 
 	// Pin to a specific version to avoid GitHub redirect issues and ensure
-	// compatibility with Kubernetes 1.32. v0.7.2 is validated against k8s 1.32.
+	// compatibility with the cluster version (metrics-server 0.9.x supports k8s 1.34+).
 	version := m.config.Versions.MetricsServer
 	if version == "" {
-		version = "v0.7.2"
+		version = "v0.9.0"
 	}
 	metricsServerURL := fmt.Sprintf("https://github.com/kubernetes-sigs/metrics-server/releases/download/%s/components.yaml", version)
 
@@ -40,7 +40,7 @@ func (m *MetricsServer) Install() error {
 	}
 
 	// --validate=false is required because the APIService object in the manifest
-	// triggers a client-side validation error in kubectl 1.32 even though it is valid.
+	// has triggered client-side validation errors in some kubectl versions even though it is valid.
 	if _, err := m.exec.RunShell("kubectl apply --validate=false -f /tmp/metrics-server.yaml"); err != nil {
 		return err
 	}

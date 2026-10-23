@@ -77,6 +77,9 @@ type VersionsConfig struct {
 	MetricsServer      string `yaml:"metrics_server"`
 	PrometheusOperator string `yaml:"prometheus_operator"`
 	CertManager        string `yaml:"cert_manager"`
+	Prometheus         string `yaml:"prometheus"`
+	Alertmanager       string `yaml:"alertmanager"`
+	VPA                string `yaml:"vpa"` // Helm chart version (kubernetes/autoscaler)
 }
 
 type NetworkConfig struct {

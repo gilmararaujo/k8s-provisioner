@@ -130,6 +130,9 @@ metadata:
   namespace: monitoring
 spec:
   replicas: 1
+  # Single writer on an NFS volume: never run old and new pods side by side.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: loki
@@ -210,7 +213,7 @@ spec:
 
 	lokiVersion := l.config.Versions.Loki
 	if lokiVersion == "" {
-		lokiVersion = "3.7.1"
+		lokiVersion = "3.7.9"
 	}
 	loki = fmt.Sprintf(loki, lokiVersion, lokiVersion)
 
@@ -415,7 +418,7 @@ spec:
 
 	alloyVersion := l.config.Versions.Alloy
 	if alloyVersion == "" {
-		alloyVersion = "v1.15.1"
+		alloyVersion = "v1.21.1"
 	}
 	alloy = fmt.Sprintf(alloy, alloyVersion, alloyVersion)
 

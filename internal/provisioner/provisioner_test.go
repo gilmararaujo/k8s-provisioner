@@ -46,6 +46,7 @@ func planNames(p *Provisioner) []string {
 func TestWorkloadPlan_AllEnabled(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Components.Monitoring = "prometheus-stack"
+	cfg.Components.Logging = "loki"
 	cfg.Components.Tracing = "otel-tempo"
 	cfg.Components.VPA = "enabled"
 	cfg.Components.KEDA = "enabled"
@@ -108,9 +109,31 @@ func TestWorkloadPlan_TracingRequiresMonitoring(t *testing.T) {
 	}
 }
 
+func TestWorkloadPlan_LoggingNoneSkipsLoki(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Components.Monitoring = "prometheus-stack"
+	cfg.Components.Logging = "none"
+	cfg.Components.Tracing = "otel-tempo"
+	p := NewWithExecutor(cfg, &mockExecutor{}, false)
+
+	names := planNames(p)
+	assert.NotContains(t, names, "Loki Stack", "logging: none must skip Loki/Alloy")
+	assert.Contains(t, names, "Monitoring Stack")
+	assert.Contains(t, names, "Tracing Stack (Tempo + OpenTelemetry)", "tracing does not depend on Loki")
+}
+
+func TestWorkloadPlan_LoggingRequiresMonitoring(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Components.Logging = "loki"
+	p := NewWithExecutor(cfg, &mockExecutor{}, false)
+
+	assert.NotContains(t, planNames(p), "Loki Stack")
+}
+
 func TestWorkloadPlan_FatalPolicy(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Components.Monitoring = "prometheus-stack"
+	cfg.Components.Logging = "loki"
 	cfg.Components.Tracing = "otel-tempo"
 	cfg.Components.Keycloak = "enabled"
 	cfg.Components.Karpor = "enabled"

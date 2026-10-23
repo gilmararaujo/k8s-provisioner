@@ -105,7 +105,7 @@ func (k *Keycloak) patchAPIServer(issuerURL string) error {
 		ca.WriteString("      " + line + "\n")
 	}
 
-	authConfig := fmt.Sprintf(`apiVersion: apiserver.config.k8s.io/v1beta1
+	authConfig := fmt.Sprintf(`apiVersion: apiserver.config.k8s.io/v1
 kind: AuthenticationConfiguration
 jwt:
 - issuer:

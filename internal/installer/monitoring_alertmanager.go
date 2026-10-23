@@ -22,6 +22,10 @@ const defaultAlertmanagerConfig = `global:
 
 func (m *Monitoring) installAlertmanager() error {
 	alertmanagerConfig := m.resolveAlertmanagerConfig()
+	alertmanagerVersion := m.config.Versions.Alertmanager
+	if alertmanagerVersion == "" {
+		alertmanagerVersion = "v0.34.1"
+	}
 
 	alertmanager := fmt.Sprintf(`apiVersion: v1
 kind: ServiceAccount
@@ -45,6 +49,7 @@ metadata:
   name: alertmanager
   namespace: monitoring
 spec:
+  version: %s
   replicas: 1
   serviceAccountName: alertmanager
   securityContext:
@@ -74,7 +79,7 @@ spec:
     port: 9093
     targetPort: 9093
   selector:
-    alertmanager: alertmanager`, alertmanagerConfig)
+    alertmanager: alertmanager`, alertmanagerConfig, alertmanagerVersion)
 
 	// The manifest embeds the Alertmanager config Secret (which may carry SMTP /
 	// webhook credentials when resolved from Vault). Pipe via stdin so it never

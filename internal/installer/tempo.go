@@ -88,16 +88,13 @@ data:
               endpoint: 0.0.0.0:4317
             http:
               endpoint: 0.0.0.0:4318
-    ingester:
-      trace_idle_period: 10s
-      max_block_bytes: 1_000_000
-      max_block_duration: 5m
-    compactor:
+    backend_worker:
       compaction:
         compaction_window: 1h
-        max_compaction_objects: 1000000
         block_retention: 24h
         compacted_block_retention: 10m
+    usage_report:
+      reporting_enabled: false
     storage:
       trace:
         backend: local
@@ -113,6 +110,9 @@ metadata:
   namespace: monitoring
 spec:
   replicas: 1
+  # Single writer on an NFS volume: never run old and new pods side by side.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: tempo
@@ -198,7 +198,7 @@ spec:
 
 	version := t.config.Versions.Tempo
 	if version == "" {
-		version = "2.10.4"
+		version = "3.1.1"
 	}
 	tempo = fmt.Sprintf(tempo, version, version)
 
@@ -266,7 +266,7 @@ data:
         check_interval: 5s
 
     exporters:
-      otlp:
+      otlp_grpc:
         endpoint: tempo.monitoring.svc.cluster.local:4317
         tls:
           insecure: true
@@ -278,7 +278,7 @@ data:
         traces:
           receivers: [otlp]
           processors: [memory_limiter, batch]
-          exporters: [otlp]
+          exporters: [otlp_grpc]
 ---
 apiVersion: apps/v1
 kind: DaemonSet
@@ -377,7 +377,7 @@ spec:
 
 	otelVersion := t.config.Versions.OtelCollector
 	if otelVersion == "" {
-		otelVersion = "0.149.0"
+		otelVersion = "0.163.2"
 	}
 	otel = fmt.Sprintf(otel, otelVersion)
 
@@ -389,9 +389,29 @@ spec:
 	return err
 }
 
-// configureTempoDataSource atualiza o ConfigMap do Grafana com Prometheus + Loki + Tempo.
-// UIDs fixos permitem correlação entre traces, logs e métricas.
+// configureTempoDataSource updates the Grafana ConfigMap with Prometheus + Tempo,
+// plus Loki when logging is enabled. Fixed UIDs enable correlation between
+// traces, logs and metrics.
 func (t *Tempo) configureTempoDataSource() error {
+	if err := executor.WriteFile("/tmp/grafana-datasources-full.yaml", t.grafanaDatasources()); err != nil {
+		return err
+	}
+
+	if _, err := t.exec.RunShell("kubectl apply -f /tmp/grafana-datasources-full.yaml"); err != nil {
+		return err
+	}
+
+	// Restart Grafana to load the new datasources
+	_, err := t.exec.RunShell("kubectl rollout restart deployment/grafana -n monitoring")
+	return err
+}
+
+// grafanaDatasources renders the datasources ConfigMap. Without Loki, the Loki
+// datasource and the trace→logs link are left out so Grafana has no dangling
+// datasource.
+func (t *Tempo) grafanaDatasources() string {
+	logging := t.config.Components.Logging == "loki"
+
 	datasources := `apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -407,7 +427,9 @@ data:
       access: proxy
       url: http://prometheus:9090
       isDefault: true
-    - name: Loki
+`
+	if logging {
+		datasources += `    - name: Loki
       type: loki
       uid: loki-uid
       access: proxy
@@ -419,14 +441,18 @@ data:
           matcherRegex: "traceID=(\\w+)"
           name: TraceID
           url: "${__value.raw}"
-    - name: Tempo
+`
+	}
+	datasources += `    - name: Tempo
       type: tempo
       uid: tempo-uid
       access: proxy
       url: http://tempo:3200
       isDefault: false
       jsonData:
-        tracesToLogsV2:
+`
+	if logging {
+		datasources += `        tracesToLogsV2:
           datasourceUid: loki-uid
           tags:
           - key: service.name
@@ -435,7 +461,9 @@ data:
             value: namespace
           filterByTraceID: true
           filterBySpanID: false
-        tracesToMetrics:
+`
+	}
+	datasources += `        tracesToMetrics:
           datasourceUid: prometheus-uid
           tags:
           - key: service.name
@@ -444,18 +472,7 @@ data:
           datasourceUid: prometheus-uid
         nodeGraph:
           enabled: true`
-
-	if err := executor.WriteFile("/tmp/grafana-datasources-full.yaml", datasources); err != nil {
-		return err
-	}
-
-	if _, err := t.exec.RunShell("kubectl apply -f /tmp/grafana-datasources-full.yaml"); err != nil {
-		return err
-	}
-
-	// Reinicia o Grafana para carregar os novos datasources
-	_, err := t.exec.RunShell("kubectl rollout restart deployment/grafana -n monitoring")
-	return err
+	return datasources
 }
 
 // configureIstioTracing activates the otel-tracing extension provider (defined at Istio install
@@ -500,18 +517,18 @@ func (t *Tempo) printAccessInfo() {
 	fmt.Println("\n========================================")
 	fmt.Println("Tracing Stack Access Information")
 	fmt.Println("========================================")
-	fmt.Println("\nAcesse traces via Grafana:")
-	fmt.Println("  1. Abra o Grafana (http://grafana.local)")
-	fmt.Println("  2. Vá em Explore (sidebar esquerda)")
-	fmt.Println("  3. Selecione 'Tempo' como datasource")
-	fmt.Println("  4. Busque por TraceID ou use Service Graph")
-	fmt.Println("\nEnviar traces das suas apps:")
+	fmt.Println("\nAccess traces via Grafana:")
+	fmt.Println("  1. Open Grafana (https://grafana.local)")
+	fmt.Println("  2. Go to Explore (left sidebar)")
+	fmt.Println("  3. Select 'Tempo' as the datasource")
+	fmt.Println("  4. Search by TraceID or use the Service Graph")
+	fmt.Println("\nSend traces from your apps:")
 	fmt.Println("  OTLP gRPC: otel-collector.monitoring.svc:4317")
 	fmt.Println("  OTLP HTTP: otel-collector.monitoring.svc:4318")
 	fmt.Println("  OTLP gRPC (host): <node-ip>:4317 (via hostPort)")
-	fmt.Println("\nCorrelações habilitadas:")
+	fmt.Println("\nEnabled correlations:")
 	fmt.Println("  Traces → Logs  (Tempo → Loki via TraceID)")
-	fmt.Println("  Traces → Métricas (Tempo → Prometheus via service.name)")
+	fmt.Println("  Traces → Metrics (Tempo → Prometheus via service.name)")
 	fmt.Println("  Service Map (via Prometheus metrics)")
 	fmt.Println("========================================")
 }

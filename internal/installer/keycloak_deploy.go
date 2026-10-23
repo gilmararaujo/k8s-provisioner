@@ -69,14 +69,14 @@ spec:
             secretKeyRef:
               name: postgres-credentials
               key: password
-        - name: PGDATA
-          value: /var/lib/postgresql/data/pgdata
         ports:
         - containerPort: 5432
           name: postgres
         volumeMounts:
+        # Postgres 18+ images keep PGDATA under /var/lib/postgresql/<major>/docker,
+        # so the volume is mounted at the parent directory.
         - name: data
-          mountPath: /var/lib/postgresql/data
+          mountPath: /var/lib/postgresql
         readinessProbe:
           exec:
             command: ["pg_isready", "-U", "keycloak", "-d", "keycloak"]
@@ -135,7 +135,7 @@ spec:
         fsGroup: 1000
       initContainers:
       - name: wait-for-postgres
-        image: busybox:1.36
+        image: busybox:1.38
         command: ['sh', '-c', 'until nc -z postgres.keycloak.svc.cluster.local 5432; do echo waiting for postgres; sleep 3; done']
         securityContext:
           runAsNonRoot: true
@@ -222,11 +222,11 @@ spec:
 
 	pgVersion := k.config.Versions.Postgres
 	if pgVersion == "" {
-		pgVersion = "16"
+		pgVersion = "18"
 	}
 	kcVersion := k.config.Versions.Keycloak
 	if kcVersion == "" {
-		kcVersion = "26.2"
+		kcVersion = "26.8.1"
 	}
 	manifests := fmt.Sprintf(secrets+rest, pgVersion, kcVersion)
 

@@ -11,7 +11,7 @@ func (m *Monitoring) installPrometheusOperator() error {
 	// Using prometheus-operator bundle
 	promOpVersion := m.config.Versions.PrometheusOperator
 	if promOpVersion == "" {
-		promOpVersion = "v0.90.1"
+		promOpVersion = "v0.94.1"
 	}
 	bundleURL := fmt.Sprintf("https://raw.githubusercontent.com/prometheus-operator/prometheus-operator/%s/bundle.yaml", promOpVersion)
 
@@ -39,6 +39,7 @@ metadata:
   name: prometheus
   namespace: monitoring
 spec:
+  version: %s
   replicas: 1
   serviceAccountName: prometheus
   serviceMonitorSelector: {}
@@ -117,6 +118,12 @@ spec:
     targetPort: web
   selector:
     prometheus: prometheus`
+
+	promVersion := m.config.Versions.Prometheus
+	if promVersion == "" {
+		promVersion = "v3.15.1"
+	}
+	prometheus = fmt.Sprintf(prometheus, promVersion)
 
 	if err := executor.WriteFile("/tmp/prometheus.yaml", prometheus); err != nil {
 		return err

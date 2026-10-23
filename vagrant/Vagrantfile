@@ -118,26 +118,26 @@ VIMRC
           mkdir -p /exports/k8s-volumes/ollama
           chmod -R 777 /exports
 
-          # Configurar exports
+          # Configure exports
           cat > /etc/exports <<EOF
 /exports/k8s-volumes 192.168.56.0/24(rw,sync,no_subtree_check,no_root_squash)
 EOF
 
-          # Reiniciar NFS
+          # Restart NFS
           exportfs -ra
           systemctl restart nfs-kernel-server
           systemctl enable nfs-kernel-server
 
-          echo "=== NFS Server configurado ==="
+          echo "=== NFS Server configured ==="
           echo "Exports:"
           exportfs -v
         SHELL
 
         vm.vm.provision "shell", inline: <<-SHELL
           set -e
-          echo "=== Instalando HashiCorp Vault ==="
+          echo "=== Installing HashiCorp Vault ==="
 
-          VAULT_VERSION="2.0.0"
+          VAULT_VERSION="2.2.1"
           VM_ARCH=$(dpkg --print-architecture)
           apt-get install -y unzip curl
 
