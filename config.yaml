@@ -10,8 +10,9 @@
 # token is auto-read from /etc/k8s-provisioner/vault-init.json if left empty
 vault:
   enabled: true
-  addr: ""   # Empty = derived as http://<storage-node-ip>:8200 from nodes:. Set to override.
-  token: ""  # env K8S_PROV_VAULT_TOKEN; empty = auto-resolve from vault-init.json. Never commit a real token.
+  addr: ""     # Empty = derived as https://<storage-node-ip>:8200 from nodes:. Set to override.
+  token: ""    # env K8S_PROV_VAULT_TOKEN; empty = auto-resolve from vault-init.json. Never commit a real token.
+  ca_cert: ""  # env VAULT_CACERT; empty = /etc/k8s-provisioner/vault-ca.crt (fetched from the storage node).
 
 # Node-to-node SSH used to copy Vault init data from controlplane to the storage
 # node. Defaults target the Vagrant lab box. For non-lab use, set ssh_key_path

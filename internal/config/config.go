@@ -27,7 +27,12 @@ type VaultConfig struct {
 	Enabled bool   `yaml:"enabled"` // toggles Vault; addr is derived when empty
 	Addr    string `yaml:"addr"`    // optional override; empty = derive from storage node
 	Token   string `yaml:"token"`
+	CACert  string `yaml:"ca_cert"` // CA bundle trusted for Vault TLS; empty = DefaultVaultCACert
 }
+
+// DefaultVaultCACert is where the Vault CA (fetched from the storage node during
+// provisioning) is kept on the controlplane when vault.ca_cert is not set.
+const DefaultVaultCACert = "/etc/k8s-provisioner/vault-ca.crt"
 
 // ProvisioningConfig controls node-to-node SSH used to transport Vault init data
 // from the controlplane to the storage node. Defaults target the Vagrant lab box;
@@ -158,6 +163,9 @@ func Load(path string) (*Config, error) {
 func applyEnvSecrets(cfg *Config) {
 	if v := os.Getenv("K8S_PROV_VAULT_TOKEN"); v != "" {
 		cfg.Vault.Token = v
+	}
+	if v := os.Getenv("VAULT_CACERT"); v != "" {
+		cfg.Vault.CACert = v
 	}
 	if v := os.Getenv("K8S_PROV_SSH_PASSWORD"); v != "" {
 		cfg.Provisioning.SSHPassword = v
@@ -388,9 +396,18 @@ func (c *Config) VaultAddress() string {
 		return c.Vault.Addr
 	}
 	if ip := c.StorageIP(); ip != "" {
-		return fmt.Sprintf("http://%s:8200", ip)
+		return fmt.Sprintf("https://%s:8200", ip)
 	}
 	return ""
+}
+
+// VaultCACert returns the path of the CA bundle used to verify Vault's TLS
+// certificate: vault.ca_cert (or the VAULT_CACERT env var), else the default.
+func (c *Config) VaultCACert() string {
+	if c.Vault.CACert != "" {
+		return c.Vault.CACert
+	}
+	return DefaultVaultCACert
 }
 
 func (c *Config) Workers() []NodeConfig {

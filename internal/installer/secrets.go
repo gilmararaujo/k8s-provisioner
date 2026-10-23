@@ -28,7 +28,7 @@ func NewSecretResolver(cfg *config.Config) *SecretResolver {
 	if token == "" {
 		return &SecretResolver{}
 	}
-	return &SecretResolver{vault: NewVaultClient(cfg.VaultAddress(), token)}
+	return &SecretResolver{vault: NewVaultClient(cfg.VaultAddress(), token, cfg.VaultCACert())}
 }
 
 // Enabled reports whether a Vault backend is available.

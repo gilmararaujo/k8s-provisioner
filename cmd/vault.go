@@ -97,7 +97,7 @@ func vaultClientFromConfig() (*installer.VaultClient, error) {
 	if token == "" {
 		return nil, fmt.Errorf("vault token not found — run 'k8s-provisioner vault token' on the controlplane or set vault.token in config.yaml")
 	}
-	return installer.NewVaultClient(addr, token), nil
+	return installer.NewVaultClient(addr, token, cfg.VaultCACert()), nil
 }
 
 func runVaultToken(_ *cobra.Command, _ []string) error {
@@ -234,7 +234,7 @@ func runVaultUnseal(_ *cobra.Command, _ []string) error {
 	fmt.Printf("Unsealing Vault at %s (sending %d of %d keys)...\n", addr, threshold, len(init.Keys))
 
 	for i := 0; i < threshold; i++ {
-		if err := installer.UnsealWithKey(addr, init.Keys[i]); err != nil {
+		if err := installer.UnsealWithKey(addr, cfg.VaultCACert(), init.Keys[i]); err != nil {
 			return fmt.Errorf("unseal key %d failed: %w", i+1, err)
 		}
 		fmt.Printf("  Key %d accepted\n", i+1)

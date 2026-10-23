@@ -78,7 +78,7 @@ users:
         - --listen-address=%s
 `, cpIP, apiServerPort, clusterCA, issuerURL, labCA, kubeloginListenAddr)
 
-	vault := NewVaultClient(k.config.VaultAddress(), token)
+	vault := NewVaultClient(k.config.VaultAddress(), token, k.config.VaultCACert())
 	if err := vault.WriteSecret("k8s-provisioner/kubeconfig-oidc", map[string]string{
 		"config": kubeconfig,
 	}); err != nil {

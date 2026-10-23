@@ -31,7 +31,7 @@ vault: {enabled: true, addr: ""}
 	// storage IP comes from the storage node, no hardcoded fallback.
 	assert.Equal(t, "192.168.56.20", cfg.StorageIP())
 	// vault.addr unset but enabled → derived from the storage node IP.
-	assert.Equal(t, "http://192.168.56.20:8200", cfg.VaultAddress())
+	assert.Equal(t, "https://192.168.56.20:8200", cfg.VaultAddress())
 }
 
 func TestValidate_VaultEnabledWithoutResolvableAddress(t *testing.T) {
@@ -506,4 +506,16 @@ func TestValidateIPRange(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestVaultCACert_DefaultAndOverrides(t *testing.T) {
+	cfg := &Config{}
+	assert.Equal(t, DefaultVaultCACert, cfg.VaultCACert(), "empty ca_cert falls back to the default path")
+
+	cfg.Vault.CACert = "/custom/ca.crt"
+	assert.Equal(t, "/custom/ca.crt", cfg.VaultCACert())
+
+	t.Setenv("VAULT_CACERT", "/from/env.crt")
+	applyEnvSecrets(cfg)
+	assert.Equal(t, "/from/env.crt", cfg.VaultCACert(), "VAULT_CACERT overrides config")
 }

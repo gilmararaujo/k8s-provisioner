@@ -16,19 +16,20 @@ import (
 	"github.com/techiescamp/k8s-provisioner/internal/executor"
 )
 
-// vaultHTTPClient bounds the Vault bootstrap calls (health/init/unseal/KV setup)
-// so a hung Vault on a freshly-booted storage node fails fast instead of blocking
-// the deadline loops indefinitely (RES-1).
-var vaultHTTPClient = &http.Client{Timeout: 10 * time.Second}
-
 type VaultInstaller struct {
 	config  *config.Config
 	exec    executor.ShellExecutor
 	address string
+	http    *http.Client
 }
 
 func NewVaultInstaller(cfg *config.Config, exec executor.ShellExecutor) *VaultInstaller {
-	return &VaultInstaller{config: cfg, exec: exec, address: cfg.VaultAddress()}
+	return &VaultInstaller{
+		config:  cfg,
+		exec:    exec,
+		address: cfg.VaultAddress(),
+		http:    newVaultHTTPClient(cfg.VaultCACert()),
+	}
 }
 
 // vaultKeyShares / vaultKeyThreshold define the Shamir split for the Vault
@@ -47,6 +48,13 @@ type vaultInitRequest struct {
 
 func (v *VaultInstaller) Install() error {
 	fmt.Println("Configuring HashiCorp Vault on storage node...")
+
+	// The Vault CA must be in place before the first TLS call; rebuild the client
+	// so it trusts the CA that may have just been fetched.
+	if err := ensureVaultCA(v.config, v.exec); err != nil {
+		return fmt.Errorf("vault TLS setup failed: %w", err)
+	}
+	v.http = newVaultHTTPClient(v.config.VaultCACert())
 
 	if err := v.waitForVault(vaultReadyTimeout); err != nil {
 		return fmt.Errorf("vault not reachable at %s: %w", v.address, err)
@@ -95,7 +103,7 @@ func (v *VaultInstaller) Install() error {
 func (v *VaultInstaller) waitForVault(timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		resp, err := vaultHTTPClient.Get(v.address + "/v1/sys/health")
+		resp, err := v.http.Get(v.address + "/v1/sys/health")
 		if err == nil {
 			if closeErr := resp.Body.Close(); closeErr != nil {
 				fmt.Printf("Warning: failed to close response body: %v\n", closeErr)
@@ -112,7 +120,7 @@ func (v *VaultInstaller) waitForVault(timeout time.Duration) error {
 }
 
 func (v *VaultInstaller) isInitialized() (bool, error) {
-	resp, err := vaultHTTPClient.Get(v.address + "/v1/sys/init")
+	resp, err := v.http.Get(v.address + "/v1/sys/init")
 	if err != nil {
 		return false, err
 	}
@@ -223,14 +231,19 @@ path "secret/metadata/*" { capabilities = ["read", "list", "delete"] }`
 	return tok, nil
 }
 
-// sshConn builds the SSH/SCP auth pieces for reaching another node, honoring
+// sshConn builds the SSH/SCP auth pieces for reaching the storage node.
+func (v *VaultInstaller) sshConn() (env, opts, user string, usesPassword bool) {
+	return sshConnFor(v.config)
+}
+
+// sshConnFor builds the SSH/SCP auth pieces for reaching another node, honoring
 // provisioning config. Prefers key-based auth; falls back to a password (default:
 // the Vagrant box credential). Uses StrictHostKeyChecking=accept-new (trust on
 // first use, reject key changes) rather than disabling host-key checking entirely.
 // usesPassword reports whether sshpass is needed (so the caller can install it).
-func (v *VaultInstaller) sshConn() (env, opts, user string, usesPassword bool) {
-	p := v.config.Provisioning
-	user = v.config.SSHUser()
+func sshConnFor(cfg *config.Config) (env, opts, user string, usesPassword bool) {
+	p := cfg.Provisioning
+	user = cfg.SSHUser()
 	opts = "-o StrictHostKeyChecking=accept-new"
 	if p.SSHKeyPath != "" {
 		return "", opts + " -i " + p.SSHKeyPath, user, false
@@ -545,7 +558,7 @@ func (v *VaultInstaller) vaultRequest(method, path, token string, body interface
 		req.Header.Set("X-Vault-Token", token)
 	}
 
-	resp, err := vaultHTTPClient.Do(req)
+	resp, err := v.http.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -581,6 +594,7 @@ func (v *VaultInstaller) printAccessInfo() {
 	fmt.Printf("\nCredentials saved at: %s\n", VaultInitFileLocal)
 	fmt.Println("\nTo use Vault:")
 	fmt.Printf("  export VAULT_ADDR=%s\n", v.address)
+	fmt.Printf("  export VAULT_CACERT=%s\n", v.config.VaultCACert())
 	fmt.Printf("  export VAULT_TOKEN=$(cat %s | jq -r .root_token)\n", VaultInitFileLocal)
 	fmt.Println("\nTo read all secrets:")
 	fmt.Println("  vault kv get secret/k8s-provisioner/api-keys")

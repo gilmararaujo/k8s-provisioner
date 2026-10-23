@@ -65,7 +65,52 @@ func (v *VaultSecretsOperator) installHelm() error {
 	return err
 }
 
+// vsoNamespace is where the operator and its default VaultConnection live.
+const vsoNamespace = "vault-secrets-operator-system"
+
+// vaultCASecret holds the Vault CA (key ca.crt) that the default VaultConnection
+// uses to verify Vault's TLS certificate. The chart requires it to exist before
+// the connection is created.
+const vaultCASecret = "vault-ca"
+
+// createVaultCASecret publishes the Vault CA to the operator namespace. Returns
+// false (no error) for a plain-HTTP Vault, where no CA is needed.
+func (v *VaultSecretsOperator) createVaultCASecret() (bool, error) {
+	if !strings.HasPrefix(v.address, "https://") {
+		return false, nil
+	}
+	if err := ensureVaultCA(v.config, v.exec); err != nil {
+		return false, err
+	}
+	pem, err := executor.ReadFileContents(v.config.VaultCACert())
+	if err != nil {
+		return false, fmt.Errorf("read vault CA: %w", err)
+	}
+	manifest := fmt.Sprintf(`apiVersion: v1
+kind: Namespace
+metadata:
+  name: %s
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: %s
+  namespace: %s
+type: Opaque
+stringData:
+  ca.crt: %q`, vsoNamespace, vaultCASecret, vsoNamespace, pem)
+	if _, err := v.exec.RunShellWithStdin("kubectl apply -f -", manifest); err != nil {
+		return false, fmt.Errorf("create %s secret: %w", vaultCASecret, err)
+	}
+	return true, nil
+}
+
 func (v *VaultSecretsOperator) installVSO() error {
+	withCA, err := v.createVaultCASecret()
+	if err != nil {
+		return err
+	}
+
 	if _, err := v.exec.RunShell("helm repo add hashicorp https://helm.releases.hashicorp.com 2>/dev/null || true"); err != nil {
 		fmt.Printf("Warning: could not add HashiCorp Helm repo: %v\n", err)
 	}
@@ -75,13 +120,15 @@ func (v *VaultSecretsOperator) installVSO() error {
 
 	cmd := fmt.Sprintf(
 		"helm upgrade --install vault-secrets-operator hashicorp/vault-secrets-operator"+
-			" -n vault-secrets-operator-system --create-namespace"+
+			" -n %s --create-namespace"+
 			" --set defaultVaultConnection.enabled=true"+
-			" --set 'defaultVaultConnection.address=%s'"+
-			" --wait --timeout=3m",
-		v.address,
+			" --set 'defaultVaultConnection.address=%s'",
+		vsoNamespace, v.address,
 	)
-	_, err := v.exec.RunShell(cmd)
+	if withCA {
+		cmd += " --set defaultVaultConnection.caCertSecret=" + vaultCASecret
+	}
+	_, err = v.exec.RunShell(cmd + " --wait --timeout=3m")
 	return err
 }
 

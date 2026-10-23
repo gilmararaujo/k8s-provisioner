@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"time"
 )
 
 const vaultMount = "secret"
@@ -62,13 +61,13 @@ type VaultClient struct {
 	client *http.Client
 }
 
-func NewVaultClient(addr, token string) *VaultClient {
+// NewVaultClient returns a KV v2 client for the Vault at addr that verifies
+// Vault's TLS certificate against the system roots plus the CA at caPath.
+func NewVaultClient(addr, token, caPath string) *VaultClient {
 	return &VaultClient{
-		addr:  addr,
-		token: token,
-		client: &http.Client{
-			Timeout: 10 * time.Second,
-		},
+		addr:   addr,
+		token:  token,
+		client: newVaultHTTPClient(caPath),
 	}
 }
 
@@ -169,22 +168,23 @@ func (v *VaultClient) GetValue(path, key, defaultVal string) string {
 	return defaultVal
 }
 
-// UnsealWithKey sends a single unseal key to Vault's /v1/sys/unseal endpoint.
-func UnsealWithKey(addr, key string) error {
+// UnsealWithKey sends a single unseal key to Vault's /v1/sys/unseal endpoint,
+// verifying Vault's TLS certificate against the CA at caPath.
+func UnsealWithKey(addr, caPath, key string) error {
 	url := fmt.Sprintf("%s/v1/sys/unseal", addr)
 	payload := map[string]string{"key": key}
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), vaultRequestTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewBuffer(body))
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := vaultHTTPClient.Do(req)
+	resp, err := newVaultHTTPClient(caPath).Do(req)
 	if err != nil {
 		return fmt.Errorf("vault unreachable at %s: %w", addr, err)
 	}

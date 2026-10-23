@@ -148,24 +148,62 @@ EOF
           chmod +x /usr/local/bin/vault
           vault --version
 
-          # Usuário e diretórios
+          # User and directories
           useradd --system --home /etc/vault.d --shell /bin/false vault 2>/dev/null || true
           mkdir -p /etc/vault.d /opt/vault/data
           chown -R vault:vault /opt/vault
 
-          # Configuração do Vault
+          # TLS: a dedicated CA for Vault, generated here because Vault starts before
+          # the cluster (and its cert-manager lab CA) exists. Only generated once, so
+          # re-provisioning keeps the CA the host and the cluster already trust.
+          # The server cert stays within Apple's 825-day limit for private CAs.
+          TLS_DIR=/etc/vault.d/tls
+          mkdir -p $TLS_DIR
+          if [ ! -f $TLS_DIR/ca.crt ]; then
+            apt-get install -y openssl
+            openssl req -x509 -newkey rsa:4096 -sha256 -days 3650 -nodes \
+              -keyout $TLS_DIR/ca.key -out $TLS_DIR/ca.crt \
+              -subj "/CN=k8s-lab Vault CA" \
+              -addext "basicConstraints=critical,CA:TRUE" \
+              -addext "keyUsage=critical,keyCertSign,cRLSign"
+            openssl req -newkey rsa:2048 -sha256 -nodes \
+              -keyout $TLS_DIR/vault.key -out /tmp/vault.csr \
+              -subj "/CN=storage"
+            cat > /tmp/vault-ext.cnf <<'EXT'
+subjectAltName=IP:#{NFS_SERVER_IP},IP:127.0.0.1,DNS:storage,DNS:storage.local,DNS:vault.local,DNS:localhost
+extendedKeyUsage=serverAuth
+keyUsage=critical,digitalSignature,keyEncipherment
+basicConstraints=critical,CA:FALSE
+EXT
+            openssl x509 -req -in /tmp/vault.csr -sha256 -days 825 \
+              -CA $TLS_DIR/ca.crt -CAkey $TLS_DIR/ca.key -CAcreateserial \
+              -out $TLS_DIR/vault.crt -extfile /tmp/vault-ext.cnf
+            rm -f /tmp/vault.csr /tmp/vault-ext.cnf
+          fi
+          chown root:root $TLS_DIR/ca.key && chmod 600 $TLS_DIR/ca.key
+          chown vault:vault $TLS_DIR/vault.key $TLS_DIR/vault.crt && chmod 600 $TLS_DIR/vault.key
+          chmod 644 $TLS_DIR/ca.crt $TLS_DIR/vault.crt
+
+          # Vault CLI defaults on this node
+          cat > /etc/profile.d/vault.sh <<'VAULTENV'
+export VAULT_ADDR=https://127.0.0.1:8200
+export VAULT_CACERT=/etc/vault.d/tls/ca.crt
+VAULTENV
+
+          # Vault configuration
           cat > /etc/vault.d/vault.hcl <<'VAULTCONF'
 storage "file" {
   path = "/opt/vault/data"
 }
 
 listener "tcp" {
-  address     = "0.0.0.0:8200"
-  tls_disable = 1
+  address       = "0.0.0.0:8200"
+  tls_cert_file = "/etc/vault.d/tls/vault.crt"
+  tls_key_file  = "/etc/vault.d/tls/vault.key"
 }
 
-api_addr     = "http://192.168.56.20:8200"
-cluster_addr = "http://192.168.56.20:8201"
+api_addr     = "https://#{NFS_SERVER_IP}:8200"
+cluster_addr = "https://#{NFS_SERVER_IP}:8201"
 ui           = true
 VAULTCONF
           chown vault:vault /etc/vault.d/vault.hcl
@@ -201,40 +239,40 @@ VAULTSERVICE
           systemctl enable vault
           systemctl start vault
 
-          echo "=== Vault iniciado em http://192.168.56.20:8200 ==="
-          echo "=== UI disponível em http://192.168.56.20:8200/ui ==="
+          echo "=== Vault started at https://#{NFS_SERVER_IP}:8200 (CA: /etc/vault.d/tls/ca.crt) ==="
+          echo "=== UI available at https://#{NFS_SERVER_IP}:8200/ui ==="
         SHELL
 
       when "controlplane", "worker"
-        # Montar NFS nos nodes Kubernetes
+        # Mount NFS on the Kubernetes nodes
         vm.vm.provision "shell", inline: <<-SHELL
           set -e
-          echo "=== Montando NFS ==="
+          echo "=== Mounting NFS ==="
 
-          # Aguardar NFS server estar disponível
+          # Wait for the NFS server to become available
           for i in {1..30}; do
             if showmount -e #{NFS_SERVER_IP} &>/dev/null; then
-              echo "NFS server disponível!"
+              echo "NFS server available!"
               break
             fi
-            echo "Aguardando NFS server... ($i/30)"
+            echo "Waiting for NFS server... ($i/30)"
             sleep 5
           done
 
-          # Criar ponto de montagem
+          # Create mount point
           mkdir -p /mnt/nfs-storage
 
-          # Montar NFS
+          # Mount NFS
           mount -t nfs #{NFS_SERVER_IP}:/exports/k8s-volumes /mnt/nfs-storage
 
-          # Adicionar ao fstab para montar no boot
+          # Add to fstab to mount at boot
           echo "#{NFS_SERVER_IP}:/exports/k8s-volumes /mnt/nfs-storage nfs defaults 0 0" >> /etc/fstab
 
-          echo "=== NFS montado em /mnt/nfs-storage ==="
+          echo "=== NFS mounted at /mnt/nfs-storage ==="
           df -h /mnt/nfs-storage
         SHELL
 
-        # Provisionamento Kubernetes com binário Go
+        # Kubernetes provisioning with the Go binary
         vm.vm.provision "shell", inline: <<-SHELL
           set -e
           cp /opt/k8s-provisioner/build/k8s-provisioner-linux-#{ARCH} /usr/local/bin/k8s-provisioner
