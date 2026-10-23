@@ -155,7 +155,7 @@ func (m *Monitoring) printAccessInfo() {
 	fmt.Println("  User: admin")
 	if m.config.Vault.Enabled {
 		fmt.Println("  Password: (stored in Vault)")
-		fmt.Println("  Retrieve: k8s-provisioner vault get-secret k8s-provisioner/api-keys")
+		fmt.Println("  Retrieve: k8s-provisioner vault get k8s-provisioner/api-keys")
 		fmt.Println("\nAlertmanager Config:")
 		fmt.Println("  Config: (stored in Vault as 'alertmanager_config')")
 		fmt.Println("  Store:  vault kv put secret/k8s-provisioner/api-keys alertmanager_config=@alertmanager.yaml")

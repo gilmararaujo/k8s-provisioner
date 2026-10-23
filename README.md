@@ -7,22 +7,22 @@ Kubernetes cluster provisioner written in Go for lab environments. Supports macO
 | Component | Version |
 |-----------|---------|
 | OS | Debian 13 "Trixie" |
-| Container Runtime | CRI-O 1.34 |
-| Kubernetes | 1.34 |
-| CNI | Calico 3.31.5 |
-| LoadBalancer | MetalLB 0.15.3 |
-| Service Mesh | Istio 1.29.2 + Kiali 2.24.0 |
-| TLS / Certificates | cert-manager v1.16.3 |
+| Container Runtime | CRI-O 1.37 |
+| Kubernetes | 1.37 |
+| CNI | Calico 3.33.0 |
+| LoadBalancer | MetalLB 0.16.0 |
+| Service Mesh | Istio 1.31.3 + Kiali 2.33.0 |
+| TLS / Certificates | cert-manager v1.21.2 |
 | Storage | NFS Server + Dynamic Provisioner |
-| Secrets Management | HashiCorp Vault |
-| Secrets Sync | Vault Secrets Operator (VSO) |
-| Autoscaling | HPA (native) + VPA + KEDA |
-| Metrics | Metrics Server + Prometheus Operator 0.90.1 |
-| Monitoring | Prometheus + Grafana 13.0.1 + node-exporter 1.11.1 |
-| Logging | Loki 3.7.1 + Grafana Alloy 1.15.1 |
-| Tracing | Grafana Tempo 2.10.4 + OpenTelemetry Collector 0.150.0 |
-| Identity Provider | Keycloak 26.2 |
-| Kubernetes Explorer | Karpor 0.7.6 (disabled by default) |
+| Secrets Management | HashiCorp Vault 2.2.1 (TLS) |
+| Secrets Sync | Vault Secrets Operator (VSO) 1.6 |
+| Autoscaling | HPA (native) + VPA 1.8.1 + KEDA 2.21 |
+| Metrics | Metrics Server + Prometheus Operator 0.94.1 |
+| Monitoring | Prometheus 3.15.1 + Alertmanager 0.34.1 + Grafana 13.2.4 + node-exporter 1.12.1 |
+| Logging | Loki 3.7.9 + Grafana Alloy 1.21.1 |
+| Tracing | Grafana Tempo 3.1.1 + OpenTelemetry Collector 0.163.2 |
+| Identity Provider | Keycloak 26.8.1 + PostgreSQL 18 |
+| Kubernetes Explorer | Karpor 0.6.4 (chart 0.7.8, disabled by default) |
 | AI Backend | Ollama (local/cloud, disabled by default) |
 
 ## Prerequisites
@@ -31,7 +31,7 @@ Kubernetes cluster provisioner written in Go for lab environments. Supports macO
 |------|---------|--------------|
 | VirtualBox | 7.0+ | [Download](https://www.virtualbox.org/wiki/Downloads) |
 | Vagrant | 2.4+ | [Download](https://developer.hashicorp.com/vagrant/downloads) |
-| kubectl | 1.34+ | [Install Guide](https://kubernetes.io/docs/tasks/tools/) |
+| kubectl | 1.37+ | [Install Guide](https://kubernetes.io/docs/tasks/tools/) |
 | Go | 1.22+ | [Download](https://go.dev/dl/) (only for building) |
 
 ### macOS (Homebrew)
@@ -143,9 +143,10 @@ are decisions, not oversights — and would need hardening before handling real 
   position or node/NFS filesystem access could read identity data. *Hardening path:* an
   Istio `PeerAuthentication` scoped to the Postgres workload (mTLS) and an encrypted
   StorageClass.
-- **Vault runs over plaintext HTTP** (`http://<storage>:8200`) as a systemd service on the
-  storage node, so bootstrap traffic (tokens, credentials) is cleartext on the node
-  network. *Hardening path:* enable TLS on Vault and use `https://…:8200`.
+- **Vault uses a self-managed lab CA.** Vault serves HTTPS (`https://<storage>:8200`) with a
+  certificate from its own CA, generated on the storage node; the CA private key stays
+  on that node and there is no automated rotation (the server cert lasts 825 days).
+  *Hardening path:* issue the Vault certificate from a managed PKI and rotate it.
 - **No database backups, audit logging, or retention/erasure policy**, and the Keycloak
   app uses the owning Postgres account (no least-privilege runtime role). Appropriate for
   ephemeral lab data; not for production.
@@ -163,7 +164,7 @@ k8s-provisioner/
 │   ├── provision.go           # provision common|controlplane|worker|workloads|all
 │   ├── status.go              # Cluster status
 │   ├── user.go                # User management (X.509 + RBAC)
-│   ├── vault.go               # Vault status / init-info / get-secret
+│   ├── vault.go               # Vault token / status / get / set / unseal
 │   └── vbox.go                # VirtualBox promiscuous mode
 ├── internal/
 │   ├── config/                # config.yaml parser + validation
@@ -286,7 +287,7 @@ echo "192.168.56.20 vault.local" | sudo tee -a /etc/hosts
 | `kiali.local` | Kiali (Istio) | https://kiali.local | — |
 | `karpor.local` | Karpor Explorer | https://karpor.local | — |
 | `keycloak.local` | Keycloak SSO | https://keycloak.local | `admin` / Vault |
-| `vault.local` | Vault | http://vault.local:8200 | root token from `vault-init.json` |
+| `vault.local` | Vault | https://vault.local:8200 | root token from `vault-init.json` |
 
 ### 6. Trust the lab CA (removes browser TLS warnings)
 
@@ -384,15 +385,17 @@ k8s-provisioner vbox list       # List all VirtualBox VMs
 ### Vault Management (runs on host)
 
 ```bash
-k8s-provisioner vault status        # Status do Vault (inicializado, sealed/unsealed)
-k8s-provisioner vault init-info     # Como recuperar as credenciais do storage node
-k8s-provisioner vault get-secret <path>  # Lê um secret (requer VAULT_TOKEN)
+k8s-provisioner vault status              # Vault connectivity and seal status
+k8s-provisioner vault token               # Print the root token (reads vault-init.json; run on the controlplane)
+k8s-provisioner vault get <path> [key]    # Read a secret (all keys, or a single key)
+k8s-provisioner vault set <path> <key> <value>  # Write a key (existing keys are preserved)
+k8s-provisioner vault unseal              # Unseal Vault after a storage node reboot
 ```
 
-Exemplo:
+Example:
 ```bash
 export VAULT_TOKEN=hvs.xxxx
-./build/k8s-provisioner-darwin-arm64 vault get-secret k8s-provisioner/api-keys
+./build/k8s-provisioner-darwin-arm64 vault get k8s-provisioner/api-keys
 ```
 
 **Why promiscuous mode?**
@@ -471,11 +474,11 @@ cluster:
   service_cidr: "10.96.0.0/12"
 
 versions:
-  kubernetes: "1.34"
-  crio: "v1.34"
-  calico: "3.31.5"
-  metallb: "0.15.3"
-  istio: "1.29.2"
+  kubernetes: "1.37"
+  crio: "v1.37"
+  calico: "3.33.0"
+  metallb: "0.16.0"
+  istio: "1.31.3"
 
 network:
   interface: "eth1"
@@ -502,28 +505,33 @@ components:
   load_balancer: "metallb"
   service_mesh: "istio"
   monitoring: "prometheus-stack"  # Options: prometheus-stack, none
-  logging: "loki"                 # Options: loki, none
-  karpor: "none"                  # Options: enabled, none (desabilitado por padrão — consome ~1.5 CPU, ~2GB RAM)
+  logging: "loki"                 # Options: loki, none (requires monitoring)
+  tracing: "otel-tempo"           # Options: otel-tempo, none (requires monitoring; trace→log links need logging)
+  karpor: "none"                  # Options: enabled, none (disabled by default — uses ~1.5 CPU, ~2GB RAM)
+  keycloak: "enabled"             # Options: enabled, none (OIDC for kubectl + Grafana SSO)
+  vpa: "enabled"                  # Options: enabled, none
+  keda: "enabled"                 # Options: enabled, none
 
-# HashiCorp Vault (roda no storage node, fora do cluster)
+# HashiCorp Vault (runs on the storage node, outside the cluster)
 vault:
   enabled: true
-  address: "http://192.168.56.20:8200"
-  version: "2.0.0"
-  auto_init: true    # Inicializa e faz unseal automaticamente
-  k8s_auth: true     # Configura Kubernetes auth method para pods
+  addr: ""     # Empty = derived as https://<storage-node-ip>:8200 from nodes:. Set to override.
+  token: ""    # env K8S_PROV_VAULT_TOKEN; empty = auto-resolve from vault-init.json
+  ca_cert: ""  # env VAULT_CACERT; empty = /etc/k8s-provisioner/vault-ca.crt (fetched from the storage node)
 
-# Karpor AI (requer karpor: "enabled" acima)
+# Karpor AI (requires karpor: "enabled" above)
 karpor_ai:
   enabled: false
   backend: "ollama"
   model: "llama3.2:3b"
 
-# Ollama (requer karpor_ai.enabled: true)
-# API key para modelos cloud — se Vault habilitado, armazene lá e deixe vazio aqui
+# Ollama (requires karpor_ai.enabled: true)
+# API key for cloud models — if Vault is enabled, store it there and leave this empty
 ollama:
-  api_key: ""
+  api_key: ""        # env OLLAMA_API_KEY
 ```
+
+Secret fields can be supplied through environment variables instead of `config.yaml`: `K8S_PROV_VAULT_TOKEN`, `K8S_PROV_SSH_PASSWORD`, `KARPOR_AUTH_TOKEN` and `OLLAMA_API_KEY`.
 
 ### vagrant/settings.yaml
 
@@ -544,7 +552,7 @@ vm:
   role: "controlplane"
 - name: "node01"
   ip: "192.168.56.11"
-  memory: "8192"    # Extra for AI workloads (Ollama, se habilitado)
+  memory: "8192"    # Extra for AI workloads (Ollama, if enabled)
   cpus: "2"
   role: "worker"
 - name: "node02"
@@ -556,40 +564,40 @@ vm:
 
 ## HashiCorp Vault
 
-O Vault é instalado automaticamente no storage node (`192.168.56.20:8200`) como serviço systemd, **fora do cluster Kubernetes**. Durante o `provision all`, o provisioner:
+Vault is installed automatically on the storage node (`https://192.168.56.20:8200`) as a systemd service, **outside the Kubernetes cluster**, so secrets survive cluster rebuilds. It serves **HTTPS** with a certificate from its own CA (see [Trusting the Vault CA](#trusting-the-vault-ca)). During `provision all`, the provisioner:
 
-1. Inicializa o Vault (5 unseal keys, threshold 3) e faz unseal automático
-2. Salva as credenciais em `/etc/vault.d/vault-init.json` no storage node
-3. Habilita o **KV v2 secrets engine** em `secret/k8s-provisioner/`
-4. Configura o **Kubernetes auth method** para pods se autenticarem via ServiceAccount
-5. Gera e armazena a **senha do Grafana** aleatoriamente
-6. Armazena **API keys** do Ollama e Karpor (se configurados)
+1. Initializes Vault (5 unseal keys, threshold 3) and unseals it automatically
+2. Saves the init data to `/etc/vault.d/vault-init.json` on the storage node
+3. Enables the **KV v2 secrets engine** at `secret/k8s-provisioner/`
+4. Configures the **Kubernetes auth method** so pods can authenticate with their ServiceAccount
+5. Generates a random **Grafana admin password** and stores it
+6. Stores the Ollama and Karpor **API keys** (if configured)
 
-### Recuperando credenciais do Vault
+### Retrieving Vault credentials
 
-As credenciais são salvas em dois locais durante o `provision all`:
+The init data is saved in two places during `provision all`:
 
-| Local | Path | Acesso |
-|-------|------|--------|
+| Location | Path | Access |
+|----------|------|--------|
 | Storage node | `/etc/vault.d/vault-init.json` | `vagrant ssh storage` |
 | Controlplane (backup) | `/etc/k8s-provisioner/vault-init.json` | `vagrant ssh controlplane` |
 
-**Opção 1 — via storage node (principal):**
+**Option 1 — from the storage node (primary):**
 ```bash
 vagrant ssh storage -c 'sudo cat /etc/vault.d/vault-init.json' | jq .
 ```
 
-**Opção 2 — via controlplane (backup):**
+**Option 2 — from the controlplane (backup):**
 ```bash
 vagrant ssh controlplane -c 'sudo cat /etc/k8s-provisioner/vault-init.json' | jq .
 ```
 
-**Opção 3 — via CLI do projeto (na máquina host):**
+**Option 3 — root token only, with the project CLI:**
 ```bash
-./build/k8s-provisioner-darwin-arm64 vault init-info
+vagrant ssh controlplane -c 'sudo k8s-provisioner vault token'
 ```
 
-O JSON retornado contém:
+The returned JSON contains:
 ```json
 {
   "keys": ["unseal-key-1", "unseal-key-2", "..."],
@@ -597,99 +605,140 @@ O JSON retornado contém:
 }
 ```
 
-Use o `root_token` para acessar a UI ou autenticar no CLI.
+Use the `root_token` to access the UI or authenticate the CLI.
 
-### Acessar a UI
+### Trusting the Vault CA
 
-```
-http://192.168.56.20:8200/ui
-```
+Vault's CA is generated on the storage node on the first `vagrant up`
+(`/etc/vault.d/tls/ca.crt`) and kept across re-provisioning. It is separate from the
+cluster's lab CA because Vault starts before the cluster (and cert-manager) exists.
+Trust it once on your machine so the browser UI, the `vault` CLI and the project CLI
+can all verify Vault.
 
-Faça login com o `root_token` obtido acima.
-
-### Recuperar senha do Grafana
+**macOS:**
 
 ```bash
-# Via CLI do projeto
-./build/k8s-provisioner-darwin-arm64 vault get-secret k8s-provisioner/api-keys
+# 1. Export the Vault CA from the storage node (run from the vagrant/ directory)
+vagrant ssh storage -c 'cat /etc/vault.d/tls/ca.crt' > /tmp/vault-ca.crt
 
-# Via Vault CLI
-export VAULT_ADDR=http://192.168.56.20:8200
+# 2. Sanity-check it (should print: subject=CN=k8s-lab Vault CA)
+openssl x509 -in /tmp/vault-ca.crt -noout -subject
+
+# 3. Trust it system-wide, then fully quit & reopen the browser
+sudo security add-trusted-cert -d -r trustRoot \
+  -k /Library/Keychains/System.keychain /tmp/vault-ca.crt
+```
+
+**Linux:**
+
+```bash
+vagrant ssh storage -c 'cat /etc/vault.d/tls/ca.crt' \
+  | sudo tee /usr/local/share/ca-certificates/k8s-lab-vault-ca.crt > /dev/null
+sudo update-ca-certificates
+```
+
+If you prefer not to trust it system-wide, point the CLIs at the file instead:
+`export VAULT_CACERT=/tmp/vault-ca.crt` (honored by both `vault` and `k8s-provisioner`).
+
+Inside the lab nothing is manual: the provisioner fetches the CA to
+`/etc/k8s-provisioner/vault-ca.crt` on the controlplane, the Vault Secrets Operator gets
+it as the `vault-ca` Secret, and on the storage node `VAULT_ADDR`/`VAULT_CACERT` are
+preset for login shells (`/etc/profile.d/vault.sh`).
+
+### Accessing the UI
+
+```
+https://192.168.56.20:8200/ui
+```
+
+Log in with the `root_token` obtained above.
+
+> The UI's **Copy** / **Copy JSON** buttons use the browser clipboard API, which only
+> works on HTTPS pages with a trusted certificate — trust the Vault CA first (above).
+
+### Retrieving the Grafana password
+
+```bash
+# With the project CLI
+./build/k8s-provisioner-darwin-arm64 vault get k8s-provisioner/api-keys
+
+# With the Vault CLI
+export VAULT_ADDR=https://192.168.56.20:8200   # needs the Vault CA trusted, or VAULT_CACERT
 export VAULT_TOKEN=$(vagrant ssh storage -c 'sudo cat /etc/vault.d/vault-init.json' | jq -r .root_token)
 vault kv get -field=grafana_admin_password secret/k8s-provisioner/api-keys
 ```
 
-### Verificar status
+### Checking status
 
 ```bash
 ./build/k8s-provisioner-darwin-arm64 vault status
 ```
 
-### Operações via Vault CLI
+### Vault CLI operations
 
-Configure as variáveis de ambiente antes de usar o Vault CLI:
+Set the environment variables before using the Vault CLI:
 
 ```bash
-export VAULT_ADDR=http://192.168.56.20:8200
+export VAULT_ADDR=https://192.168.56.20:8200   # needs the Vault CA trusted, or VAULT_CACERT
 export VAULT_TOKEN=$(vagrant ssh storage -c 'sudo cat /etc/vault.d/vault-init.json' | jq -r .root_token)
 ```
 
-#### Listar e ler secrets
+#### Listing and reading secrets
 
 ```bash
-# Listar todos os paths de secrets
+# List all secret paths
 vault kv list secret/k8s-provisioner/
 
-# Ler todos os secrets do projeto
+# Read all project secrets
 vault kv get secret/k8s-provisioner/api-keys
 
-# Ler um campo específico
+# Read a specific field
 vault kv get -field=grafana_admin_password secret/k8s-provisioner/api-keys
 vault kv get -field=ollama_api_key secret/k8s-provisioner/api-keys
 ```
 
-#### Criar e atualizar secrets
+#### Creating and updating secrets
 
 ```bash
-# Adicionar um novo secret (mantém os existentes)
-vault kv patch secret/k8s-provisioner/api-keys meu_secret="valor"
+# Add a new secret (keeps the existing ones)
+vault kv patch secret/k8s-provisioner/api-keys my_secret="value"
 
-# Substituir todos os secrets de um path
+# Replace all secrets in a path
 vault kv put secret/k8s-provisioner/api-keys \
-  grafana_admin_password="nova-senha" \
+  grafana_admin_password="new-password" \
   ollama_api_key="olka_xxxxx"
 
-# Criar um path novo
-vault kv put secret/minha-app/config \
-  db_password="senha-segura" \
-  api_key="chave-api"
+# Create a new path
+vault kv put secret/my-app/config \
+  db_password="strong-password" \
+  api_key="api-key"
 ```
 
-#### Versões e histórico
+#### Versions and history
 
 ```bash
-# Ver histórico de versões de um secret
+# Show the version history of a secret
 vault kv metadata get secret/k8s-provisioner/api-keys
 
-# Ler uma versão específica
+# Read a specific version
 vault kv get -version=1 secret/k8s-provisioner/api-keys
 
-# Restaurar versão anterior
+# Restore a previous version
 vault kv undelete -versions=1 secret/k8s-provisioner/api-keys
 ```
 
-#### Gerenciar políticas
+#### Managing policies
 
 ```bash
-# Listar políticas
+# List policies
 vault policy list
 
-# Ver política existente
+# Show an existing policy
 vault policy read k8s-provisioner
 
-# Criar política personalizada
-vault policy write minha-app - <<EOF
-path "secret/data/minha-app/*" {
+# Create a custom policy
+vault policy write my-app - <<EOF
+path "secret/data/my-app/*" {
   capabilities = ["read"]
 }
 path "secret/data/k8s-provisioner/api-keys" {
@@ -701,28 +750,28 @@ EOF
 #### Kubernetes auth method
 
 ```bash
-# Verificar configuração do k8s auth
+# Check the k8s auth configuration
 vault auth list
 vault read auth/kubernetes/config
 
-# Listar roles configuradas
+# List configured roles
 vault list auth/kubernetes/role
 
-# Ver detalhes de uma role
+# Show role details
 vault read auth/kubernetes/role/k8s-provisioner
 
-# Criar role para uma nova aplicação
-vault write auth/kubernetes/role/minha-app \
-  bound_service_account_names="minha-app-sa" \
+# Create a role for a new application
+vault write auth/kubernetes/role/my-app \
+  bound_service_account_names="my-app-sa" \
   bound_service_account_namespaces="default" \
-  policies="minha-app" \
+  policies="my-app" \
   ttl="1h"
 ```
 
-#### Testar autenticação de um pod
+#### Testing pod authentication
 
 ```bash
-# Dentro do pod — autentica usando o ServiceAccount token
+# Inside the pod — authenticate with the ServiceAccount token
 SA_TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
 
 vault write auth/kubernetes/login \
@@ -730,87 +779,87 @@ vault write auth/kubernetes/login \
   jwt="$SA_TOKEN"
 ```
 
-### App de exemplo
+### Example app
 
 ```bash
-# Deploy de uma app que busca secrets do Vault via init container
+# Deploy an app that fetches secrets from Vault via an init container
 kubectl apply -f examples/vault-secret-app.yaml
 
-# Acompanhar autenticação e busca do secret
+# Follow authentication and secret fetching
 kubectl logs -l app=vault-demo -c vault-fetch-secrets
 
-# Ver o container principal usando o secret
+# See the main container using the secret
 kubectl logs -l app=vault-demo -c app
 
-# Inspecionar o arquivo de secret (em memória)
+# Inspect the secret file (in memory)
 kubectl exec -it deploy/vault-demo-app -- cat /vault/secrets/api-keys.json
 
-# Remover
+# Clean up
 kubectl delete -f examples/vault-secret-app.yaml
 ```
 
-Veja [examples/vault-usage.md](examples/vault-usage.md) para o guia completo.
+See [examples/vault-usage.md](examples/vault-usage.md) for the full guide.
 
-### Fluxo de secrets
+### Secrets flow
 
 ```
-config.yaml (apenas na primeira vez)
-    └─► VaultInstaller armazena em Vault
-              ├─► grafana_admin_password (gerada aleatoriamente)
+config.yaml / env vars (first run only)
+    └─► VaultInstaller stores them in Vault
+              ├─► grafana_admin_password (randomly generated)
               ├─► ollama_api_key
               └─► karpor_auth_token
 
-              ↓ provisioner continua
+              ↓ provisioner continues
 
-    Monitoring ──► lê grafana_admin_password do Vault
-                       └─► cria K8s Secret grafana-admin
-                               └─► Grafana usa secretKeyRef
+    Monitoring ──► reads grafana_admin_password from Vault
+                       └─► creates K8s Secret grafana-admin
+                               └─► Grafana uses secretKeyRef
 
-    Ollama ──────► lê ollama_api_key do Vault
-                       └─► cria K8s Secret ollama-api-key
-                               └─► Pod usa secretKeyRef
+    Ollama ──────► reads ollama_api_key from Vault
+                       └─► creates K8s Secret ollama-api-key
+                               └─► Pod uses secretKeyRef
 
-    Karpor ──────► lê karpor_auth_token do Vault
-                       └─► passa via helm --set (sem arquivo em disco)
+    Karpor ──────► reads karpor_auth_token from Vault
+                       └─► passed via helm --set (no file on disk)
 ```
 
-Após o primeiro deploy, os secrets ficam **apenas no Vault**. Remova as chaves do `config.yaml`:
+After the first deploy, secrets live **only in Vault**. Remove the keys from `config.yaml`:
 
 ```yaml
 ollama:
-  api_key: ""   # vazio — o Vault é a fonte de verdade agora
+  api_key: ""   # empty — Vault is now the source of truth
 ```
 
-### Boas práticas
+### Best practices
 
-| Prática | Por quê |
-|---------|---------|
-| Nunca commitar `config.yaml` com API keys preenchidas | Evita exposição acidental no git |
-| Usar o Vault como única fonte de verdade após o primeiro deploy | Garante rastreabilidade e rotação centralizada |
-| Criar políticas com menor privilégio por aplicação | Um secret comprometido não expõe os demais |
-| Usar `kv patch` para atualizar sem sobrescrever outros campos | Preserva o histórico de versões do KV v2 |
-| Nunca usar o root token em aplicações | Crie tokens scoped via `vault token create -policy=minha-app` |
-| Armazenar secrets apenas em volumes `emptyDir.medium: Memory` | Secrets nunca vão para disco nas VMs |
-| Rotacionar o root token após o setup inicial | `vault token revoke <root_token>` após criar tokens de operação |
+| Practice | Why |
+|----------|-----|
+| Never commit `config.yaml` with API keys filled in (use env vars instead) | Avoids accidental exposure in git |
+| Use Vault as the single source of truth after the first deploy | Ensures traceability and centralized rotation |
+| Create least-privilege policies per application | A compromised secret doesn't expose the others |
+| Use `kv patch` to update without overwriting other fields | Preserves the KV v2 version history |
+| Never use the root token in applications | Create scoped tokens with `vault token create -policy=my-app` |
+| Store secrets only in `emptyDir.medium: Memory` volumes | Secrets never hit the VM disks |
+| Rotate the root token after the initial setup | `vault token revoke <root_token>` after creating operational tokens |
 
-### Rotacionar a senha do Grafana
+### Rotating the Grafana password
 
 ```bash
-# Gerar nova senha e salvar no Vault
+# Generate a new password and save it in Vault
 vault kv patch secret/k8s-provisioner/api-keys \
-  grafana_admin_password="nova-senha-segura"
+  grafana_admin_password="new-strong-password"
 
-# Atualizar o K8s Secret (Grafana usa no próximo restart)
+# Update the K8s Secret (Grafana picks it up on the next restart)
 kubectl create secret generic grafana-admin \
   -n monitoring \
-  --from-literal=password="nova-senha-segura" \
+  --from-literal=password="new-strong-password" \
   --dry-run=client -o yaml | kubectl apply -f -
 
-# Reiniciar o Grafana para aplicar
+# Restart Grafana to apply it
 kubectl rollout restart deployment/grafana -n monitoring
 ```
 
-### Desabilitar o Vault
+### Disabling Vault
 
 ```yaml
 # config.yaml
@@ -818,7 +867,7 @@ vault:
   enabled: false
 ```
 
-Nesse caso o Grafana usa a senha padrão `admin123` e as API keys vêm diretamente do `config.yaml`.
+In this case there are no default passwords: the Grafana and Keycloak credentials are generated randomly and written to `/etc/k8s-provisioner/grafana-credentials.txt` and `/etc/k8s-provisioner/keycloak-credentials.txt` (mode `0600`) on the controlplane, and API keys come straight from `config.yaml` or the environment variables.
 
 ---
 
@@ -1166,11 +1215,11 @@ open https://grafana.local
 
 **Credentials:**
 - Username: `admin`
-- Password: gerada pelo Vault — recupere com:
+- Password: generated randomly and stored in Vault — retrieve it with:
   ```bash
   vault kv get -field=grafana_admin_password secret/k8s-provisioner/api-keys
   ```
-  > Se Vault desabilitado: `admin123`
+  > If Vault is disabled: `sudo cat /etc/k8s-provisioner/grafana-credentials.txt` on the controlplane
 
 ### Accessing Prometheus
 
@@ -1654,7 +1703,7 @@ Download and import the Istio dashboards from the official Istio repo — these 
 
 ```bash
 # Download official Istio dashboards (pre-configured for Prometheus)
-ISTIO_VERSION=release-1.29
+ISTIO_VERSION=release-1.31
 BASE_URL=https://raw.githubusercontent.com/istio/istio/${ISTIO_VERSION}/manifests/addons/dashboards
 
 for dashboard in istio-mesh-dashboard istio-service-dashboard istio-workload-dashboard \
@@ -1675,7 +1724,7 @@ For the OTel Collector dashboard (ID `15983`), it uses a separate `$otelcol_data
 
 Karpor is a Kubernetes Explorer that provides intelligent search and AI-powered analysis.
 
-> **Note:** Karpor está **desabilitado por padrão** pois requer recursos extras (~1.5 CPU, ~2GB RAM). Para habilitar:
+> **Note:** Karpor is **disabled by default** because it needs extra resources (~1.5 CPU, ~2GB RAM). To enable it:
 > ```yaml
 > components:
 >   karpor: "enabled"
@@ -1722,10 +1771,10 @@ kubectl logs -n karpor -l app.kubernetes.io/component=karpor-server
 
 Ollama provides AI capabilities for Karpor, supporting both local and cloud models.
 
-> **Note:** Ollama está **desabilitado por padrão** e só é instalado quando Karpor AI está habilitado:
+> **Note:** Ollama is **disabled by default** and is only installed when Karpor AI is enabled:
 > ```yaml
 > karpor_ai:
->   enabled: true   # Habilita Ollama automaticamente
+>   enabled: true   # Enables Ollama automatically
 > ```
 
 ### Local Models (Default)
@@ -1768,12 +1817,12 @@ karpor_ai:
   model: "minimax-m2.5:cloud"
 
 ollama:
-  api_key: "olka_your_key_here"  # Apenas no primeiro deploy — depois armazene no Vault
+  api_key: "olka_your_key_here"  # First deploy only — then keep it in Vault (or use env OLLAMA_API_KEY)
 ```
 
-> Se o Vault estiver habilitado, armazene a API key diretamente no Vault e deixe `api_key: ""` no config.yaml:
+> If Vault is enabled, store the API key directly in Vault and leave `api_key: ""` in config.yaml:
 > ```bash
-> vault kv patch secret/k8s-provisioner/api-keys ollama_api_key="olka_sua_chave"
+> vault kv patch secret/k8s-provisioner/api-keys ollama_api_key="olka_your_key"
 > ```
 
 **Available cloud models:**
@@ -1837,7 +1886,7 @@ kubectl create namespace demo
 kubectl label namespace demo istio-injection=enabled
 
 # Deploy httpbin
-kubectl apply -n demo -f https://raw.githubusercontent.com/istio/istio/release-1.29/samples/httpbin/httpbin.yaml
+kubectl apply -n demo -f https://raw.githubusercontent.com/istio/istio/release-1.31/samples/httpbin/httpbin.yaml
 
 # Create Gateway and VirtualService
 kubectl apply -f - <<EOF
@@ -1954,18 +2003,18 @@ Output example:
 
 ```bash
 # vault.local requires the /etc/hosts entry: 192.168.56.20 vault.local
-open http://vault.local:8200
+open https://vault.local:8200
 
 # Or use the IP directly (no /etc/hosts needed)
-open http://192.168.56.20:8200
+open https://192.168.56.20:8200
 ```
 
-Login with the `root_token` from `vault-init.json`.
+Login with the `root_token` from `vault-init.json`. The browser must trust the Vault CA (see [Trusting the Vault CA](#trusting-the-vault-ca)).
 
 ### Accessing Vault via CLI
 
 ```bash
-export VAULT_ADDR=http://192.168.56.20:8200
+export VAULT_ADDR=https://192.168.56.20:8200   # needs the Vault CA trusted, or VAULT_CACERT
 export VAULT_TOKEN=hvs.XXXXXXXXXXXXXXXXXXXXXXXXXXXX   # from vault-init.json
 
 # List secrets
@@ -1988,17 +2037,19 @@ Vault is automatically unsealed during provisioning. If the storage node is rest
 vagrant ssh storage
 
 # Unseal with 3 of the 5 keys from vault-init.json
-sudo VAULT_ADDR=http://localhost:8200 vault operator unseal <key-1>
-sudo VAULT_ADDR=http://localhost:8200 vault operator unseal <key-2>
-sudo VAULT_ADDR=http://localhost:8200 vault operator unseal <key-3>
+# (VAULT_ADDR and VAULT_CACERT are preset by /etc/profile.d/vault.sh)
+vault operator unseal <key-1>
+vault operator unseal <key-2>
+vault operator unseal <key-3>
 ```
 
 ### config.yaml
 
 ```yaml
 vault:
-  addr: "http://192.168.56.20:8200"
-  token: ""   # Leave empty — token is auto-read from /etc/k8s-provisioner/vault-init.json
+  addr: "https://192.168.56.20:8200"
+  token: ""     # Leave empty — token is auto-read from /etc/k8s-provisioner/vault-init.json
+  ca_cert: ""   # Leave empty — CA is fetched to /etc/k8s-provisioner/vault-ca.crt
 ```
 
 ---
@@ -2041,21 +2092,23 @@ All Keycloak credentials are stored in Vault at `secret/k8s-provisioner/api-keys
 To customize passwords before provisioning:
 
 ```bash
-export VAULT_ADDR=http://192.168.56.20:8200
+export VAULT_ADDR=https://192.168.56.20:8200
+export VAULT_CACERT=/etc/k8s-provisioner/vault-ca.crt
 export VAULT_TOKEN=$(cat /etc/k8s-provisioner/vault-init.json | jq -r .root_token)
 
 vault kv patch secret/k8s-provisioner/api-keys \
-  keycloak_k8sadmin_password="MinhaSenh@Forte" \
-  keycloak_developer_password="OutraSenha@123"
+  keycloak_k8sadmin_password="MyStr0ng@Pass" \
+  keycloak_developer_password="An0ther@Pass123"
 ```
 
 > **Note:** Run this after Vault is initialized but before Keycloak is installed (or recreate the cluster).
 
-To retrieve via Vault UI: `http://vault.local:8200` → **secret/k8s-provisioner/api-keys**
+To retrieve via Vault UI: `https://vault.local:8200` → **secret/k8s-provisioner/api-keys**
 
 To retrieve via CLI:
 ```bash
-export VAULT_ADDR=http://192.168.56.20:8200
+export VAULT_ADDR=https://192.168.56.20:8200
+export VAULT_CACERT=/etc/k8s-provisioner/vault-ca.crt
 export VAULT_TOKEN=$(cat /etc/k8s-provisioner/vault-init.json | grep root_token | cut -d'"' -f4)
 vault kv get secret/k8s-provisioner/api-keys
 ```
@@ -2139,7 +2192,7 @@ $KCADM update users/$NEW_UID/groups/$GID -r k8s -s realm=k8s -s userId=$NEW_UID 
 ```bash
 vagrant ssh storage
 
-export VAULT_ADDR=http://127.0.0.1:8200
+# VAULT_ADDR / VAULT_CACERT are preset by /etc/profile.d/vault.sh
 export VAULT_TOKEN=$(sudo cat /etc/vault.d/vault-init.json | grep root_token | cut -d'"' -f4)
 
 vault kv get -field=config secret/k8s-provisioner/kubeconfig-oidc > /tmp/kubeconfig-oidc
@@ -2156,7 +2209,7 @@ Send the `kubeconfig-oidc` file to the user.
 
 **Alternative: copy from the Vault UI**
 
-1. Open `http://192.168.56.20:8200` in your browser and log in with the root token
+1. Open `https://192.168.56.20:8200` in your browser (with the Vault CA trusted) and log in with the root token
 2. Navigate to **secret → k8s-provisioner → kubeconfig-oidc**
 3. Copy the value of the `config` field
 4. Paste into a new file and save as `~/.kube/kubeconfig-oidc`
@@ -2351,11 +2404,11 @@ The `clean.sh` script will:
 |----|--------|------|------|---------|
 | Storage | 2 GB | 1 | 10 GB | NFS Server + HashiCorp Vault |
 | ControlPlane | 6 GB | 4 | 20 GB | K8s Master + Monitoring |
-| Node01 | 8 GB | 2 | 20 GB | Worker + AI Workloads (opcional) |
+| Node01 | 8 GB | 2 | 20 GB | Worker + AI Workloads (optional) |
 | Node02 | 4 GB | 2 | 20 GB | Worker |
 | **Total** | **20 GB** | **9** | **70 GB** | |
 
-> **Karpor + Ollama desabilitados por padrão.** Para habilitá-los, o Node01 precisa dos 8GB para carregar o modelo llama3.2:3b (~4GB RAM).
+> **Karpor + Ollama are disabled by default.** To enable them, Node01 needs the full 8GB to load the llama3.2:3b model (~4GB RAM).
 
 ## GitFlow & CI/CD
 

@@ -1,7 +1,7 @@
 require 'yaml'
 settings = YAML.load_file(File.join(File.dirname(__FILE__), 'settings.yaml'))
 
-# Mapeamento de nomes para exibição no VirtualBox
+# Display-name mapping for VirtualBox
 DISPLAY_NAMES = {
   "storage" => "Storage",
   "controlplane" => "Master",
@@ -38,7 +38,7 @@ Vagrant.configure("2") do |config|
       vm.vm.hostname = vm_config['name']
       vm.vm.network "private_network", ip: vm_config['ip']
 
-      # Synced folders (apenas para VMs Kubernetes)
+      # Synced folders (Kubernetes VMs only)
       if vm_role != "storage"
         vm.vm.synced_folder ".", "/vagrant", type: "virtualbox"
         vm.vm.synced_folder "..", "/opt/k8s-provisioner", type: "virtualbox"
@@ -52,7 +52,7 @@ Vagrant.configure("2") do |config|
         vb.customize ["modifyvm", :id, "--nicpromisc2", "allow-all"]
       end
 
-      # Garantir modo promíscuo após VM iniciar (up, reload, resume)
+      # Ensure promiscuous mode after the VM starts (up, reload, resume)
       [:up, :reload, :resume].each do |action|
         vm.trigger.after action do |trigger|
           trigger.name = "Enable promiscuous mode for #{vm_display_name}"
@@ -61,7 +61,7 @@ Vagrant.configure("2") do |config|
         end
       end
 
-      # Provisionamento base: /etc/hosts e ferramentas
+      # Base provisioning: /etc/hosts and tools
       vm.vm.provision "shell", inline: <<-SHELL
         set -e
         apt-get update -y
@@ -73,7 +73,7 @@ Vagrant.configure("2") do |config|
         echo "192.168.56.11 node01" >> /etc/hosts
         echo "192.168.56.12 node02" >> /etc/hosts
 
-        # Configurar vim para YAML/Kubernetes
+        # Configure vim for YAML/Kubernetes
         cat > /etc/vim/vimrc.local <<'VIMRC'
 " Kubernetes/YAML friendly vim configuration
 syntax on
@@ -89,26 +89,26 @@ filetype plugin indent on
 autocmd FileType yaml setlocal ts=2 sts=2 sw=2 expandtab
 VIMRC
 
-        # Copiar para usuário vagrant
+        # Copy to the vagrant user
         mkdir -p /home/vagrant
         cp /etc/vim/vimrc.local /home/vagrant/.vimrc
         chown vagrant:vagrant /home/vagrant/.vimrc
 
-        # Copiar para root
+        # Copy to root
         cp /etc/vim/vimrc.local /root/.vimrc
       SHELL
 
-      # Provisionamento específico por role
+      # Role-specific provisioning
       case vm_role
       when "storage"
         vm.vm.provision "shell", inline: <<-SHELL
           set -e
-          echo "=== Configurando NFS Server ==="
+          echo "=== Configuring NFS Server ==="
 
-          # Instalar NFS server
+          # Install NFS server
           apt-get install -y nfs-kernel-server
 
-          # Criar diretórios de export
+          # Create export directories
           mkdir -p /exports/k8s-volumes
           mkdir -p /exports/k8s-volumes/pv01
           mkdir -p /exports/k8s-volumes/pv02
@@ -350,12 +350,12 @@ VAULTSERVICE
           SHELL
         end
 
-        # Configurar kubectl autocomplete e aliases
+        # Configure kubectl autocomplete and aliases
         vm.vm.provision "shell", inline: <<-SHELL
           set -e
-          echo "=== Configurando kubectl autocomplete e aliases ==="
+          echo "=== Configuring kubectl autocomplete and aliases ==="
 
-          # Configuração para usuário vagrant
+          # Configuration for the vagrant user
           cat >> /home/vagrant/.bashrc <<'BASHRC'
 
 # Kubectl autocomplete
@@ -374,10 +374,10 @@ alias kx='kubectl exec -it'
 alias ka='kubectl apply -f'
 alias kdel='kubectl delete -f'
 
-# Autocomplete para alias k
+# Autocomplete for the k alias
 complete -o default -F __start_kubectl k
 
-# Namespace rápido
+# Quick namespace switch
 alias kn='kubectl config set-context --current --namespace'
 
 # Dry-run helper
@@ -385,7 +385,7 @@ export do='--dry-run=client -o yaml'
 BASHRC
           chown vagrant:vagrant /home/vagrant/.bashrc
 
-          # Mesma configuração para root
+          # Same configuration for root
           cat >> /root/.bashrc <<'BASHRC'
 
 # Kubectl autocomplete
@@ -404,17 +404,17 @@ alias kx='kubectl exec -it'
 alias ka='kubectl apply -f'
 alias kdel='kubectl delete -f'
 
-# Autocomplete para alias k
+# Autocomplete for the k alias
 complete -o default -F __start_kubectl k
 
-# Namespace rápido
+# Quick namespace switch
 alias kn='kubectl config set-context --current --namespace'
 
 # Dry-run helper
 export do='--dry-run=client -o yaml'
 BASHRC
 
-          echo "=== Autocomplete e aliases configurados ==="
+          echo "=== Autocomplete and aliases configured ==="
         SHELL
       end
     end

@@ -1,21 +1,21 @@
-# HashiCorp Vault — Guia de Uso
+# HashiCorp Vault — Usage Guide
 
-O Vault roda no storage node (`192.168.56.20:8200`) fora do cluster Kubernetes.
+Vault runs on the storage node (`https://192.168.56.20:8200`), outside the Kubernetes cluster, and serves TLS with its own CA. Trust that CA first — see "Trusting the Vault CA" in the README.
 
-## Acessar a UI
+## Accessing the UI
 
 ```
-http://192.168.56.20:8200/ui
+https://192.168.56.20:8200/ui
 ```
 
-Token de acesso:
+Access token:
 ```bash
 vagrant ssh storage -c 'sudo cat /etc/vault.d/vault-init.json'
 ```
 
 ---
 
-## Verificar status pelo CLI
+## Checking status with the CLI
 
 ```bash
 ./build/k8s-provisioner-darwin-arm64 vault status
@@ -23,9 +23,9 @@ vagrant ssh storage -c 'sudo cat /etc/vault.d/vault-init.json'
 
 ---
 
-## App de exemplo — vault-secret-app.yaml
+## Example app — vault-secret-app.yaml
 
-Demonstra o padrão de injeção de secrets via init container.
+Demonstrates the secret-injection pattern using an init container.
 
 ### Deploy
 
@@ -33,25 +33,25 @@ Demonstra o padrão de injeção de secrets via init container.
 kubectl apply -f examples/vault-secret-app.yaml
 ```
 
-### Verificar logs do init container (busca o secret)
+### Check the init container logs (fetches the secret)
 
 ```bash
 kubectl logs -l app=vault-demo -c vault-fetch-secrets
 ```
 
-### Verificar o container principal (usa o secret)
+### Check the main container (uses the secret)
 
 ```bash
 kubectl logs -l app=vault-demo -c app
 ```
 
-### Inspecionar o arquivo de secret dentro do pod
+### Inspect the secret file inside the pod
 
 ```bash
 kubectl exec -it deploy/vault-demo-app -- cat /vault/secrets/api-keys.json
 ```
 
-### Remover
+### Clean up
 
 ```bash
 kubectl delete -f examples/vault-secret-app.yaml
@@ -59,46 +59,47 @@ kubectl delete -f examples/vault-secret-app.yaml
 
 ---
 
-## Como funciona (fluxo)
+## How it works (flow)
 
 ```
-Pod inicia
+Pod starts
   └─> init container: vault-fetch-secrets
-        1. Lê o token do ServiceAccount em /var/run/secrets/kubernetes.io/serviceaccount/token
-        2. POST /v1/auth/kubernetes/login  →  obtém VAULT_TOKEN
+        1. Reads the ServiceAccount token from /var/run/secrets/kubernetes.io/serviceaccount/token
+        2. POST /v1/auth/kubernetes/login  →  gets VAULT_TOKEN
         3. GET  /v1/secret/data/k8s-provisioner/api-keys  →  secrets JSON
-        4. Escreve em /vault/secrets/api-keys.json (volume em memória)
-  └─> container principal: app
-        - Lê /vault/secrets/api-keys.json (somente leitura)
-        - Secrets nunca passam por variáveis de ambiente nem ficam em disco
+        4. Writes to /vault/secrets/api-keys.json (in-memory volume)
+  └─> main container: app
+        - Reads /vault/secrets/api-keys.json (read-only)
+        - Secrets never go through environment variables and never touch disk
 ```
 
 ---
 
-## Adicionar novos secrets
+## Adding new secrets
 
 ```bash
-# Da sua máquina (com VAULT_TOKEN)
-export VAULT_ADDR=http://192.168.56.20:8200
+# From your machine (with VAULT_TOKEN)
+export VAULT_ADDR=https://192.168.56.20:8200
+export VAULT_CACERT=/tmp/vault-ca.crt   # or trust the CA system-wide (see README)
 export VAULT_TOKEN=<root_token>
 
-vault kv put secret/k8s-provisioner/api-keys \
-  ollama_api_key="sua-chave" \
-  meu_novo_secret="valor"
+vault kv patch secret/k8s-provisioner/api-keys \
+  ollama_api_key="your-key" \
+  my_new_secret="value"
 ```
 
-Ou pelo CLI do projeto:
+Read them back with the project CLI:
 ```bash
-./build/k8s-provisioner-darwin-arm64 vault get-secret k8s-provisioner/api-keys
+./build/k8s-provisioner-darwin-arm64 vault get k8s-provisioner/api-keys
 ```
 
 ---
 
-## Usar em seus próprios deployments
+## Using it in your own deployments
 
-Copie o padrão do `vault-secret-app.yaml`:
+Copy the pattern from `vault-secret-app.yaml`:
 
-1. Adicione `serviceAccountName: vault-demo` (ou crie seu próprio SA)
-2. Adicione o init container `vault-fetch-secrets`
-3. Monte o volume `vault-secrets` como `emptyDir.medium: Memory`
-4. No container principal, leia de `/vault/secrets/`
+1. Add `serviceAccountName: vault-demo` (or create your own SA)
+2. Add the `vault-fetch-secrets` init container
+3. Mount the `vault-secrets` volume as `emptyDir.medium: Memory`
+4. In the main container, read from `/vault/secrets/`

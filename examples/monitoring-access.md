@@ -37,21 +37,22 @@ kubectl port-forward -n monitoring svc/grafana 3000:3000
 ## Grafana Credentials
 
 - **Username:** admin
-- **Password:** gerada automaticamente e armazenada no Vault
+- **Password:** generated automatically and stored in Vault
 
-Para recuperar a senha:
+To retrieve the password:
 
 ```bash
-# Via CLI do projeto (na máquina host)
-export VAULT_ADDR=http://192.168.56.20:8200
+# With the Vault CLI (on the host machine)
+export VAULT_ADDR=https://192.168.56.20:8200
+export VAULT_CACERT=/tmp/vault-ca.crt   # or trust the CA system-wide (see README)
 export VAULT_TOKEN=$(vagrant ssh storage -c 'sudo cat /etc/vault.d/vault-init.json' | jq -r .root_token)
 vault kv get -field=grafana_admin_password secret/k8s-provisioner/api-keys
 
-# Ou diretamente via CLI do projeto
-./build/k8s-provisioner-darwin-arm64 vault get-secret k8s-provisioner/api-keys
+# Or directly with the project CLI
+./build/k8s-provisioner-darwin-arm64 vault get k8s-provisioner/api-keys
 ```
 
-> Se o Vault não estiver habilitado (`vault.enabled: false` no config.yaml), a senha padrão é `admin123`.
+> If Vault is disabled (`vault.enabled: false` in config.yaml), the password is generated randomly and written to `/etc/k8s-provisioner/grafana-credentials.txt` (mode `0600`) on the controlplane.
 
 ## Accessing Prometheus
 

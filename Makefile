@@ -3,7 +3,7 @@
 BINARY_NAME=k8s-provisioner
 BUILD_DIR=build
 
-# Versão do Git (tag ou commit)
+# Git version (tag or commit)
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 GIT_COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 BUILD_DATE ?= $(shell date -u '+%Y-%m-%dT%H:%M:%SZ')
@@ -15,10 +15,10 @@ GOCLEAN=$(GOCMD) clean
 GOTEST=$(GOCMD) test
 GOMOD=$(GOCMD) mod
 
-# Pacote de versão
+# Version package
 VERSION_PKG=github.com/techiescamp/k8s-provisioner/internal/version
 
-# Build flags com injeção de versão
+# Build flags with version injection
 LDFLAGS=-ldflags "\
 	-s -w \
 	-X $(VERSION_PKG).Version=$(VERSION) \
