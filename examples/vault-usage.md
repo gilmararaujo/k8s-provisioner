@@ -48,7 +48,7 @@ kubectl logs -l app=vault-demo -c app
 ### Inspect the secret file inside the pod
 
 ```bash
-kubectl exec -it deploy/vault-demo-app -- cat /vault/secrets/api-keys.json
+kubectl exec -it deploy/vault-demo-app -- cat /vault/secrets/grafana-admin.json
 ```
 
 ### Clean up
@@ -66,10 +66,10 @@ Pod starts
   └─> init container: vault-fetch-secrets
         1. Reads the ServiceAccount token from /var/run/secrets/kubernetes.io/serviceaccount/token
         2. POST /v1/auth/kubernetes/login  →  gets VAULT_TOKEN
-        3. GET  /v1/secret/data/k8s-provisioner/api-keys  →  secrets JSON
-        4. Writes to /vault/secrets/api-keys.json (in-memory volume)
+        3. GET  /v1/secret/data/k8s-provisioner/grafana/admin  →  login JSON
+        4. Writes to /vault/secrets/grafana-admin.json (in-memory volume)
   └─> main container: app
-        - Reads /vault/secrets/api-keys.json (read-only)
+        - Reads /vault/secrets/grafana-admin.json (read-only)
         - Secrets never go through environment variables and never touch disk
 ```
 
@@ -80,7 +80,7 @@ Pod starts
 ```bash
 # From your machine (with VAULT_TOKEN)
 export VAULT_ADDR=https://192.168.56.20:8200
-export VAULT_CACERT=/tmp/vault-ca.crt   # or trust the CA system-wide (see README)
+export VAULT_CACERT=vagrant/certs/k8s-lab-vault-ca.crt   # exported by vagrant up; or trust it system-wide (README "Host setup")
 export VAULT_TOKEN=<root_token>
 
 vault kv patch secret/k8s-provisioner/api-keys \

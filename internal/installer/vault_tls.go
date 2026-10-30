@@ -46,6 +46,18 @@ func newVaultHTTPClient(caPath string) *http.Client {
 	}
 }
 
+// runOnStorage runs cmd on the storage node over SSH (installing sshpass first
+// when password auth is used) and returns its output.
+func runOnStorage(cfg *config.Config, exec executor.ShellExecutor, cmd string) (string, error) {
+	env, opts, user, usesPassword := sshConnFor(cfg)
+	if usesPassword {
+		if _, err := exec.RunShell("command -v sshpass >/dev/null || apt-get install -y sshpass"); err != nil {
+			return "", fmt.Errorf("install sshpass: %w", err)
+		}
+	}
+	return exec.RunShell(fmt.Sprintf("%sssh %s %s@%s '%s'", env, opts, user, cfg.StorageIP(), cmd))
+}
+
 // ensureVaultCA makes the Vault CA available locally at cfg.VaultCACert() so
 // every Vault client on this node can verify Vault's certificate. When the file
 // is missing it is fetched from the storage node over SSH (the same channel used
@@ -64,13 +76,7 @@ func ensureVaultCA(cfg *config.Config, exec executor.ShellExecutor) error {
 		return fmt.Errorf("vault CA %s not found and no storage node to fetch it from", caPath)
 	}
 
-	env, opts, user, usesPassword := sshConnFor(cfg)
-	if usesPassword {
-		if _, err := exec.RunShell("command -v sshpass >/dev/null || apt-get install -y sshpass"); err != nil {
-			return fmt.Errorf("install sshpass: %w", err)
-		}
-	}
-	pem, err := exec.RunShell(fmt.Sprintf("%sssh %s %s@%s 'cat %s'", env, opts, user, storageIP, vaultCAFileRemote))
+	pem, err := runOnStorage(cfg, exec, "cat "+vaultCAFileRemote)
 	if err != nil {
 		return fmt.Errorf("fetch vault CA from %s:%s: %w", storageIP, vaultCAFileRemote, err)
 	}

@@ -1,6 +1,15 @@
 require 'yaml'
 settings = YAML.load_file(File.join(File.dirname(__FILE__), 'settings.yaml'))
 
+# The provisioner config is the single source of truth for the lab domain and
+# the versions of what runs on the storage node outside the cluster.
+provisioner_config = YAML.load_file(File.join(File.dirname(__FILE__), '..', 'config.yaml'))
+LAB_DOMAIN      = provisioner_config.dig('dns', 'domain').to_s.empty? ? 'lab.internal' : provisioner_config.dig('dns', 'domain')
+ETCD_VERSION    = provisioner_config.dig('versions', 'etcd') || 'v3.7.3'
+COREDNS_VERSION = provisioner_config.dig('versions', 'coredns') || '1.15.0'
+LAB_TIMEZONE    = provisioner_config.dig('cluster', 'timezone').to_s.empty? ? 'UTC' : provisioner_config.dig('cluster', 'timezone')
+LAB_HOSTS       = settings['vm'].map { |v| "#{v['ip']} #{v['name']}" }.join("\n")
+
 # Display-name mapping for VirtualBox
 DISPLAY_NAMES = {
   "storage" => "Storage",
@@ -61,9 +70,11 @@ Vagrant.configure("2") do |config|
         end
       end
 
-      # Base provisioning: /etc/hosts and tools
+      # Base provisioning: timezone, /etc/hosts and tools. The timezone is set
+      # here so the storage node (not provisioned by the Go binary) gets it too.
       vm.vm.provision "shell", inline: <<-SHELL
         set -e
+        timedatectl set-timezone '#{LAB_TIMEZONE}'
         apt-get update -y
         apt-get install -y curl netcat-openbsd nfs-common vim bash-completion
 
@@ -170,7 +181,7 @@ EOF
               -keyout $TLS_DIR/vault.key -out /tmp/vault.csr \
               -subj "/CN=storage"
             cat > /tmp/vault-ext.cnf <<'EXT'
-subjectAltName=IP:#{NFS_SERVER_IP},IP:127.0.0.1,DNS:storage,DNS:storage.local,DNS:vault.local,DNS:localhost
+subjectAltName=IP:#{NFS_SERVER_IP},IP:127.0.0.1,DNS:storage,DNS:storage.#{LAB_DOMAIN},DNS:vault.#{LAB_DOMAIN},DNS:localhost
 extendedKeyUsage=serverAuth
 keyUsage=critical,digitalSignature,keyEncipherment
 basicConstraints=critical,CA:FALSE
@@ -242,6 +253,15 @@ VAULTSERVICE
           echo "=== Vault started at https://#{NFS_SERVER_IP}:8200 (CA: /etc/vault.d/tls/ca.crt) ==="
           echo "=== UI available at https://#{NFS_SERVER_IP}:8200/ui ==="
         SHELL
+
+        # Lab DNS: etcd + CoreDNS serving #{LAB_DOMAIN} (records from ExternalDNS)
+        vm.vm.provision "lab-dns", type: "shell", path: "scripts/storage-dns.sh", env: {
+          "DOMAIN"          => LAB_DOMAIN,
+          "STORAGE_IP"      => NFS_SERVER_IP,
+          "ETCD_VERSION"    => ETCD_VERSION,
+          "COREDNS_VERSION" => COREDNS_VERSION,
+          "LAB_HOSTS"       => LAB_HOSTS
+        }
 
       when "controlplane", "worker"
         # Mount NFS on the Kubernetes nodes

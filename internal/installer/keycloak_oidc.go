@@ -22,7 +22,7 @@ func clusterCABase64() (string, error) {
 }
 
 // labCABase64 returns the lab CA (base64 PEM, as stored in lab-ca-secret) that
-// signs the cert Istio serves for https://keycloak.local. kubelogin needs it to
+// signs the cert Istio serves for the Keycloak issuer. kubelogin needs it to
 // verify TLS to the OIDC issuer instead of --insecure-skip-tls-verify.
 func (k *Keycloak) labCABase64() (string, error) {
 	out, err := k.exec.RunShell(
@@ -93,7 +93,7 @@ const apiServerManifest = "/etc/kubernetes/manifests/kube-apiserver.yaml"
 
 func (k *Keycloak) patchAPIServer(issuerURL string) error {
 	// Embed the lab CA so the apiserver trusts the self-signed cert that Istio
-	// serves for https://keycloak.local. Without certificateAuthority the apiserver
+	// serves for the Keycloak issuer. Without certificateAuthority the apiserver
 	// cannot fetch the JWKS/OIDC discovery document and every OIDC login fails.
 	caPEM, err := k.exec.RunShell(
 		"kubectl get secret lab-ca-secret -n cert-manager -o jsonpath='{.data.tls\\.crt}' 2>/dev/null | base64 -d")
@@ -129,18 +129,21 @@ jwt:
 
 	patched := false
 
-	// Make keycloak.local resolvable from inside the apiserver static pod. It runs
-	// with hostNetwork, but kubelet still generates the pod's /etc/hosts from
-	// hostAliases — the node's /etc/hosts is not used — so the alias must live in
-	// the pod spec itself.
-	if _, err := k.exec.RunShell(fmt.Sprintf("grep -q 'keycloak.local' %s", apiServerManifest)); err != nil {
+	// The apiserver (hostNetwork) must resolve the issuer host. With ExternalDNS
+	// the lab DNS on the storage node answers for it via the node resolv.conf;
+	// otherwise — or if the record never shows up — pin it with hostAliases, which
+	// kubelet writes into the static pod's /etc/hosts (the node's is not used).
+	keycloakHost := k.config.Host("keycloak")
+	if k.issuerResolvable(keycloakHost) {
+		fmt.Printf("%s resolves via the lab DNS; no hostAliases needed\n", keycloakHost)
+	} else if _, err := k.exec.RunShell(fmt.Sprintf("grep -q '%s' %s", keycloakHost, apiServerManifest)); err != nil {
 		ingressIP := k.ingressIP()
 		if ingressIP == "" {
-			return fmt.Errorf("could not determine Istio ingress IP to resolve keycloak.local")
+			return fmt.Errorf("could not determine Istio ingress IP to resolve %s", keycloakHost)
 		}
 		addHostAlias := fmt.Sprintf(
-			`sed -i '/^spec:/a\  hostAliases:\n  - ip: "%s"\n    hostnames:\n    - "keycloak.local"' %s`,
-			ingressIP, apiServerManifest)
+			`sed -i '/^spec:/a\  hostAliases:\n  - ip: "%s"\n    hostnames:\n    - "%s"' %s`,
+			ingressIP, keycloakHost, apiServerManifest)
 		if _, err := k.exec.RunShell(addHostAlias); err != nil {
 			return fmt.Errorf("failed to add hostAliases to apiserver: %w", err)
 		}
@@ -213,7 +216,26 @@ subjects:
 	return err
 }
 
-// ingressIP returns the IP the apiserver should use to reach keycloak.local. It
+// issuerResolvable reports whether host resolves on this node (and so for the
+// hostNetwork apiserver) through the lab DNS. ExternalDNS publishes the Keycloak
+// Gateway host within its sync interval, so poll briefly before giving up.
+func (k *Keycloak) issuerResolvable(host string) bool {
+	if !k.config.ExternalDNSEnabled() {
+		return false
+	}
+	deadline := time.Now().Add(issuerDNSTimeout)
+	for time.Now().Before(deadline) {
+		if out, err := k.exec.RunShell("getent hosts " + host); err == nil && strings.TrimSpace(out) != "" {
+			return true
+		}
+		fmt.Printf("Waiting for %s in the lab DNS...\n", host)
+		time.Sleep(shortPollInterval)
+	}
+	fmt.Printf("Warning: %s did not resolve via the lab DNS; falling back to hostAliases\n", host)
+	return false
+}
+
+// ingressIP returns the IP the apiserver should use to reach the Keycloak issuer. It
 // prefers the live Istio ingress LoadBalancer IP and falls back to the first
 // address of the configured MetalLB range.
 func (k *Keycloak) ingressIP() string {

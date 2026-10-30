@@ -175,7 +175,7 @@ spec:
         - name: KC_PROXY_HEADERS
           value: xforwarded
         - name: KC_HOSTNAME
-          value: https://keycloak.local
+          value: https://%s
         - name: KC_HOSTNAME_STRICT
           value: "true"
         - name: KC_HTTP_PORT
@@ -228,7 +228,7 @@ spec:
 	if kcVersion == "" {
 		kcVersion = "26.8.1"
 	}
-	manifests := fmt.Sprintf(secrets+rest, pgVersion, kcVersion)
+	manifests := fmt.Sprintf(secrets+rest, pgVersion, kcVersion, k.config.Host("keycloak"))
 
 	if err := executor.WriteFile("/tmp/keycloak.yaml", manifests); err != nil {
 		return err

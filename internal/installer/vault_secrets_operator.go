@@ -170,50 +170,35 @@ spec:
     serviceAccount: default`, ns)
 }
 
+// credentialSecret renders a VaultStaticSecret that mirrors one login path
+// (see labCredential) into a K8s Secret with the same plain keys, e.g.
+// username/password. excludeRaw drops VSO's _raw copy of the KV response.
+func credentialSecret(name, ns string, c labCredential) string {
+	return fmt.Sprintf(`
+---
+apiVersion: secrets.hashicorp.com/v1beta1
+kind: VaultStaticSecret
+metadata:
+  name: %[1]s
+  namespace: %[2]s
+spec:
+  vaultAuthRef: vault-auth
+  mount: secret
+  type: kv-v2
+  path: %[3]s
+  refreshAfter: 30s
+  destination:
+    name: %[1]s
+    create: true
+    overwrite: true
+    transformation:
+      excludeRaw: true`, name, ns, c.path)
+}
+
 func (v *VaultSecretsOperator) createKeycloakResources() error {
-	manifest := vsoNamespaceAndAuth("keycloak") + `
----
-apiVersion: secrets.hashicorp.com/v1beta1
-kind: VaultStaticSecret
-metadata:
-  name: keycloak-admin
-  namespace: keycloak
-spec:
-  vaultAuthRef: vault-auth
-  mount: secret
-  type: kv-v2
-  path: k8s-provisioner/api-keys
-  refreshAfter: 30s
-  destination:
-    name: keycloak-admin
-    create: true
-    transformation:
-      templates:
-        username:
-          text: '{{- get .Secrets "keycloak_admin_username" -}}'
-        password:
-          text: '{{- get .Secrets "keycloak_admin_password" -}}'
----
-apiVersion: secrets.hashicorp.com/v1beta1
-kind: VaultStaticSecret
-metadata:
-  name: postgres-credentials
-  namespace: keycloak
-spec:
-  vaultAuthRef: vault-auth
-  mount: secret
-  type: kv-v2
-  path: k8s-provisioner/api-keys
-  refreshAfter: 30s
-  destination:
-    name: postgres-credentials
-    create: true
-    transformation:
-      templates:
-        username:
-          text: '{{- get .Secrets "keycloak_postgres_username" -}}'
-        password:
-          text: '{{- get .Secrets "keycloak_postgres_password" -}}'`
+	manifest := vsoNamespaceAndAuth("keycloak") +
+		credentialSecret("keycloak-admin", "keycloak", keycloakAdminCredential) +
+		credentialSecret("postgres-credentials", "keycloak", keycloakPostgresCredential)
 
 	if err := executor.WriteFile("/tmp/vso-keycloak.yaml", manifest); err != nil {
 		return err
@@ -223,45 +208,9 @@ spec:
 }
 
 func (v *VaultSecretsOperator) createMonitoringResources() error {
-	manifest := vsoNamespaceAndAuth("monitoring") + `
----
-apiVersion: secrets.hashicorp.com/v1beta1
-kind: VaultStaticSecret
-metadata:
-  name: grafana-admin
-  namespace: monitoring
-spec:
-  vaultAuthRef: vault-auth
-  mount: secret
-  type: kv-v2
-  path: k8s-provisioner/api-keys
-  refreshAfter: 30s
-  destination:
-    name: grafana-admin
-    create: true
-    transformation:
-      templates:
-        password:
-          text: '{{- get .Secrets "grafana_admin_password" -}}'
----
-apiVersion: secrets.hashicorp.com/v1beta1
-kind: VaultStaticSecret
-metadata:
-  name: grafana-oidc
-  namespace: monitoring
-spec:
-  vaultAuthRef: vault-auth
-  mount: secret
-  type: kv-v2
-  path: k8s-provisioner/api-keys
-  refreshAfter: 30s
-  destination:
-    name: grafana-oidc
-    create: true
-    transformation:
-      templates:
-        client-secret:
-          text: '{{- get .Secrets "keycloak_grafana_client_secret" -}}'`
+	manifest := vsoNamespaceAndAuth("monitoring") +
+		credentialSecret("grafana-admin", "monitoring", grafanaAdminCredential) +
+		credentialSecret("grafana-oidc", "monitoring", keycloakGrafanaClientCredential)
 
 	if err := executor.WriteFile("/tmp/vso-monitoring.yaml", manifest); err != nil {
 		return err
@@ -288,6 +237,8 @@ spec:
     name: ollama-api-key
     create: true
     transformation:
+      excludeRaw: true
+      excludes: [".*"]
       templates:
         api-key:
           text: '{{- get .Secrets "ollama_api_key" -}}'`

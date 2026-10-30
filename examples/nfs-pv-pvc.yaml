@@ -241,8 +241,8 @@ spec:
       name: http
       protocol: HTTP
     hosts:
-    - "nfs-dynamic.local"
-    - "nfs-static.local"
+    - "nfs-dynamic.lab.internal"
+    - "nfs-static.lab.internal"
 ---
 apiVersion: networking.istio.io/v1
 kind: VirtualService
@@ -251,7 +251,7 @@ metadata:
   namespace: dynamic-demo
 spec:
   hosts:
-  - "nfs-dynamic.local"
+  - "nfs-dynamic.lab.internal"
   gateways:
   - nfs-demo-gateway
   http:
@@ -268,7 +268,7 @@ metadata:
   namespace: static-demo
 spec:
   hosts:
-  - "nfs-static.local"
+  - "nfs-static.lab.internal"
   gateways:
   - dynamic-demo/nfs-demo-gateway
   http:

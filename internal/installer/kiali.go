@@ -199,7 +199,7 @@ data:
       grafana:
         enabled: true
         internal_url: "http://grafana.monitoring:3000"
-        external_url: "https://grafana.local"%s%s%s
+        external_url: "https://%s"%s%s%s
       istio:
         root_namespace: istio-system
         istio_status_enabled: true
@@ -307,7 +307,7 @@ spec:
     port: 20001
     targetPort: 20001
   selector:
-    app: kiali`, grafanaAuthSection, tracingSection, loggingSection, kialiVersion, kialiVersion, kialiVersion)
+    app: kiali`, k.config.Host("grafana"), grafanaAuthSection, tracingSection, loggingSection, kialiVersion, kialiVersion, kialiVersion)
 
 	// The manifest inlines the Grafana admin password (read from the cluster
 	// secret). Pipe via stdin so the credential never lands on disk
@@ -317,7 +317,13 @@ spec:
 }
 
 func (k *Kiali) configureIngress() error {
-	ingress := `apiVersion: networking.istio.io/v1
+	host := k.config.Host("kiali")
+	tlsSecret, err := ensureGatewayCert(k.exec, "kiali", host)
+	if err != nil {
+		return err
+	}
+
+	ingress := fmt.Sprintf(`apiVersion: networking.istio.io/v1
 kind: Gateway
 metadata:
   name: kiali-gateway
@@ -331,7 +337,7 @@ spec:
       name: http
       protocol: HTTP
     hosts:
-    - "kiali.local"
+    - "%[1]s"
     tls:
       httpsRedirect: true
   - port:
@@ -340,9 +346,9 @@ spec:
       protocol: HTTPS
     tls:
       mode: SIMPLE
-      credentialName: lab-tls-secret
+      credentialName: %[2]s
     hosts:
-    - "kiali.local"
+    - "%[1]s"
 ---
 apiVersion: networking.istio.io/v1
 kind: VirtualService
@@ -351,7 +357,7 @@ metadata:
   namespace: istio-system
 spec:
   hosts:
-  - "kiali.local"
+  - "%[1]s"
   gateways:
   - kiali-gateway
   http:
@@ -362,13 +368,13 @@ spec:
     - destination:
         host: kiali
         port:
-          number: 20001`
+          number: 20001`, host, tlsSecret)
 
 	if err := executor.WriteFile("/tmp/kiali-ingress.yaml", ingress); err != nil {
 		return err
 	}
 
-	_, err := k.exec.RunShell("kubectl apply -f /tmp/kiali-ingress.yaml")
+	_, err = k.exec.RunShell("kubectl apply -f /tmp/kiali-ingress.yaml")
 	return err
 }
 
@@ -391,12 +397,10 @@ func (k *Kiali) printAccessInfo() {
 	fmt.Println("Kiali Access Information")
 	fmt.Println("========================================")
 	fmt.Println("\nService Mesh Observability:")
-	fmt.Println("  1. Add to /etc/hosts:")
-	fmt.Println("     <ingress-ip> kiali.local")
-	fmt.Println("  2. Open: http://kiali.local/kiali")
+	fmt.Printf("  Open: https://%s/kiali (resolved by the lab DNS, see README \"Lab DNS\")\n", k.config.Host("kiali"))
 	fmt.Println("\nIntegrations active:")
 	fmt.Println("  Metrics  → Prometheus (http://prometheus.monitoring:9090)")
-	fmt.Println("  Dashboards → Grafana (http://grafana.local)")
+	fmt.Printf("  Dashboards → Grafana (https://%s)\n", k.config.Host("grafana"))
 	if k.config.Components.Tracing == "otel-tempo" {
 		fmt.Println("  Traces   → Grafana Tempo (http://tempo.monitoring:3200)")
 	}

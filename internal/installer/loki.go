@@ -494,7 +494,7 @@ func (l *Loki) printAccessInfo() {
 	fmt.Println("Loki Stack Access Information")
 	fmt.Println("========================================")
 	fmt.Println("\nAccess logs via Grafana:")
-	fmt.Println("  1. Open Grafana (http://grafana.local)")
+	fmt.Printf("  1. Open Grafana (https://%s)\n", l.config.Host("grafana"))
 	fmt.Println("  2. Go to Explore (left sidebar)")
 	fmt.Println("  3. Select 'Loki' as datasource")
 	fmt.Println("\nAlloy UI (log pipeline status):")

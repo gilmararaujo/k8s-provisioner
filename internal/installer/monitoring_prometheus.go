@@ -48,6 +48,10 @@ spec:
   podMonitorNamespaceSelector: {}
   ruleSelector: {}
   ruleNamespaceSelector: {}
+  scrapeConfigSelector: {}
+  scrapeConfigNamespaceSelector: {}
+  probeSelector: {}
+  probeNamespaceSelector: {}
   resources:
     requests:
       memory: 400Mi

@@ -32,7 +32,7 @@ func (k *Keycloak) Install() error {
 	fmt.Println("Installing Keycloak (OIDC Identity Provider)...")
 
 	cpIP := k.config.Network.ControlPlaneIP
-	issuerURL := "https://keycloak.local/realms/k8s"
+	issuerURL := "https://" + k.config.Host("keycloak") + "/realms/k8s"
 
 	creds, err := k.resolveCredentials()
 	if err != nil {
@@ -73,16 +73,18 @@ func (k *Keycloak) Install() error {
 		return fmt.Errorf("realm configuration failed: %w", err)
 	}
 
-	fmt.Println("Patching API server with OIDC authentication...")
-	if err := k.patchAPIServer(issuerURL); err != nil {
-		fmt.Printf("Warning: API server patch failed: %v\n", err)
-	}
-
+	// The Gateway must exist before the apiserver patch: it is the route to the
+	// issuer, and ExternalDNS publishes the issuer host from it.
 	if k.config.Components.ServiceMesh == "istio" {
 		fmt.Println("Creating Istio Gateway for Keycloak...")
 		if err := k.createGateway(); err != nil {
 			fmt.Printf("Warning: Failed to create Keycloak gateway: %v\n", err)
 		}
+	}
+
+	fmt.Println("Patching API server with OIDC authentication...")
+	if err := k.patchAPIServer(issuerURL); err != nil {
+		fmt.Printf("Warning: API server patch failed: %v\n", err)
 	}
 
 	fmt.Println("Storing kubeconfig-oidc in Vault for distribution...")
@@ -183,16 +185,15 @@ func (k *Keycloak) printAccessInfo(issuerURL string) {
 	fmt.Println("\n========================================")
 	fmt.Println("Keycloak Access Information")
 	fmt.Println("========================================")
-	fmt.Println("\nAdmin Console: https://keycloak.local  (Istio Gateway, TLS)")
-	fmt.Println("  Requires a hosts entry for keycloak.local → ingress IP (see README Quick Start step 5).")
-	fmt.Println("\nAdmin credentials (stored in Vault):")
-	fmt.Println("  vault kv get -field=keycloak_admin_username secret/k8s-provisioner/api-keys")
-	fmt.Println("  vault kv get -field=keycloak_admin_password secret/k8s-provisioner/api-keys")
-	fmt.Println("\nTest users (realm: k8s) — senhas no Vault:")
+	fmt.Printf("\nAdmin Console: https://%s  (Istio Gateway, TLS)\n", k.config.Host("keycloak"))
+	fmt.Println("  Resolved by the lab DNS on the storage node (see README \"Lab DNS\").")
+	fmt.Println("\nAdmin console login (Vault, keys username/password):")
+	fmt.Printf("  vault kv get secret/%s\n", keycloakAdminCredential.path)
+	fmt.Println("\nTest users (realm: k8s) — logins in Vault:")
 	fmt.Println("  k8sadmin  (group: k8s-admins  → cluster-admin)")
-	fmt.Println("    vault kv get -field=keycloak_k8sadmin_password secret/k8s-provisioner/api-keys")
+	fmt.Printf("    vault kv get secret/%s\n", keycloakK8sAdminCredential.path)
 	fmt.Println("  developer (group: k8s-developers → view)")
-	fmt.Println("    vault kv get -field=keycloak_developer_password secret/k8s-provisioner/api-keys")
+	fmt.Printf("    vault kv get secret/%s\n", keycloakDeveloperCredential.path)
 	fmt.Println("\n--- kubectl OIDC login (kubelogin) ---")
 	fmt.Println("Install kubelogin:")
 	fmt.Println("  brew install int128/kubelogin/kubelogin   # Mac")
@@ -201,7 +202,6 @@ func (k *Keycloak) printAccessInfo(issuerURL string) {
 	fmt.Println("  k8s-provisioner vault get k8s-provisioner/kubeconfig-oidc config > ~/.kube/config-oidc")
 	fmt.Println("\nOr add OIDC credentials manually (trust the lab CA — do NOT skip TLS verification):")
 	fmt.Printf(`  # export the lab CA first:
-  k8s-provisioner vault get k8s-provisioner/api-keys >/dev/null  # ensure Vault reachable
   kubectl get secret lab-ca-secret -n cert-manager -o jsonpath='{.data.tls\.crt}' | base64 -d > ~/.kube/lab-ca.crt
   kubectl config set-credentials oidc \
     --exec-api-version=client.authentication.k8s.io/v1beta1 \

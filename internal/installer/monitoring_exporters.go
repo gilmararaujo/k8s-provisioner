@@ -301,7 +301,10 @@ spec:
       app: kube-state-metrics
   endpoints:
   - port: http-metrics
-    interval: 30s`
+    interval: 30s
+    # KSM reports on other objects: keep their namespace/pod labels instead of
+    # overwriting them with the KSM pod's own (which renames them exported_*).
+    honorLabels: true`
 
 	ksmVersion := m.config.Versions.KubeStateMetrics
 	if ksmVersion == "" {

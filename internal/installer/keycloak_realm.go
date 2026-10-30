@@ -66,8 +66,8 @@ echo "Creating grafana client (confidential)..."
 GRAFANA_ID=$($KCADM create clients -r k8s \
   -s clientId=grafana \
   -s publicClient=false \
-  -s secret=%s \
-  -s 'redirectUris=["https://grafana.local/*","http://grafana.local/*"]' \
+  -s 'secret=%s' \
+  -s 'redirectUris=["https://%s/*"]' \
   -i)
 
 $KCADM update clients/$GRAFANA_ID/optional-client-scopes/$GROUPS_SCOPE_ID -r k8s
@@ -107,7 +107,7 @@ $KCADM update users/$DEV_UID/groups/$DEVS_GID -r k8s \
   -s realm=k8s -s userId=$DEV_UID -s groupId=$DEVS_GID -n
 
 echo "Keycloak realm configuration completed!"
-`, creds.adminUsername, creds.adminPassword, creds.grafanaSecret, creds.k8sAdminPassword, creds.developerPassword)
+`, creds.adminUsername, creds.adminPassword, creds.grafanaSecret, k.config.Host("grafana"), creds.k8sAdminPassword, creds.developerPassword)
 
 	pod, err := k.exec.RunShell("kubectl get pods -n keycloak -l app=keycloak -o jsonpath='{.items[0].metadata.name}'")
 	if err != nil {

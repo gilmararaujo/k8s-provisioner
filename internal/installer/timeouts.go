@@ -27,6 +27,7 @@ const (
 	oauthRetryDelay        = 20 * time.Second // backoff between Grafana OAuth attempts
 	apiServerRestartWait   = 20 * time.Second // settle time before polling /healthz
 	apiServerHealthTimeout = 2 * time.Minute  // apiserver back-online after OIDC patch
+	issuerDNSTimeout       = 2 * time.Minute  // ExternalDNS publishing the Keycloak host
 	webhookRegisterWait    = 10 * time.Second // let the cert-manager webhook register
 	caSecretWaitTimeout    = 60 * time.Second // wait for the lab CA secret to exist
 	certReadyTimeout       = 2 * time.Minute  // wait for the lab TLS certificate

@@ -518,7 +518,7 @@ func (t *Tempo) printAccessInfo() {
 	fmt.Println("Tracing Stack Access Information")
 	fmt.Println("========================================")
 	fmt.Println("\nAccess traces via Grafana:")
-	fmt.Println("  1. Open Grafana (https://grafana.local)")
+	fmt.Printf("  1. Open Grafana (https://%s)\n", t.config.Host("grafana"))
 	fmt.Println("  2. Go to Explore (left sidebar)")
 	fmt.Println("  3. Select 'Tempo' as the datasource")
 	fmt.Println("  4. Search by TraceID or use the Service Graph")

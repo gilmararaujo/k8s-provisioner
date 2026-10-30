@@ -14,6 +14,12 @@ vault:
   token: ""    # env K8S_PROV_VAULT_TOKEN; empty = auto-resolve from vault-init.json. Never commit a real token.
   ca_cert: ""  # env VAULT_CACERT; empty = /etc/k8s-provisioner/vault-ca.crt (fetched from the storage node).
 
+# Lab DNS: CoreDNS + etcd on the storage node serve <name>.<domain> for every
+# Istio Gateway host (records published by ExternalDNS) plus the lab nodes.
+# On the host, point the domain at the storage node once (see README "Lab DNS").
+dns:
+  domain: "lab.internal"  # Base domain: grafana.lab.internal, keycloak.lab.internal, ...
+
 # Node-to-node SSH used to copy Vault init data from controlplane to the storage
 # node. Defaults target the Vagrant lab box. For non-lab use, set ssh_key_path
 # (preferred) or ssh_password instead of relying on the default Vagrant credential.
@@ -26,6 +32,7 @@ cluster:
   name: "k8s-lab"
   pod_cidr: "10.244.0.0/16"
   service_cidr: "10.96.0.0/12"
+  timezone: "America/Sao_Paulo"   # IANA name; every node (incl. storage) and Grafana. Empty = UTC
 
 versions:
   kubernetes: "1.37"
@@ -50,6 +57,11 @@ versions:
   prometheus: "v3.15.1"
   alertmanager: "v0.34.1"
   vpa: "0.15.0"          # Helm chart version (app 1.8.1)
+  coredns: "1.15.0"       # Lab DNS on the storage node (read by vagrant/Vagrantfile)
+  etcd: "v3.7.3"          # DNS record store on the storage node (read by vagrant/Vagrantfile)
+  external_dns: "v0.23.0"
+  blackbox_exporter: "v0.29.1"   # TLS certificate expiry probes (lab dashboard)
+  resource_dashboard: "982c301aaeb251c07c75476922c80a8090b05e35"  # workload resources dashboard + rules: upstream commit (no release tags)
 
 network:
   interface: "eth1"
@@ -88,6 +100,7 @@ components:
   keycloak: "enabled"             # Options: enabled, none (OIDC identity provider for kubectl + Grafana SSO)
   vpa: "enabled"                  # Options: enabled, none (Vertical Pod Autoscaler — adjusts CPU/Memory per pod)
   keda: "enabled"                 # Options: enabled, none (Event-driven autoscaling — scale to zero, Prometheus triggers)
+  external_dns: "enabled"         # Options: enabled, none (publishes Gateway hosts to the lab DNS on the storage node)
 
 # Karpor AI configuration (optional)
 # When backend is "ollama", Ollama will be installed inside the cluster automatically

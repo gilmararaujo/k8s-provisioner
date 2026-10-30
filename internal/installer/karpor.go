@@ -391,9 +391,15 @@ func (k *Karpor) waitForOllamaModel() error {
 }
 
 func (k *Karpor) createIstioGateway() error {
+	host := k.config.Host("karpor")
+	tlsSecret, err := ensureGatewayCert(k.exec, "karpor", host)
+	if err != nil {
+		return err
+	}
+
 	// Karpor uses self-signed TLS on port 7443
 	// Istio connects with insecureSkipVerify since it's internal cluster traffic
-	gateway := `apiVersion: networking.istio.io/v1
+	gateway := fmt.Sprintf(`apiVersion: networking.istio.io/v1
 kind: Gateway
 metadata:
   name: karpor-gateway
@@ -407,7 +413,7 @@ spec:
       name: http
       protocol: HTTP
     hosts:
-    - "karpor.local"
+    - "%[1]s"
     tls:
       httpsRedirect: true
   - port:
@@ -416,9 +422,9 @@ spec:
       protocol: HTTPS
     tls:
       mode: SIMPLE
-      credentialName: lab-tls-secret
+      credentialName: %[2]s
     hosts:
-    - "karpor.local"
+    - "%[1]s"
 ---
 apiVersion: networking.istio.io/v1
 kind: DestinationRule
@@ -439,7 +445,7 @@ metadata:
   namespace: karpor
 spec:
   hosts:
-  - "karpor.local"
+  - "%[1]s"
   gateways:
   - karpor-gateway
   http:
@@ -447,13 +453,13 @@ spec:
     - destination:
         host: karpor-server
         port:
-          number: 7443`
+          number: 7443`, host, tlsSecret)
 
 	if err := executor.WriteFile("/tmp/karpor-gateway.yaml", gateway); err != nil {
 		return err
 	}
 
-	_, err := k.exec.RunShell("kubectl apply -f /tmp/karpor-gateway.yaml")
+	_, err = k.exec.RunShell("kubectl apply -f /tmp/karpor-gateway.yaml")
 	return err
 }
 
@@ -462,12 +468,8 @@ func (k *Karpor) printAccessInfo() {
 	fmt.Println("Karpor Access Information")
 	fmt.Println("========================================")
 	if k.config.Components.ServiceMesh == "istio" {
-		fmt.Println("\nAccess via Istio Ingress:")
-		fmt.Println("  1. Get Istio Ingress IP:")
-		fmt.Println("     INGRESS_IP=$(kubectl get svc -n istio-system istio-ingressgateway -o jsonpath='{.status.loadBalancer.ingress[0].ip}')")
-		fmt.Println("  2. Add to /etc/hosts:")
-		fmt.Println("     echo \"$INGRESS_IP karpor.local\" | sudo tee -a /etc/hosts")
-		fmt.Println("  3. Access: http://karpor.local")
+		fmt.Println("\nAccess via Istio Ingress (resolved by the lab DNS, see README \"Lab DNS\"):")
+		fmt.Printf("  https://%s\n", k.config.Host("karpor"))
 	} else {
 		fmt.Println("\nAccess via port-forward:")
 		fmt.Println("  kubectl port-forward -n karpor svc/karpor-server 7443:7443")

@@ -519,3 +519,61 @@ func TestVaultCACert_DefaultAndOverrides(t *testing.T) {
 	applyEnvSecrets(cfg)
 	assert.Equal(t, "/from/env.crt", cfg.VaultCACert(), "VAULT_CACERT overrides config")
 }
+
+func TestDomainAndHost(t *testing.T) {
+	cfg := &Config{}
+	assert.Equal(t, DefaultDomain, cfg.Domain(), "empty dns.domain falls back to the default")
+	assert.Equal(t, "grafana.lab.internal", cfg.Host("grafana"))
+
+	cfg.DNS.Domain = "k8s.example.test"
+	assert.Equal(t, "keycloak.k8s.example.test", cfg.Host("keycloak"))
+}
+
+func TestIsValidDomain(t *testing.T) {
+	for _, d := range []string{"lab.internal", "k8s-lab.example.test", "a.b"} {
+		assert.True(t, isValidDomain(d), d)
+	}
+	for _, d := range []string{"internal", "Lab.Internal", "-lab.internal", "lab..internal", "lab.internal.", "lab internal", "lab.internal'; rm"} {
+		assert.False(t, isValidDomain(d), d)
+	}
+}
+
+func dnsTestConfig() *Config {
+	return &Config{
+		Cluster:  ClusterConfig{Name: "t", PodCIDR: "10.244.0.0/16", ServiceCIDR: "10.96.0.0/12"},
+		Versions: VersionsConfig{Kubernetes: "1.32", CriO: "v1.32"},
+		Network:  NetworkConfig{Interface: "eth1", ControlPlaneIP: "192.168.56.10"},
+		Storage:  StorageConfig{NFSPath: "/exports"},
+		Nodes: []NodeConfig{
+			{Name: "cp", Role: "controlplane"},
+			{Name: "storage", Role: "storage", IP: "192.168.56.20"},
+		},
+		Components: ComponentsConfig{ExternalDNS: "enabled"},
+	}
+}
+
+func TestValidate_DNS(t *testing.T) {
+	cfg := dnsTestConfig()
+	assert.NoError(t, cfg.Validate())
+
+	cfg.DNS.Domain = "Not A Domain"
+	assert.ErrorContains(t, cfg.Validate(), "dns.domain 'Not A Domain' is not a valid domain name")
+
+	cfg = dnsTestConfig()
+	cfg.Nodes = cfg.Nodes[:1] // no storage node to host the lab DNS
+	assert.ErrorContains(t, cfg.Validate(), "components.external_dns is enabled but no storage node")
+}
+
+func TestTimezone(t *testing.T) {
+	assert.Equal(t, "UTC", (&Config{}).Timezone(), "empty means UTC")
+
+	cfg := dnsTestConfig()
+	for _, tz := range []string{"America/Sao_Paulo", "UTC", "America/Argentina/Buenos_Aires", "Etc/GMT+3"} {
+		cfg.Cluster.Timezone = tz
+		assert.NoError(t, cfg.Validate(), tz)
+	}
+	for _, tz := range []string{"America/Sao Paulo", "UTC; reboot", "../etc/passwd", "$(id)"} {
+		cfg.Cluster.Timezone = tz
+		assert.ErrorContains(t, cfg.Validate(), "is not an IANA timezone name", tz)
+	}
+}

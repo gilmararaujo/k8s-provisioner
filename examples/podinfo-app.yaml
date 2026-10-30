@@ -66,7 +66,7 @@ spec:
       name: http
       protocol: HTTP
     hosts:
-    - "podinfo.local"
+    - "podinfo.lab.internal"
 ---
 # Istio VirtualService
 apiVersion: networking.istio.io/v1
@@ -76,7 +76,7 @@ metadata:
   namespace: podinfo
 spec:
   hosts:
-  - "podinfo.local"
+  - "podinfo.lab.internal"
   - "podinfo.podinfo.svc.cluster.local"
   gateways:
   - podinfo-gateway

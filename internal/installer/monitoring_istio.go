@@ -1,9 +1,19 @@
 package installer
 
-import "github.com/techiescamp/k8s-provisioner/internal/executor"
+import (
+	"fmt"
+
+	"github.com/techiescamp/k8s-provisioner/internal/executor"
+)
 
 func (m *Monitoring) createMonitoringGateways() error {
-	gateway := `apiVersion: networking.istio.io/v1
+	grafana, prometheus, alertmanager := m.config.Host("grafana"), m.config.Host("prometheus"), m.config.Host("alertmanager")
+	tlsSecret, err := ensureGatewayCert(m.exec, "monitoring", grafana, prometheus, alertmanager)
+	if err != nil {
+		return err
+	}
+
+	gateway := fmt.Sprintf(`apiVersion: networking.istio.io/v1
 kind: Gateway
 metadata:
   name: monitoring-gateway
@@ -17,9 +27,9 @@ spec:
       name: http
       protocol: HTTP
     hosts:
-    - "grafana.local"
-    - "prometheus.local"
-    - "alertmanager.local"
+    - "%[1]s"
+    - "%[2]s"
+    - "%[3]s"
     tls:
       httpsRedirect: true
   - port:
@@ -28,11 +38,11 @@ spec:
       protocol: HTTPS
     tls:
       mode: SIMPLE
-      credentialName: lab-tls-secret
+      credentialName: %[4]s
     hosts:
-    - "grafana.local"
-    - "prometheus.local"
-    - "alertmanager.local"
+    - "%[1]s"
+    - "%[2]s"
+    - "%[3]s"
 ---
 apiVersion: networking.istio.io/v1
 kind: VirtualService
@@ -41,7 +51,7 @@ metadata:
   namespace: monitoring
 spec:
   hosts:
-  - "grafana.local"
+  - "%[1]s"
   gateways:
   - monitoring-gateway
   http:
@@ -58,7 +68,7 @@ metadata:
   namespace: monitoring
 spec:
   hosts:
-  - "prometheus.local"
+  - "%[2]s"
   gateways:
   - monitoring-gateway
   http:
@@ -75,7 +85,7 @@ metadata:
   namespace: monitoring
 spec:
   hosts:
-  - "alertmanager.local"
+  - "%[3]s"
   gateways:
   - monitoring-gateway
   http:
@@ -83,13 +93,13 @@ spec:
     - destination:
         host: alertmanager
         port:
-          number: 9093`
+          number: 9093`, grafana, prometheus, alertmanager, tlsSecret)
 
 	if err := executor.WriteFile("/tmp/monitoring-gateway.yaml", gateway); err != nil {
 		return err
 	}
 
-	_, err := m.exec.RunShell("kubectl apply -f /tmp/monitoring-gateway.yaml")
+	_, err = m.exec.RunShell("kubectl apply -f /tmp/monitoring-gateway.yaml")
 	return err
 }
 
@@ -160,10 +170,13 @@ spec:
     matchNames:
     - cert-manager
   endpoints:
-  - port: tcp-prometheus-servicemonitor
+  - port: http-metrics  # cert-manager v1.21 name (was tcp-prometheus-servicemonitor)
     path: /metrics
     interval: 30s
     scrapeTimeout: 10s
+    # Certificate metrics carry the Certificate's namespace; keep it instead of
+    # the cert-manager pod's (the alerts below report it).
+    honorLabels: true
 ---
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule

@@ -23,6 +23,7 @@ var (
 	_ Installer = (*NFSProvisioner)(nil)
 	_ Installer = (*VaultInstaller)(nil)
 	_ Installer = (*VaultSecretsOperator)(nil)
+	_ Installer = (*ExternalDNS)(nil)
 	_ Installer = (*Monitoring)(nil)
 	_ Installer = (*Loki)(nil)
 	_ Installer = (*Tempo)(nil)
@@ -42,6 +43,7 @@ func (k *KEDA) Name() string                 { return "KEDA (Event-Driven Autosc
 func (n *NFSProvisioner) Name() string       { return "NFS Storage Provisioner" }
 func (v *VaultInstaller) Name() string       { return "Vault (secrets management)" }
 func (v *VaultSecretsOperator) Name() string { return "Vault Secrets Operator" }
+func (e *ExternalDNS) Name() string          { return "ExternalDNS" }
 func (m *Monitoring) Name() string           { return "Monitoring Stack" }
 func (l *Loki) Name() string                 { return "Loki Stack" }
 func (t *Tempo) Name() string                { return "Tracing Stack (Tempo + OpenTelemetry)" }

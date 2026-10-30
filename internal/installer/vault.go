@@ -91,9 +91,9 @@ func (v *VaultInstaller) Install() error {
 		fmt.Printf("Warning: failed to configure k8s auth: %v\n", err)
 	}
 
-	fmt.Println("Storing API secrets in Vault...")
+	fmt.Println("Storing lab logins and API keys in Vault...")
 	if err := v.storeAPISecrets(rootToken); err != nil {
-		fmt.Printf("Warning: failed to store API secrets: %v\n", err)
+		fmt.Printf("Warning: failed to store secrets in Vault: %v\n", err)
 	}
 
 	v.printAccessInfo()
@@ -428,87 +428,41 @@ path "secret/metadata/k8s-provisioner/*" { capabilities = ["read", "list"] }`
 }
 
 func (v *VaultInstaller) storeAPISecrets(token string) error {
-	secrets := map[string]string{}
+	store := NewVaultClient(v.address, token, v.config.VaultCACert())
 
+	// Logins first, so VSO can sync them before Keycloak and Grafana install.
+	// Every password/secret is randomly generated on first run (never a
+	// hardcoded default) and survives cluster rebuilds here.
+	if err := seedLabCredentials(store); err != nil {
+		return fmt.Errorf("seed lab credentials: %w", err)
+	}
+	fmt.Printf("Stored %d login(s) under secret/k8s-provisioner/{grafana,keycloak}/\n", len(labCredentials()))
+
+	keys := map[string]string{}
 	if v.config.Ollama.APIKey != "" {
-		secrets["ollama_api_key"] = v.config.Ollama.APIKey
+		keys["ollama_api_key"] = v.config.Ollama.APIKey
 	}
 	if v.config.KarporAI.AuthToken != "" {
-		secrets["karpor_auth_token"] = v.config.KarporAI.AuthToken
+		keys["karpor_auth_token"] = v.config.KarporAI.AuthToken
 	}
-
-	grafanaPassword, err := v.resolveOrGenerate(token, "grafana_admin_password")
-	if err != nil {
-		return fmt.Errorf("resolve grafana admin password: %w", err)
+	if len(keys) == 0 {
+		return nil
 	}
-	secrets["grafana_admin_password"] = grafanaPassword
-
-	// Keycloak credentials — stored early so VSO can sync them before Keycloak is
-	// installed. Usernames are non-secret constants; every password/secret is
-	// randomly generated on first run (never a hardcoded default) and persisted
-	// here so it survives and is recoverable via `k8s-provisioner vault get`.
-	secrets["keycloak_admin_username"] = v.resolveOrDefault(token, "keycloak_admin_username", "admin")
-	secrets["keycloak_postgres_username"] = v.resolveOrDefault(token, "keycloak_postgres_username", "keycloak")
-	for _, key := range []string{
-		"keycloak_admin_password",
-		"keycloak_postgres_password",
-		"keycloak_grafana_client_secret",
-		"keycloak_k8sadmin_password",
-		"keycloak_developer_password",
-	} {
-		val, gerr := v.resolveOrGenerate(token, key)
-		if gerr != nil {
-			return fmt.Errorf("generate %s: %w", key, gerr)
-		}
-		secrets[key] = val
-	}
-
-	_, err = v.vaultPost("/v1/secret/data/k8s-provisioner/api-keys", token, map[string]interface{}{
-		"data": secrets,
-	})
+	// Merge, so keys added by hand (e.g. alertmanager_config) are kept.
+	existing, err := store.ReadSecret(apiKeysPath)
 	if err != nil {
 		return err
 	}
-
-	fmt.Printf("Stored %d secret(s) at secret/data/k8s-provisioner/api-keys\n", len(secrets))
+	for k, val := range existing {
+		if _, set := keys[k]; !set {
+			keys[k] = val
+		}
+	}
+	if err := store.WriteSecret(apiKeysPath, keys); err != nil {
+		return err
+	}
+	fmt.Printf("Stored API keys at secret/%s\n", apiKeysPath)
 	return nil
-}
-
-// lookupSecretValue returns the stored value for key under the api-keys path, or
-// "" if the secret, its KV-v2 envelope, or the key itself is absent. It decodes
-// the nested {"data":{"data":{...}}} KV-v2 response shape in one place.
-func (v *VaultInstaller) lookupSecretValue(token, key string) string {
-	existing, err := v.vaultGet("/v1/secret/data/k8s-provisioner/api-keys", token)
-	if err != nil {
-		return ""
-	}
-	data, ok := existing["data"].(map[string]interface{})
-	if !ok {
-		return ""
-	}
-	inner, ok := data["data"].(map[string]interface{})
-	if !ok {
-		return ""
-	}
-	val, _ := inner[key].(string)
-	return val
-}
-
-// resolveOrDefault returns the existing Vault value for key, or fallback if absent.
-func (v *VaultInstaller) resolveOrDefault(token, key, fallback string) string {
-	if val := v.lookupSecretValue(token, key); val != "" {
-		return val
-	}
-	return fallback
-}
-
-// resolveOrGenerate returns the existing Vault value for key, or a freshly
-// generated password if none is stored yet.
-func (v *VaultInstaller) resolveOrGenerate(token, key string) (string, error) {
-	if val := v.lookupSecretValue(token, key); val != "" {
-		return val, nil
-	}
-	return generatePassword(16)
 }
 
 func generatePassword(length int) (string, error) {
@@ -596,10 +550,10 @@ func (v *VaultInstaller) printAccessInfo() {
 	fmt.Printf("  export VAULT_ADDR=%s\n", v.address)
 	fmt.Printf("  export VAULT_CACERT=%s\n", v.config.VaultCACert())
 	fmt.Printf("  export VAULT_TOKEN=$(cat %s | jq -r .root_token)\n", VaultInitFileLocal)
-	fmt.Println("\nTo read all secrets:")
-	fmt.Println("  vault kv get secret/k8s-provisioner/api-keys")
-	fmt.Println("\nGrafana password:")
-	fmt.Println("  vault kv get -field=grafana_admin_password secret/k8s-provisioner/api-keys")
+	fmt.Println("\nTo list the stored logins:")
+	fmt.Println("  vault kv list secret/k8s-provisioner/keycloak/users")
+	fmt.Println("\nGrafana admin login:")
+	fmt.Printf("  vault kv get secret/%s\n", grafanaAdminCredential.path)
 	fmt.Println("\nKubernetes authentication (in pods):")
 	fmt.Println("  vault write auth/kubernetes/login role=k8s-provisioner jwt=$SA_TOKEN")
 	fmt.Println(strings.Repeat("=", 50))

@@ -10,10 +10,10 @@ import (
 const keycloakCredsFile = "/etc/k8s-provisioner/keycloak-credentials.txt"
 
 func (k *Keycloak) resolveCredentials() (keycloakCreds, error) {
-	// Passwords/secrets default to freshly generated random values, never
-	// hardcoded constants. With Vault enabled these act as seeds for any missing
-	// key and are persisted (recoverable via `k8s-provisioner vault get`); without
-	// Vault they are printed once below so the operator can record them.
+	// Passwords/secrets are random, never hardcoded constants. Without Vault
+	// these generated values are used and recorded once below; with Vault each
+	// comes from its own path (see labCredential) and these are only the
+	// fallback when Vault cannot be read.
 	gen := map[string]string{}
 	for _, name := range []string{"admin", "postgres", "grafana", "k8sadmin", "developer"} {
 		val, err := generatePassword(20)
@@ -23,7 +23,7 @@ func (k *Keycloak) resolveCredentials() (keycloakCreds, error) {
 		gen[name] = val
 	}
 
-	creds := keycloakCreds{
+	generated := keycloakCreds{
 		adminUsername:     "admin",
 		adminPassword:     gen["admin"],
 		postgresUsername:  "keycloak",
@@ -32,6 +32,7 @@ func (k *Keycloak) resolveCredentials() (keycloakCreds, error) {
 		k8sAdminPassword:  gen["k8sadmin"],
 		developerPassword: gen["developer"],
 	}
+	creds := generated
 
 	resolver := NewSecretResolver(k.config)
 	if !resolver.Enabled() {
@@ -55,53 +56,28 @@ func (k *Keycloak) resolveCredentials() (keycloakCreds, error) {
 		return creds, nil
 	}
 
+	// Vault holds each login at its own path (seeded by the Vault step); any
+	// missing value is generated and written back here.
 	vault := resolver.Client()
-	const vaultPath = apiKeysPath
-
-	existing, err := vault.ReadSecret(vaultPath)
-	if err != nil {
-		fmt.Printf("Warning: could not read Vault secrets: %v — using generated values (not persisted)\n", err)
-		return creds, nil
+	for _, f := range []struct {
+		cred          labCredential
+		login, secret *string
+	}{
+		{keycloakAdminCredential, &creds.adminUsername, &creds.adminPassword},
+		{keycloakPostgresCredential, &creds.postgresUsername, &creds.postgresPassword},
+		{keycloakGrafanaClientCredential, nil, &creds.grafanaSecret},
+		{keycloakK8sAdminCredential, nil, &creds.k8sAdminPassword},
+		{keycloakDeveloperCredential, nil, &creds.developerPassword},
+	} {
+		login, secret, err := ensureCredential(vault, f.cred, nil)
+		if err != nil {
+			fmt.Printf("Warning: could not read Keycloak credentials from Vault: %v — using generated values (not persisted)\n", err)
+			return generated, nil
+		}
+		if f.login != nil {
+			*f.login = login
+		}
+		*f.secret = secret
 	}
-
-	// For each secret: adopt the existing Vault value if present, else stage our
-	// generated value to be written back. (Indexing a nil map yields "", so no
-	// nil check is needed.)
-	updates := map[string]string{}
-	creds.adminUsername = resolveSecret(existing, updates, "keycloak_admin_username", creds.adminUsername)
-	creds.adminPassword = resolveSecret(existing, updates, "keycloak_admin_password", creds.adminPassword)
-	creds.postgresUsername = resolveSecret(existing, updates, "keycloak_postgres_username", creds.postgresUsername)
-	creds.postgresPassword = resolveSecret(existing, updates, "keycloak_postgres_password", creds.postgresPassword)
-	creds.grafanaSecret = resolveSecret(existing, updates, "keycloak_grafana_client_secret", creds.grafanaSecret)
-	creds.k8sAdminPassword = resolveSecret(existing, updates, "keycloak_k8sadmin_password", creds.k8sAdminPassword)
-	creds.developerPassword = resolveSecret(existing, updates, "keycloak_developer_password", creds.developerPassword)
-
-	if len(updates) > 0 {
-		merged := map[string]string{}
-		for key, val := range existing {
-			merged[key] = val
-		}
-		for key, val := range updates {
-			merged[key] = val
-		}
-		if werr := vault.WriteSecret(vaultPath, merged); werr != nil {
-			fmt.Printf("Warning: could not write Keycloak secrets to Vault: %v\n", werr)
-		} else {
-			fmt.Printf("Keycloak secrets written to Vault at %s\n", vaultPath)
-		}
-	}
-
 	return creds, nil
-}
-
-// resolveSecret reconciles one secret with Vault: if Vault already holds a
-// non-empty value at key, that value is returned; otherwise generated (our
-// generated default) is staged in updates to be written back and returned.
-// existing may be nil (indexing a nil map yields "").
-func resolveSecret(existing, updates map[string]string, key, generated string) string {
-	if v := existing[key]; v != "" {
-		return v
-	}
-	updates[key] = generated
-	return generated
 }
