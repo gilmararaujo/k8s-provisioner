@@ -88,7 +88,8 @@ func TestSLOPrometheusRule_RecordsEveryWindowAndAlertsOnBurnRate(t *testing.T) {
 func TestTimeSLOs_CountAnOutageAsBad(t *testing.T) {
 	for _, s := range NewMonitoring(externalDNSConfig(), &fakeShell{}).dnsSLOs() {
 		if s.good != "" {
-			assert.Contains(t, s.good, "or on() (vector(0)", "%s: a down ExternalDNS must record 0, not nothing", s.name)
+			assert.Contains(t, s.good, `or on() ((max(up{job="external-dns"}) or vector(0)) == 0`,
+				"%s: a down ExternalDNS must record 0, not nothing; an up one without data yet records nothing", s.name)
 			assert.Contains(t, s.good, `count_over_time(up{job="external-dns"}[7d])`, "%s: but only once it was ever scraped", s.name)
 		}
 	}

@@ -99,8 +99,10 @@ func (m *Monitoring) dnsSLOs() []slo {
 // externalDNSGood wraps an ExternalDNS indicator: the indicator while
 // ExternalDNS is up, 0 (bad) while it is down, and nothing at all before it was
 // first scraped in the SLO window, so install-time startup is not an outage.
+// While it is up but the indicator has no data yet (a subquery's first aligned
+// step precedes the first scrape), nothing is recorded either.
 func externalDNSGood(indicator string) string {
-	return fmt.Sprintf(`((%[1]s) and on() max(up{job=%[2]q}) == 1) or on() (vector(0) and on() count(count_over_time(up{job=%[2]q}[%[3]s])) > 0)`,
+	return fmt.Sprintf(`((%[1]s) and on() max(up{job=%[2]q}) == 1) or on() ((max(up{job=%[2]q}) or vector(0)) == 0 and on() count(count_over_time(up{job=%[2]q}[%[3]s])) > 0)`,
 		indicator, externalDNSJob, sloWindow)
 }
 
