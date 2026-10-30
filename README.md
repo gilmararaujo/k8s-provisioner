@@ -274,11 +274,8 @@ vagrant up
 ### 4. Access the cluster
 
 ```bash
-# Copy kubeconfig
+# Copy the admin kubeconfig (it already points at https://192.168.56.10:6443)
 vagrant ssh controlplane -c 'sudo cat /etc/kubernetes/admin.conf' > ~/.kube/config-lab
-
-# Adjust server IP
-sed -i '' 's/127.0.0.1/192.168.56.10/' ~/.kube/config-lab
 
 # Use the config
 export KUBECONFIG=~/.kube/config-lab
@@ -298,15 +295,22 @@ Three one-time steps on **your machine** make every lab URL open over HTTPS with
 
 When `vagrant up` finishes it exports both CAs to **`vagrant/certs/`** (gitignored) and
 prints these exact commands with the CA fingerprints. Run them from the `vagrant/`
-directory, **one command per line**:
+directory (the certificate paths are relative), **one command per line**. Each CA is
+removed before it is trusted, so the same commands also replace the CAs of a previous lab:
 
 **macOS**
 
 ```bash
 sudo mkdir -p /etc/resolver && echo "nameserver 192.168.56.20" | sudo tee /etc/resolver/lab.internal
+security find-certificate -a -Z -c "k8s-lab-ca" /Library/Keychains/System.keychain | awk '/^SHA-1/{print $NF}' | xargs -I{} sudo security delete-certificate -Z {} /Library/Keychains/System.keychain
 sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain certs/k8s-lab-ca.crt
+security find-certificate -a -Z -c "k8s-lab Vault CA" /Library/Keychains/System.keychain | awk '/^SHA-1/{print $NF}' | xargs -I{} sudo security delete-certificate -Z {} /Library/Keychains/System.keychain
 sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain certs/k8s-lab-vault-ca.crt
 ```
+
+`add-trusted-cert` alone does not replace a CA with the same name, it adds another copy.
+Browsers cope, but Go clients such as kubelogin may pick a stale copy and fail with
+`x509: ECDSA verification failure`.
 
 Then open **System Settings → Privacy & Security → Local Network** and enable your browser
 (Brave, Chrome, Firefox, …), terminal and IDE. Without it they fail with
@@ -328,8 +332,8 @@ certificates to `/etc/pki/ca-trust/source/anchors/` and run `sudo update-ca-trus
 
 ```powershell
 Add-DnsClientNrptRule -Namespace ".lab.internal" -NameServers "192.168.56.20"
-certutil -addstore -f Root certs\k8s-lab-ca.crt
-certutil -addstore -f Root certs\k8s-lab-vault-ca.crt
+certutil -delstore Root "k8s-lab-ca"; certutil -addstore -f Root certs\k8s-lab-ca.crt
+certutil -delstore Root "k8s-lab Vault CA"; certutil -addstore -f Root certs\k8s-lab-vault-ca.crt
 ```
 
 **Check it:**
@@ -352,23 +356,24 @@ openssl x509 -in certs/k8s-lab-ca.crt -noout -fingerprint -sha256   # compare wi
 
 #### After recreating the lab
 
-`vagrant destroy` + `vagrant up` generates **new** CAs, so the old trusted ones stop working
-(the browser warns again). Remove the old ones, then repeat the trust commands above with
-the new files from `vagrant/certs/`:
+`vagrant destroy` + `vagrant up` generates **new** CAs and a new cluster CA, so everything
+that trusted the old ones stops working until you:
+
+1. **Re-run the host setup commands** printed by `vagrant up` (above): they remove the old
+   lab and Vault CAs and trust the new files in `vagrant/certs/`. On Linux, also drop
+   certificates of a lab that is gone with
+   `sudo rm /usr/local/share/ca-certificates/k8s-lab-*.crt && sudo update-ca-certificates --fresh`
+   before copying the new ones.
+2. **Fetch the kubeconfigs again**: both embed CAs. The admin one (step 4) holds the old
+   cluster CA, and the OIDC one (step 7) holds the old lab CA in `--certificate-authority-data`,
+   so kubelogin fails with `x509: certificate signed by unknown authority` even when the
+   system trusts the new CA.
 
 ```bash
-# macOS — repeat until "Unable to delete certificate" (one call removes one copy)
-sudo security delete-certificate -c k8s-lab-ca /Library/Keychains/System.keychain
-sudo security delete-certificate -c "k8s-lab Vault CA" /Library/Keychains/System.keychain
-
-# Linux
-sudo rm /usr/local/share/ca-certificates/k8s-lab-*.crt && sudo update-ca-certificates --fresh
-```
-
-```powershell
-# Windows
-certutil -delstore Root k8s-lab-ca
-certutil -delstore Root "k8s-lab Vault CA"
+vagrant ssh controlplane -c 'sudo cat /etc/kubernetes/admin.conf' > ~/.kube/config-lab
+vagrant ssh controlplane -c \
+  'sudo k8s-provisioner vault get k8s-provisioner/kubeconfig-oidc config -c /etc/k8s-provisioner/config.yaml' \
+  > ~/.kube/config-oidc
 ```
 
 The DNS rule does not change and needs no action. Upgrading from a lab that used

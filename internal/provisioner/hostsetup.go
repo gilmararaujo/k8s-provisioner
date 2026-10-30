@@ -56,7 +56,10 @@ func (p *Provisioner) printHostSetup() {
 		fmt.Printf("  sudo mkdir -p /etc/resolver && echo \"nameserver %s\" | sudo tee /etc/resolver/%s\n", dnsIP, domain)
 	}
 	for _, ca := range cas {
-		fmt.Printf("  sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain certs/%s\n", ca.file)
+		// Removing the previous copy first makes the same commands work after a rebuild:
+		// stale CAs with the same name but another key break Go clients (kubelogin).
+		fmt.Printf("  %s\n", macOSRemoveCA(commonName(ca.pem)))
+		fmt.Printf("  sudo security add-trusted-cert -d -r trustRoot -k %s certs/%s\n", macOSSystemKeychain, ca.file)
 	}
 	fmt.Println("  Browsers other than Safari (and terminals/IDEs) need: System Settings → Privacy & Security → Local Network")
 
@@ -71,11 +74,12 @@ func (p *Provisioner) printHostSetup() {
 		fmt.Printf("  Add-DnsClientNrptRule -Namespace \".%s\" -NameServers \"%s\"\n", domain, dnsIP)
 	}
 	for _, ca := range cas {
-		fmt.Printf("  certutil -addstore -f Root certs\\%s\n", ca.file)
+		fmt.Printf("  certutil -delstore Root \"%s\"; certutil -addstore -f Root certs\\%s\n", commonName(ca.pem), ca.file)
 	}
 
 	fmt.Printf("\nThen restart the browser and open https://%s\n", cfg.Host("grafana"))
-	fmt.Println("Recreated the lab? Both CAs are new: remove the old ones and trust these again (README \"Host setup\").")
+	fmt.Println("Recreated the lab? Both CAs are new: run these commands again (they replace the old CAs)")
+	fmt.Println("and fetch your kubeconfigs again, they embed the old CAs (README \"After recreating the lab\").")
 }
 
 // collectHostCAs returns the lab CA (cert-manager, signs every Gateway) and the
@@ -94,6 +98,28 @@ func (p *Provisioner) collectHostCAs() []hostCA {
 		}
 	}
 	return cas
+}
+
+const macOSSystemKeychain = "/Library/Keychains/System.keychain"
+
+// macOSRemoveCA returns a command deleting every System keychain certificate
+// named cn, by SHA-1 hash: delete-certificate -c removes one copy per call.
+func macOSRemoveCA(cn string) string {
+	return fmt.Sprintf(`security find-certificate -a -Z -c %q %s | awk '/^SHA-1/{print $NF}' | xargs -I{} sudo security delete-certificate -Z {} %s`,
+		cn, macOSSystemKeychain, macOSSystemKeychain)
+}
+
+// commonName returns the subject CN of the first certificate in pemData.
+func commonName(pemData string) string {
+	block, _ := pem.Decode([]byte(pemData))
+	if block == nil {
+		return ""
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return ""
+	}
+	return cert.Subject.CommonName
 }
 
 // fingerprint returns the colon-separated SHA-256 of the first certificate in
