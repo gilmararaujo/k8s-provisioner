@@ -1,20 +1,20 @@
 # ===========================================
-# Exemplo: Storage com NFS + Istio
+# Example: NFS Storage + Istio
 # ===========================================
 #
-# StorageClasses disponíveis:
-#   - nfs-dynamic: Provisionamento automático (PV criado automaticamente)
-#   - nfs-static:  Provisionamento manual (requer PV pré-criado)
+# Available StorageClasses:
+#   - nfs-dynamic: Automatic provisioning (PV created automatically)
+#   - nfs-static:  Manual provisioning (requires a pre-created PV)
 #
 # NFS Server: 192.168.56.20 (storage)
 # NFS Path: /exports/k8s-volumes
-# Acesso: http://<INGRESS_IP>/
+# Access: http://<INGRESS_IP>/
 # ===========================================
 
 # ===========================================
-# EXEMPLO 1: Usando nfs-dynamic (automático)
+# EXAMPLE 1: Using nfs-dynamic (automatic)
 # ===========================================
-# Com nfs-dynamic, basta criar o PVC e o PV é criado automaticamente
+# With nfs-dynamic, just create the PVC and the PV is created automatically
 
 ---
 apiVersion: v1
@@ -24,7 +24,7 @@ metadata:
   labels:
     istio-injection: enabled
 ---
-# PVC com provisionamento dinâmico - PV será criado automaticamente
+# PVC with dynamic provisioning - the PV will be created automatically
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -64,7 +64,7 @@ spec:
       initContainers:
       - name: init-content
         image: busybox
-        command: ['sh', '-c', 'echo "<h1>NFS Dynamic Storage</h1><p>Hostname: $(hostname)</p><p>Data: $(date)</p><p>PV criado automaticamente!</p>" > /data/index.html']
+        command: ['sh', '-c', 'echo "<h1>NFS Dynamic Storage</h1><p>Hostname: $(hostname)</p><p>Date: $(date)</p><p>PV created automatically!</p>" > /data/index.html']
         volumeMounts:
         - name: web-data
           mountPath: /data
@@ -74,9 +74,9 @@ spec:
           claimName: app-data-dynamic
 
 # ===========================================
-# EXEMPLO 2: Usando nfs-static (manual)
+# EXAMPLE 2: Using nfs-static (manual)
 # ===========================================
-# Com nfs-static, você precisa criar o PV manualmente antes do PVC
+# With nfs-static, you must create the PV manually before the PVC
 
 ---
 apiVersion: v1
@@ -86,7 +86,7 @@ metadata:
   labels:
     istio-injection: enabled
 ---
-# PV manual - criado antes do PVC
+# Manual PV - created before the PVC
 apiVersion: v1
 kind: PersistentVolume
 metadata:
@@ -104,7 +104,7 @@ spec:
     server: 192.168.56.20
     path: /exports/k8s-volumes/static-pv01
 ---
-# PVC que usa o PV manual
+# PVC that uses the manual PV
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -144,7 +144,7 @@ spec:
       initContainers:
       - name: init-content
         image: busybox
-        command: ['sh', '-c', 'echo "<h1>NFS Static Storage</h1><p>Hostname: $(hostname)</p><p>Data: $(date)</p><p>PV criado manualmente!</p>" > /data/index.html']
+        command: ['sh', '-c', 'echo "<h1>NFS Static Storage</h1><p>Hostname: $(hostname)</p><p>Date: $(date)</p><p>PV created manually!</p>" > /data/index.html']
         volumeMounts:
         - name: web-data
           mountPath: /data
@@ -154,10 +154,10 @@ spec:
           claimName: app-data-static
 
 # ===========================================
-# EXEMPLO 3: PV com claimRef (binding direto)
+# EXAMPLE 3: PV with claimRef (direct binding)
 # ===========================================
-# Use claimRef quando precisar garantir que um PV específico
-# seja vinculado a um PVC específico (como o Karpor usa)
+# Use claimRef when you need to guarantee that a specific PV
+# is bound to a specific PVC (as Karpor does)
 
 ---
 apiVersion: v1
@@ -165,7 +165,7 @@ kind: Namespace
 metadata:
   name: claimref-demo
 ---
-# PV com claimRef - reservado para um PVC específico
+# PV with claimRef - reserved for a specific PVC
 apiVersion: v1
 kind: PersistentVolume
 metadata:
@@ -184,7 +184,7 @@ spec:
     server: 192.168.56.20
     path: /exports/k8s-volumes/reserved-data
 ---
-# PVC que será automaticamente vinculado ao PV acima
+# PVC that will be bound automatically to the PV above
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -199,7 +199,7 @@ spec:
       storage: 5Gi
 
 # ===========================================
-# Services e Istio (para os exemplos acima)
+# Services and Istio (for the examples above)
 # ===========================================
 ---
 apiVersion: v1
@@ -226,7 +226,7 @@ spec:
   - port: 80
     targetPort: 80
 ---
-# Istio Gateway para demo
+# Istio Gateway for the demo
 apiVersion: networking.istio.io/v1
 kind: Gateway
 metadata:
@@ -241,8 +241,8 @@ spec:
       name: http
       protocol: HTTP
     hosts:
-    - "nfs-dynamic.local"
-    - "nfs-static.local"
+    - "nfs-dynamic.lab.internal"
+    - "nfs-static.lab.internal"
 ---
 apiVersion: networking.istio.io/v1
 kind: VirtualService
@@ -251,7 +251,7 @@ metadata:
   namespace: dynamic-demo
 spec:
   hosts:
-  - "nfs-dynamic.local"
+  - "nfs-dynamic.lab.internal"
   gateways:
   - nfs-demo-gateway
   http:
@@ -268,7 +268,7 @@ metadata:
   namespace: static-demo
 spec:
   hosts:
-  - "nfs-static.local"
+  - "nfs-static.lab.internal"
   gateways:
   - dynamic-demo/nfs-demo-gateway
   http:

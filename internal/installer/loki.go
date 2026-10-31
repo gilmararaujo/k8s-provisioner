@@ -130,6 +130,9 @@ metadata:
   namespace: monitoring
 spec:
   replicas: 1
+  # Single writer on an NFS volume: never run old and new pods side by side.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: loki
@@ -210,7 +213,7 @@ spec:
 
 	lokiVersion := l.config.Versions.Loki
 	if lokiVersion == "" {
-		lokiVersion = "3.7.1"
+		lokiVersion = "3.7.9"
 	}
 	loki = fmt.Sprintf(loki, lokiVersion, lokiVersion)
 
@@ -415,7 +418,7 @@ spec:
 
 	alloyVersion := l.config.Versions.Alloy
 	if alloyVersion == "" {
-		alloyVersion = "v1.15.1"
+		alloyVersion = "v1.21.1"
 	}
 	alloy = fmt.Sprintf(alloy, alloyVersion, alloyVersion)
 
@@ -491,7 +494,7 @@ func (l *Loki) printAccessInfo() {
 	fmt.Println("Loki Stack Access Information")
 	fmt.Println("========================================")
 	fmt.Println("\nAccess logs via Grafana:")
-	fmt.Println("  1. Open Grafana (http://grafana.local)")
+	fmt.Printf("  1. Open Grafana (https://%s)\n", l.config.Host("grafana"))
 	fmt.Println("  2. Go to Explore (left sidebar)")
 	fmt.Println("  3. Select 'Loki' as datasource")
 	fmt.Println("\nAlloy UI (log pipeline status):")

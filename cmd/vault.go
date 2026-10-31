@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
 
 	"github.com/spf13/cobra"
 	"github.com/techiescamp/k8s-provisioner/internal/installer"
@@ -14,11 +15,15 @@ var vaultCmd = &cobra.Command{
 	Short: "Interact with HashiCorp Vault",
 	Long: `Read and write secrets in HashiCorp Vault running on the storage node.
 
-Vault stores all cluster secrets at path k8s-provisioner/api-keys:
-  - grafana_admin_password
-  - keycloak_admin_password
-  - keycloak_postgres_password
-  - grafana_oidc_client_secret
+Each lab login has its own path, with plain keys:
+  k8s-provisioner/grafana/admin               username, password
+  k8s-provisioner/keycloak/admin              username, password
+  k8s-provisioner/keycloak/postgres           username, password
+  k8s-provisioner/keycloak/users/k8sadmin     username, password
+  k8s-provisioner/keycloak/users/developer    username, password
+  k8s-provisioner/keycloak/clients/grafana    client_id, client_secret
+API keys and overrides (ollama_api_key, karpor_auth_token, alertmanager_config)
+live at k8s-provisioner/api-keys.
 
 The Vault token is auto-resolved from /etc/k8s-provisioner/vault-init.json
 if not set in config.yaml.`,
@@ -46,11 +51,11 @@ var vaultGetCmd = &cobra.Command{
 	Long: `Read secrets stored in Vault KV v2.
 
 Examples:
-  # Read all keys at a path
-  k8s-provisioner vault get k8s-provisioner/api-keys
+  # Read a login (username + password)
+  k8s-provisioner vault get k8s-provisioner/keycloak/users/k8sadmin
 
   # Read a specific key
-  k8s-provisioner vault get k8s-provisioner/api-keys grafana_admin_password`,
+  k8s-provisioner vault get k8s-provisioner/grafana/admin password`,
 	Args: cobra.RangeArgs(1, 2),
 	RunE: runVaultGet,
 }
@@ -61,7 +66,7 @@ var vaultSetCmd = &cobra.Command{
 	Long: `Write a key-value pair to Vault KV v2. Existing keys at the path are preserved.
 
 Example:
-  k8s-provisioner vault set k8s-provisioner/api-keys grafana_admin_password MyNewPass123`,
+  k8s-provisioner vault set k8s-provisioner/grafana/admin password MyNewPass123`,
 	Args: cobra.ExactArgs(3),
 	RunE: runVaultSet,
 }
@@ -97,7 +102,7 @@ func vaultClientFromConfig() (*installer.VaultClient, error) {
 	if token == "" {
 		return nil, fmt.Errorf("vault token not found — run 'k8s-provisioner vault token' on the controlplane or set vault.token in config.yaml")
 	}
-	return installer.NewVaultClient(addr, token), nil
+	return installer.NewVaultClient(addr, token, cfg.VaultCACert()), nil
 }
 
 func runVaultToken(_ *cobra.Command, _ []string) error {
@@ -129,8 +134,9 @@ func runVaultStatus(_ *cobra.Command, _ []string) error {
 		return err
 	}
 
-	// Try to read a known path to verify connectivity + token validity
-	_, err = client.ReadSecret("k8s-provisioner/api-keys")
+	// Read a known path to verify connectivity + token validity (a missing
+	// path is not an error, an invalid token is)
+	_, err = client.ReadSecret("k8s-provisioner/grafana/admin")
 	if err != nil {
 		return fmt.Errorf("vault unreachable or token invalid: %w", err)
 	}
@@ -167,10 +173,15 @@ func runVaultGet(_ *cobra.Command, args []string) error {
 		return nil
 	}
 
-	// Print all keys
+	// Print all keys, sorted so a login reads password-then-username consistently
 	fmt.Printf("Secrets at %s:\n", path)
-	for k, v := range data {
-		fmt.Printf("  %-40s = %s\n", k, v)
+	keys := make([]string, 0, len(data))
+	for k := range data {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		fmt.Printf("  %-20s = %s\n", k, data[k])
 	}
 	return nil
 }
@@ -234,7 +245,7 @@ func runVaultUnseal(_ *cobra.Command, _ []string) error {
 	fmt.Printf("Unsealing Vault at %s (sending %d of %d keys)...\n", addr, threshold, len(init.Keys))
 
 	for i := 0; i < threshold; i++ {
-		if err := installer.UnsealWithKey(addr, init.Keys[i]); err != nil {
+		if err := installer.UnsealWithKey(addr, cfg.VaultCACert(), init.Keys[i]); err != nil {
 			return fmt.Errorf("unseal key %d failed: %w", i+1, err)
 		}
 		fmt.Printf("  Key %d accepted\n", i+1)

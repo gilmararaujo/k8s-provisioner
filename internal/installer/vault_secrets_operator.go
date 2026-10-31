@@ -65,7 +65,52 @@ func (v *VaultSecretsOperator) installHelm() error {
 	return err
 }
 
+// vsoNamespace is where the operator and its default VaultConnection live.
+const vsoNamespace = "vault-secrets-operator-system"
+
+// vaultCASecret holds the Vault CA (key ca.crt) that the default VaultConnection
+// uses to verify Vault's TLS certificate. The chart requires it to exist before
+// the connection is created.
+const vaultCASecret = "vault-ca"
+
+// createVaultCASecret publishes the Vault CA to the operator namespace. Returns
+// false (no error) for a plain-HTTP Vault, where no CA is needed.
+func (v *VaultSecretsOperator) createVaultCASecret() (bool, error) {
+	if !strings.HasPrefix(v.address, "https://") {
+		return false, nil
+	}
+	if err := ensureVaultCA(v.config, v.exec); err != nil {
+		return false, err
+	}
+	pem, err := executor.ReadFileContents(v.config.VaultCACert())
+	if err != nil {
+		return false, fmt.Errorf("read vault CA: %w", err)
+	}
+	manifest := fmt.Sprintf(`apiVersion: v1
+kind: Namespace
+metadata:
+  name: %s
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: %s
+  namespace: %s
+type: Opaque
+stringData:
+  ca.crt: %q`, vsoNamespace, vaultCASecret, vsoNamespace, pem)
+	if _, err := v.exec.RunShellWithStdin("kubectl apply -f -", manifest); err != nil {
+		return false, fmt.Errorf("create %s secret: %w", vaultCASecret, err)
+	}
+	return true, nil
+}
+
 func (v *VaultSecretsOperator) installVSO() error {
+	withCA, err := v.createVaultCASecret()
+	if err != nil {
+		return err
+	}
+
 	if _, err := v.exec.RunShell("helm repo add hashicorp https://helm.releases.hashicorp.com 2>/dev/null || true"); err != nil {
 		fmt.Printf("Warning: could not add HashiCorp Helm repo: %v\n", err)
 	}
@@ -75,13 +120,15 @@ func (v *VaultSecretsOperator) installVSO() error {
 
 	cmd := fmt.Sprintf(
 		"helm upgrade --install vault-secrets-operator hashicorp/vault-secrets-operator"+
-			" -n vault-secrets-operator-system --create-namespace"+
+			" -n %s --create-namespace"+
 			" --set defaultVaultConnection.enabled=true"+
-			" --set 'defaultVaultConnection.address=%s'"+
-			" --wait --timeout=3m",
-		v.address,
+			" --set 'defaultVaultConnection.address=%s'",
+		vsoNamespace, v.address,
 	)
-	_, err := v.exec.RunShell(cmd)
+	if withCA {
+		cmd += " --set defaultVaultConnection.caCertSecret=" + vaultCASecret
+	}
+	_, err = v.exec.RunShell(cmd + " --wait --timeout=3m")
 	return err
 }
 
@@ -123,50 +170,35 @@ spec:
     serviceAccount: default`, ns)
 }
 
+// credentialSecret renders a VaultStaticSecret that mirrors one login path
+// (see labCredential) into a K8s Secret with the same plain keys, e.g.
+// username/password. excludeRaw drops VSO's _raw copy of the KV response.
+func credentialSecret(name, ns string, c labCredential) string {
+	return fmt.Sprintf(`
+---
+apiVersion: secrets.hashicorp.com/v1beta1
+kind: VaultStaticSecret
+metadata:
+  name: %[1]s
+  namespace: %[2]s
+spec:
+  vaultAuthRef: vault-auth
+  mount: secret
+  type: kv-v2
+  path: %[3]s
+  refreshAfter: 30s
+  destination:
+    name: %[1]s
+    create: true
+    overwrite: true
+    transformation:
+      excludeRaw: true`, name, ns, c.path)
+}
+
 func (v *VaultSecretsOperator) createKeycloakResources() error {
-	manifest := vsoNamespaceAndAuth("keycloak") + `
----
-apiVersion: secrets.hashicorp.com/v1beta1
-kind: VaultStaticSecret
-metadata:
-  name: keycloak-admin
-  namespace: keycloak
-spec:
-  vaultAuthRef: vault-auth
-  mount: secret
-  type: kv-v2
-  path: k8s-provisioner/api-keys
-  refreshAfter: 30s
-  destination:
-    name: keycloak-admin
-    create: true
-    transformation:
-      templates:
-        username:
-          text: '{{- get .Secrets "keycloak_admin_username" -}}'
-        password:
-          text: '{{- get .Secrets "keycloak_admin_password" -}}'
----
-apiVersion: secrets.hashicorp.com/v1beta1
-kind: VaultStaticSecret
-metadata:
-  name: postgres-credentials
-  namespace: keycloak
-spec:
-  vaultAuthRef: vault-auth
-  mount: secret
-  type: kv-v2
-  path: k8s-provisioner/api-keys
-  refreshAfter: 30s
-  destination:
-    name: postgres-credentials
-    create: true
-    transformation:
-      templates:
-        username:
-          text: '{{- get .Secrets "keycloak_postgres_username" -}}'
-        password:
-          text: '{{- get .Secrets "keycloak_postgres_password" -}}'`
+	manifest := vsoNamespaceAndAuth("keycloak") +
+		credentialSecret("keycloak-admin", "keycloak", keycloakAdminCredential) +
+		credentialSecret("postgres-credentials", "keycloak", keycloakPostgresCredential)
 
 	if err := executor.WriteFile("/tmp/vso-keycloak.yaml", manifest); err != nil {
 		return err
@@ -176,45 +208,9 @@ spec:
 }
 
 func (v *VaultSecretsOperator) createMonitoringResources() error {
-	manifest := vsoNamespaceAndAuth("monitoring") + `
----
-apiVersion: secrets.hashicorp.com/v1beta1
-kind: VaultStaticSecret
-metadata:
-  name: grafana-admin
-  namespace: monitoring
-spec:
-  vaultAuthRef: vault-auth
-  mount: secret
-  type: kv-v2
-  path: k8s-provisioner/api-keys
-  refreshAfter: 30s
-  destination:
-    name: grafana-admin
-    create: true
-    transformation:
-      templates:
-        password:
-          text: '{{- get .Secrets "grafana_admin_password" -}}'
----
-apiVersion: secrets.hashicorp.com/v1beta1
-kind: VaultStaticSecret
-metadata:
-  name: grafana-oidc
-  namespace: monitoring
-spec:
-  vaultAuthRef: vault-auth
-  mount: secret
-  type: kv-v2
-  path: k8s-provisioner/api-keys
-  refreshAfter: 30s
-  destination:
-    name: grafana-oidc
-    create: true
-    transformation:
-      templates:
-        client-secret:
-          text: '{{- get .Secrets "keycloak_grafana_client_secret" -}}'`
+	manifest := vsoNamespaceAndAuth("monitoring") +
+		credentialSecret("grafana-admin", "monitoring", grafanaAdminCredential) +
+		credentialSecret("grafana-oidc", "monitoring", keycloakGrafanaClientCredential)
 
 	if err := executor.WriteFile("/tmp/vso-monitoring.yaml", manifest); err != nil {
 		return err
@@ -241,6 +237,8 @@ spec:
     name: ollama-api-key
     create: true
     transformation:
+      excludeRaw: true
+      excludes: [".*"]
       templates:
         api-key:
           text: '{{- get .Secrets "ollama_api_key" -}}'`

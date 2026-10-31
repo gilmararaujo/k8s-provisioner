@@ -4,9 +4,11 @@ import "strings"
 
 // fakeShell implements executor.ShellExecutor for unit tests. outputs maps a
 // command substring to the stdout to return; errs maps a substring to the error
-// to return. calls records every command in order so sequencing can be asserted.
+// to return. calls records every command in order so sequencing can be asserted;
+// stdins records what each RunShellWithStdin call piped in.
 type fakeShell struct {
 	calls   []string
+	stdins  []string
 	outputs map[string]string
 	errs    map[string]error
 }
@@ -26,7 +28,8 @@ func (f *fakeShell) RunShellWithOutput(cmd string) error {
 	return nil
 }
 
-func (f *fakeShell) RunShellWithStdin(cmd, _ string) (string, error) {
+func (f *fakeShell) RunShellWithStdin(cmd, stdin string) (string, error) {
 	f.calls = append(f.calls, cmd)
+	f.stdins = append(f.stdins, stdin)
 	return "", nil
 }

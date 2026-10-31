@@ -95,6 +95,27 @@ metadata:
 		fmt.Printf("Warning: Failed to create cert-manager monitoring resources: %v\n", err)
 	}
 
+	fmt.Println("Creating kubelet/cAdvisor scrape target + workload resource rules...")
+	if err := m.installResourceMonitoring(); err != nil {
+		fmt.Printf("Warning: Failed to create resource monitoring: %v\n", err)
+	}
+	fmt.Println("Creating DNS scrape targets (cluster CoreDNS, ExternalDNS, CoreDNS on storage)...")
+	if err := m.installDNSMonitoring(); err != nil {
+		fmt.Printf("Warning: Failed to create DNS monitoring: %v\n", err)
+	}
+	fmt.Println("Creating DNS SLO recording rules and burn-rate alerts...")
+	if err := m.installSLOs(); err != nil {
+		fmt.Printf("Warning: Failed to create SLO rules: %v\n", err)
+	}
+	fmt.Println("Creating TLS certificate expiry probes (blackbox_exporter)...")
+	if err := m.installCertificateProbes(); err != nil {
+		fmt.Printf("Warning: Failed to create certificate probes: %v\n", err)
+	}
+	fmt.Println("Publishing the k8s-lab Grafana dashboard...")
+	if err := m.installLabDashboard(); err != nil {
+		fmt.Printf("Warning: Failed to publish the lab dashboard: %v\n", err)
+	}
+
 	// Create Istio Gateways and scrape configs if Istio is enabled
 	if m.config.Components.ServiceMesh == "istio" {
 		fmt.Println("Creating Istio Gateways for monitoring...")
@@ -143,19 +164,15 @@ func (m *Monitoring) printAccessInfo() {
 	fmt.Println("\n========================================")
 	fmt.Println("Monitoring Stack Access Information")
 	fmt.Println("========================================")
-	fmt.Println("\n1. Get Istio Ingress IP:")
-	fmt.Println("   INGRESS_IP=$(kubectl get svc -n istio-system istio-ingressgateway -o jsonpath='{.status.loadBalancer.ingress[0].ip}')")
-	fmt.Println("\n2. Add to /etc/hosts:")
-	fmt.Println("   echo \"$INGRESS_IP grafana.local prometheus.local alertmanager.local\" | sudo tee -a /etc/hosts")
-	fmt.Println("\n3. Access:")
-	fmt.Println("   - Grafana:      http://grafana.local")
-	fmt.Println("   - Prometheus:   http://prometheus.local")
-	fmt.Println("   - Alertmanager: http://alertmanager.local")
+	fmt.Println("\nAccess (resolved by the lab DNS, see README \"Lab DNS\"):")
+	fmt.Printf("   - Grafana:      https://%s\n", m.config.Host("grafana"))
+	fmt.Printf("   - Prometheus:   https://%s\n", m.config.Host("prometheus"))
+	fmt.Printf("   - Alertmanager: https://%s\n", m.config.Host("alertmanager"))
 	fmt.Println("\nGrafana Credentials:")
 	fmt.Println("  User: admin")
 	if m.config.Vault.Enabled {
 		fmt.Println("  Password: (stored in Vault)")
-		fmt.Println("  Retrieve: k8s-provisioner vault get-secret k8s-provisioner/api-keys")
+		fmt.Printf("  Retrieve: k8s-provisioner vault get %s password\n", grafanaAdminCredential.path)
 		fmt.Println("\nAlertmanager Config:")
 		fmt.Println("  Config: (stored in Vault as 'alertmanager_config')")
 		fmt.Println("  Store:  vault kv put secret/k8s-provisioner/api-keys alertmanager_config=@alertmanager.yaml")

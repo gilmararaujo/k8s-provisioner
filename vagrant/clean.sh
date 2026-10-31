@@ -1,7 +1,7 @@
 #!/bin/bash
 #
-# Script para limpar ambiente Vagrant e VirtualBox
-# Garante uma instalação limpa do cluster Kubernetes
+# Cleans up the Vagrant and VirtualBox environment
+# Ensures a clean installation of the Kubernetes cluster
 #
 
 set -e
@@ -9,51 +9,51 @@ set -e
 cd "$(dirname "$0")"
 
 echo "==========================================="
-echo "  Limpeza do Ambiente Vagrant/VirtualBox"
+echo "  Vagrant/VirtualBox Environment Cleanup"
 echo "==========================================="
 echo ""
 
-# 1. Destruir VMs do Vagrant
-echo "[1/5] Destruindo VMs do Vagrant..."
+# 1. Destroy Vagrant VMs
+echo "[1/5] Destroying Vagrant VMs..."
 vagrant destroy -f 2>/dev/null || true
 
-# 2. Remover diretório .vagrant local
-echo "[2/5] Removendo metadados locais (.vagrant)..."
+# 2. Remove the local .vagrant directory
+echo "[2/5] Removing local metadata (.vagrant)..."
 rm -rf .vagrant
 
-# 3. Limpar cache temporário do Vagrant
-echo "[3/5] Limpando cache temporário do Vagrant..."
+# 3. Clear the Vagrant temporary cache
+echo "[3/5] Clearing Vagrant temporary cache..."
 rm -rf ~/.vagrant.d/tmp/* 2>/dev/null || true
 
-# 4. Remover VMs órfãs do VirtualBox
-echo "[4/5] Removendo VMs do VirtualBox..."
+# 4. Remove orphaned VirtualBox VMs
+echo "[4/5] Removing VirtualBox VMs..."
 for vm in "Storage" "Master" "Node01" "Node02"; do
   if VBoxManage showvminfo "$vm" &>/dev/null; then
-    echo "  - Removendo $vm..."
+    echo "  - Removing $vm..."
     VBoxManage controlvm "$vm" poweroff 2>/dev/null || true
     sleep 1
     VBoxManage unregistervm "$vm" --delete 2>/dev/null || true
   fi
 done
 
-# 5. Remover box antiga (opcional)
-echo "[5/5] Verificando box bento/debian-13..."
+# 5. Remove the old box (optional)
+echo "[5/5] Checking box bento/debian-13..."
 if vagrant box list | grep -q "bento/debian-13"; then
-  read -p "  Deseja remover a box bento/debian-13 para baixar novamente? (s/N): " choice
-  if [[ "$choice" =~ ^[Ss]$ ]]; then
+  read -p "  Remove the bento/debian-13 box to download it again? (y/N): " choice
+  if [[ "$choice" =~ ^[Yy]$ ]]; then
     vagrant box remove bento/debian-13 --all --force 2>/dev/null || true
-    echo "  - Box removida!"
+    echo "  - Box removed!"
   else
-    echo "  - Box mantida."
+    echo "  - Box kept."
   fi
 fi
 
 echo ""
 echo "==========================================="
-echo "  Limpeza concluída!"
+echo "  Cleanup complete!"
 echo "==========================================="
 echo ""
-echo "Para criar o cluster novamente, execute:"
+echo "To create the cluster again, run:"
 echo ""
 echo "  vagrant up"
 echo ""

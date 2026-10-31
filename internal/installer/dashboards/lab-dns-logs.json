@@ -1,0 +1,50 @@
+{
+  "panels": [
+    {
+      "id": 1101,
+      "type": "row",
+      "title": "Lab DNS \u2014 record changes (ExternalDNS logs, Loki)",
+      "collapsed": true,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "panels": [
+        {
+          "id": 1102,
+          "type": "logs",
+          "title": "A records added / removed",
+          "description": "ExternalDNS writes to etcd. TXT ownership records are hidden.",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki-uid"
+          },
+          "gridPos": {
+            "h": 10,
+            "w": 24,
+            "x": 0,
+            "y": 1
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "loki",
+                "uid": "loki-uid"
+              },
+              "expr": "{namespace=\"external-dns\"} |~ \"Add/set key|Delet\" != \"heritage=\"",
+              "refId": "A"
+            }
+          ],
+          "options": {
+            "showTime": true,
+            "wrapLogMessage": true,
+            "sortOrder": "Descending",
+            "enableLogDetails": true
+          }
+        }
+      ]
+    }
+  ]
+}

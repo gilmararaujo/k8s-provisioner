@@ -2,7 +2,9 @@ package provisioner
 
 import (
 	"fmt"
+	"strings"
 
+	"github.com/techiescamp/k8s-provisioner/internal/config"
 	"github.com/techiescamp/k8s-provisioner/internal/executor"
 )
 
@@ -21,6 +23,7 @@ func (p *Provisioner) InstallCommon() error {
 		name string
 		fn   func() error
 	}{
+		{"Setting timezone", p.setTimezone},
 		{"Disabling swap", p.disableSwap},
 		{"Loading kernel modules", p.loadKernelModules},
 		{"Configuring sysctl", p.configureSysctl},
@@ -39,6 +42,13 @@ func (p *Provisioner) InstallCommon() error {
 	}
 
 	return nil
+}
+
+// setTimezone sets the node clock's timezone (logs, journald, cron). Timestamps
+// stored by Prometheus and Loki stay UTC; Grafana displays them in this zone.
+func (p *Provisioner) setTimezone() error {
+	_, err := p.exec.RunShell("timedatectl set-timezone " + p.config.Timezone())
+	return err
 }
 
 func (p *Provisioner) disableSwap() error {
@@ -87,7 +97,7 @@ func (p *Provisioner) configureDNS() error {
 	if _, err := p.exec.RunShell("chattr -i /etc/resolv.conf 2>/dev/null; rm -f /etc/resolv.conf"); err != nil {
 		return err
 	}
-	if err := p.writeFile("/etc/resolv.conf", "nameserver 8.8.8.8\nnameserver 1.1.1.1\n"); err != nil {
+	if err := p.writeFile("/etc/resolv.conf", nodeResolvConf(p.config)); err != nil {
 		return err
 	}
 	if _, err := p.exec.RunShell("chattr +i /etc/resolv.conf"); err != nil {
@@ -95,6 +105,19 @@ func (p *Provisioner) configureDNS() error {
 	}
 	_, err := p.exec.RunShell(`grep -q 'nohook resolv.conf' /etc/dhcpcd.conf 2>/dev/null || echo 'nohook resolv.conf' >> /etc/dhcpcd.conf`)
 	return err
+}
+
+// nodeResolvConf puts the lab DNS on the storage node first: it serves the lab
+// domain (needed by the apiserver to reach the Keycloak issuer) and forwards the
+// rest upstream. The public resolvers remain as fallback, with a short timeout so
+// a storage node that is down does not stall every lookup.
+func nodeResolvConf(cfg *config.Config) string {
+	var b strings.Builder
+	if dnsIP := cfg.StorageIP(); dnsIP != "" {
+		fmt.Fprintf(&b, "nameserver %s\n", dnsIP)
+	}
+	b.WriteString("nameserver 8.8.8.8\nnameserver 1.1.1.1\noptions timeout:2 attempts:2\n")
+	return b.String()
 }
 
 func (p *Provisioner) installDependencies() error {

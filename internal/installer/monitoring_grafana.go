@@ -18,7 +18,7 @@ func (m *Monitoring) installGrafana() error {
 		return err
 	}
 
-	// Cria K8s Secret com a senha (do Vault ou fallback)
+	// Create the K8s Secret with the password (from Vault or the fallback)
 	if err := m.createGrafanaSecret(password); err != nil {
 		return err
 	}
@@ -44,6 +44,23 @@ data:
       access: proxy
       url: http://prometheus:9090
       isDefault: true
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-providers
+  namespace: monitoring
+data:
+  dashboards.yaml: |
+    apiVersion: 1
+    providers:
+    - name: k8s-lab
+      folder: k8s-lab
+      type: file
+      disableDeletion: true
+      allowUiUpdates: false
+      options:
+        path: /etc/grafana/dashboards
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -88,9 +105,22 @@ spec:
               key: password
         - name: GF_USERS_ALLOW_SIGN_UP
           value: "false"
+        # Grafana updates its bundled plugins (Prometheus, Tempo) at startup; on
+        # this read-only root filesystem the update fails and leaves the plugins
+        # unregistered, which breaks every Prometheus/Tempo panel. Keep the
+        # versions shipped in the image.
+        - name: GF_PLUGINS_PREINSTALL_AUTO_UPDATE
+          value: "false"
+        # Default display timezone for every dashboard and user (cluster.timezone).
+        - name: GF_DATE_FORMATS_DEFAULT_TIMEZONE
+          value: "%s"
         volumeMounts:
         - name: datasources
           mountPath: /etc/grafana/provisioning/datasources
+        - name: dashboard-providers
+          mountPath: /etc/grafana/provisioning/dashboards
+        - name: dashboards
+          mountPath: /etc/grafana/dashboards
         - name: grafana-data
           mountPath: /var/lib/grafana
         - name: grafana-logs
@@ -108,6 +138,15 @@ spec:
       - name: datasources
         configMap:
           name: grafana-datasources
+      - name: dashboard-providers
+        configMap:
+          name: grafana-dashboard-providers
+      # Filled by installLabDashboard after the metrics it charts exist; optional
+      # so Grafana starts without it.
+      - name: dashboards
+        configMap:
+          name: grafana-dashboards
+          optional: true
       - name: grafana-data
         emptyDir: {}
       - name: grafana-logs
@@ -130,9 +169,9 @@ spec:
 
 	version := m.config.Versions.Grafana
 	if version == "" {
-		version = "13.0.1"
+		version = "13.2.4"
 	}
-	grafana = fmt.Sprintf(grafana, version, version)
+	grafana = fmt.Sprintf(grafana, version, version, m.config.Timezone())
 
 	if err := executor.WriteFile("/tmp/grafana.yaml", grafana); err != nil {
 		return err
@@ -149,7 +188,8 @@ spec:
 func (m *Monitoring) resolveGrafanaPassword() (string, error) {
 	resolver := NewSecretResolver(m.config)
 	if resolver.Enabled() {
-		if pw := resolver.Resolve("Grafana password", "", "grafana_admin_password"); pw != "" {
+		if _, pw := resolver.Credential(grafanaAdminCredential); pw != "" {
+			fmt.Println("Grafana password loaded from Vault")
 			return pw, nil
 		}
 	}

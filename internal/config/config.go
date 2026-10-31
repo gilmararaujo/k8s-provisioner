@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -20,14 +21,31 @@ type Config struct {
 	KarporAI     KarporAIConfig     `yaml:"karpor_ai"`
 	Ollama       OllamaConfig       `yaml:"ollama"`
 	Vault        VaultConfig        `yaml:"vault"`
+	DNS          DNSConfig          `yaml:"dns"`
 	Provisioning ProvisioningConfig `yaml:"provisioning"`
 }
+
+// DNSConfig configures the lab DNS served from the storage node (CoreDNS backed
+// by etcd, fed by ExternalDNS).
+type DNSConfig struct {
+	Domain string `yaml:"domain"` // base domain for lab hostnames; empty = DefaultDomain
+}
+
+// DefaultDomain is the lab base domain when dns.domain is not set. .internal is
+// reserved for private use (ICANN, 2024) and, unlike .local, is not captured by
+// mDNS on macOS.
+const DefaultDomain = "lab.internal"
 
 type VaultConfig struct {
 	Enabled bool   `yaml:"enabled"` // toggles Vault; addr is derived when empty
 	Addr    string `yaml:"addr"`    // optional override; empty = derive from storage node
 	Token   string `yaml:"token"`
+	CACert  string `yaml:"ca_cert"` // CA bundle trusted for Vault TLS; empty = DefaultVaultCACert
 }
+
+// DefaultVaultCACert is where the Vault CA (fetched from the storage node during
+// provisioning) is kept on the controlplane when vault.ca_cert is not set.
+const DefaultVaultCACert = "/etc/k8s-provisioner/vault-ca.crt"
 
 // ProvisioningConfig controls node-to-node SSH used to transport Vault init data
 // from the controlplane to the storage node. Defaults target the Vagrant lab box;
@@ -55,6 +73,8 @@ type ClusterConfig struct {
 	Name        string `yaml:"name"`
 	PodCIDR     string `yaml:"pod_cidr"`
 	ServiceCIDR string `yaml:"service_cidr"`
+	// Timezone (IANA name) of every lab node and of Grafana; empty means UTC.
+	Timezone string `yaml:"timezone"`
 }
 
 type VersionsConfig struct {
@@ -77,6 +97,14 @@ type VersionsConfig struct {
 	MetricsServer      string `yaml:"metrics_server"`
 	PrometheusOperator string `yaml:"prometheus_operator"`
 	CertManager        string `yaml:"cert_manager"`
+	Prometheus         string `yaml:"prometheus"`
+	Alertmanager       string `yaml:"alertmanager"`
+	VPA                string `yaml:"vpa"`                // Helm chart version (kubernetes/autoscaler)
+	CoreDNS            string `yaml:"coredns"`            // lab DNS on the storage node
+	Etcd               string `yaml:"etcd"`               // ExternalDNS record store on the storage node
+	ExternalDNS        string `yaml:"external_dns"`       // ExternalDNS image tag
+	ResourceDashboard  string `yaml:"resource_dashboard"` // upstream commit of the workload resources dashboard + rules (no release tags)
+	BlackboxExporter   string `yaml:"blackbox_exporter"`  // TLS certificate expiry probes
 }
 
 type NetworkConfig struct {
@@ -106,8 +134,9 @@ type ComponentsConfig struct {
 	Tracing      string `yaml:"tracing"` // Options: otel-tempo, none
 	Karpor       string `yaml:"karpor"`
 	Keycloak     string `yaml:"keycloak"`
-	VPA          string `yaml:"vpa"`  // Options: enabled, disabled
-	KEDA         string `yaml:"keda"` // Options: enabled, disabled
+	VPA          string `yaml:"vpa"`          // Options: enabled, disabled
+	KEDA         string `yaml:"keda"`         // Options: enabled, disabled
+	ExternalDNS  string `yaml:"external_dns"` // Options: enabled, none
 }
 
 type KarporAIConfig struct {
@@ -156,6 +185,9 @@ func applyEnvSecrets(cfg *Config) {
 	if v := os.Getenv("K8S_PROV_VAULT_TOKEN"); v != "" {
 		cfg.Vault.Token = v
 	}
+	if v := os.Getenv("VAULT_CACERT"); v != "" {
+		cfg.Vault.CACert = v
+	}
 	if v := os.Getenv("K8S_PROV_SSH_PASSWORD"); v != "" {
 		cfg.Provisioning.SSHPassword = v
 	}
@@ -165,6 +197,24 @@ func applyEnvSecrets(cfg *Config) {
 	if v := os.Getenv("KARPOR_AUTH_TOKEN"); v != "" {
 		cfg.KarporAI.AuthToken = v
 	}
+}
+
+// validateLabDNS checks the lab domain, the timezone and the lab DNS host.
+func (c *Config) validateLabDNS() []string {
+	var errors []string
+	// The timezone is passed to timedatectl and Grafana: accept IANA names only.
+	if c.Cluster.Timezone != "" && !ianaTimezone.MatchString(c.Cluster.Timezone) {
+		errors = append(errors, fmt.Sprintf("cluster.timezone '%s' is not an IANA timezone name (e.g. America/Sao_Paulo)", c.Cluster.Timezone))
+	}
+	// The domain ends up in certificates, Istio Gateways and the Keycloak issuer
+	// URL, so reject anything that is not a plain DNS name.
+	if c.DNS.Domain != "" && !isValidDomain(c.DNS.Domain) {
+		errors = append(errors, fmt.Sprintf("dns.domain '%s' is not a valid domain name", c.DNS.Domain))
+	}
+	if c.Components.ExternalDNS == "enabled" && c.StorageIP() == "" {
+		errors = append(errors, "components.external_dns is enabled but no storage node with an ip hosts the lab DNS")
+	}
+	return errors
 }
 
 // Validate checks all required fields and formats
@@ -220,6 +270,8 @@ func (c *Config) Validate() error {
 		errors = append(errors, "vault.enabled is true but no address could be resolved (set vault.addr or define a storage node with an ip)")
 	}
 
+	errors = append(errors, c.validateLabDNS()...)
+
 	// Provisioning validation
 	if err := validateSSHPassword(c.Provisioning.SSHPassword); err != nil {
 		errors = append(errors, fmt.Sprintf("provisioning.ssh_password: %v", err))
@@ -248,6 +300,7 @@ func (c *Config) Validate() error {
 		{"components.keycloak", c.Components.Keycloak, []string{"enabled", "disabled", "none"}},
 		{"components.vpa", c.Components.VPA, []string{"enabled", "disabled", "none"}},
 		{"components.keda", c.Components.KEDA, []string{"enabled", "disabled", "none"}},
+		{"components.external_dns", c.Components.ExternalDNS, []string{"enabled", "disabled", "none"}},
 	}
 	for _, e := range enumChecks {
 		if e.value == "" {
@@ -313,6 +366,26 @@ func validateSSHPassword(pw string) error {
 }
 
 // isValidIP checks if the string is a valid IPv4 or IPv6 address
+// isValidDomain accepts lowercase DNS names with at least two labels
+// (e.g. lab.internal), each 1-63 chars of [a-z0-9-] not starting/ending with '-'.
+func isValidDomain(d string) bool {
+	labels := strings.Split(d, ".")
+	if len(d) > 253 || len(labels) < 2 {
+		return false
+	}
+	for _, l := range labels {
+		if len(l) == 0 || len(l) > 63 || l[0] == '-' || l[len(l)-1] == '-' {
+			return false
+		}
+		for _, r := range l {
+			if (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '-' {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 func isValidIP(ip string) bool {
 	return net.ParseIP(ip) != nil
 }
@@ -385,9 +458,48 @@ func (c *Config) VaultAddress() string {
 		return c.Vault.Addr
 	}
 	if ip := c.StorageIP(); ip != "" {
-		return fmt.Sprintf("http://%s:8200", ip)
+		return fmt.Sprintf("https://%s:8200", ip)
 	}
 	return ""
+}
+
+// VaultCACert returns the path of the CA bundle used to verify Vault's TLS
+// certificate: vault.ca_cert (or the VAULT_CACERT env var), else the default.
+func (c *Config) VaultCACert() string {
+	if c.Vault.CACert != "" {
+		return c.Vault.CACert
+	}
+	return DefaultVaultCACert
+}
+
+// Domain returns the lab base domain (dns.domain, else DefaultDomain).
+func (c *Config) Domain() string {
+	if c.DNS.Domain != "" {
+		return c.DNS.Domain
+	}
+	return DefaultDomain
+}
+
+// ianaTimezone matches IANA zone names such as UTC, America/Sao_Paulo or
+// America/Argentina/Buenos_Aires.
+var ianaTimezone = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_+-]*(/[A-Za-z0-9_+-]+){0,2}$`)
+
+// Timezone returns the lab timezone (cluster.timezone, else UTC).
+func (c *Config) Timezone() string {
+	if c.Cluster.Timezone != "" {
+		return c.Cluster.Timezone
+	}
+	return "UTC"
+}
+
+// Host returns the lab FQDN for a service, e.g. Host("grafana") → grafana.lab.internal.
+func (c *Config) Host(name string) string {
+	return name + "." + c.Domain()
+}
+
+// ExternalDNSEnabled reports whether ExternalDNS publishes the lab hostnames.
+func (c *Config) ExternalDNSEnabled() bool {
+	return c.Components.ExternalDNS == "enabled"
 }
 
 func (c *Config) Workers() []NodeConfig {

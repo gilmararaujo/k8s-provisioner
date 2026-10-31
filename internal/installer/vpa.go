@@ -25,15 +25,27 @@ func (v *VPA) Install() error {
 		return fmt.Errorf("helm installation failed: %w", err)
 	}
 
-	if _, err := v.exec.RunShell("helm repo add cowboysysop https://cowboysysop.github.io/charts 2>/dev/null || true"); err != nil {
-		fmt.Printf("Warning: could not add cowboysysop Helm repo: %v\n", err)
+	if _, err := v.exec.RunShell("helm repo add autoscaler https://kubernetes.github.io/autoscaler 2>/dev/null || true"); err != nil {
+		fmt.Printf("Warning: could not add autoscaler Helm repo: %v\n", err)
 	}
-	if _, err := v.exec.RunShell("helm repo update cowboysysop"); err != nil {
+	if _, err := v.exec.RunShell("helm repo update autoscaler"); err != nil {
 		fmt.Printf("Warning: helm repo update failed: %v\n", err)
 	}
 
-	cmd := "helm upgrade --install vpa cowboysysop/vertical-pod-autoscaler" +
-		" --namespace kube-system" +
+	v.adoptExistingCRDs()
+
+	chartVersion := v.config.Versions.VPA
+	if chartVersion == "" {
+		chartVersion = "0.15.0"
+	}
+	// Official chart; single replicas without PDBs suit the lab (a PDB on a
+	// single replica would block node drains).
+	cmd := "helm upgrade --install vpa autoscaler/vertical-pod-autoscaler" +
+		" --namespace kube-system --version " + chartVersion +
+		" --set admissionController.replicas=1 --set recommender.replicas=1 --set updater.replicas=1" +
+		" --set admissionController.podDisruptionBudget.enabled=false" +
+		" --set recommender.podDisruptionBudget.enabled=false" +
+		" --set updater.podDisruptionBudget.enabled=false" +
 		" --wait --timeout=3m"
 	if _, err := v.exec.RunShell(cmd); err != nil {
 		return fmt.Errorf("vpa helm install failed: %w", err)
@@ -46,6 +58,29 @@ func (v *VPA) Install() error {
 
 	v.printAccessInfo()
 	return nil
+}
+
+// vpaCRDs are templated by the official chart, so Helm refuses to install over
+// copies left behind by a previous chart (e.g. cowboysysop) unless they carry
+// this release's ownership metadata.
+var vpaCRDs = []string{
+	"verticalpodautoscalers.autoscaling.k8s.io",
+	"verticalpodautoscalercheckpoints.autoscaling.k8s.io",
+}
+
+// adoptExistingCRDs marks pre-existing VPA CRDs as owned by the "vpa" release.
+// A no-op on a fresh cluster, where the CRDs do not exist yet.
+func (v *VPA) adoptExistingCRDs() {
+	for _, crd := range vpaCRDs {
+		if _, err := v.exec.RunShell("kubectl get crd " + crd + " >/dev/null 2>&1"); err != nil {
+			continue
+		}
+		cmd := fmt.Sprintf("kubectl label crd %[1]s app.kubernetes.io/managed-by=Helm --overwrite && "+
+			"kubectl annotate crd %[1]s meta.helm.sh/release-name=vpa meta.helm.sh/release-namespace=kube-system --overwrite", crd)
+		if _, err := v.exec.RunShell(cmd); err != nil {
+			fmt.Printf("Warning: could not adopt CRD %s into the vpa release: %v\n", crd, err)
+		}
+	}
 }
 
 func (v *VPA) installHelm() error {

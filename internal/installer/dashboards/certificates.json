@@ -1,0 +1,493 @@
+{
+  "panels": [
+    {
+      "id": 1201,
+      "type": "row",
+      "title": "Certificates \u2014 expiry of everything that serves or presents TLS (whole lab)",
+      "collapsed": false,
+      "panels": [],
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      }
+    },
+    {
+      "id": 1202,
+      "type": "stat",
+      "title": "Monitored",
+      "description": "Certificates tracked: cert-manager, TLS probes (apiserver, kubelets, Vault, lab hosts) and kubelet client certificates.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 0,
+        "y": 1
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "count(max by (certificate, where) (label_replace(label_join(certmanager_certificate_expiration_timestamp_seconds, \"certificate\", \"/\", \"namespace\", \"name\"), \"where\", \"cert-manager\", \"\", \"\")) or max by (certificate, where) (label_replace(label_replace(probe_ssl_earliest_cert_expiry{job=\"blackbox\"}, \"certificate\", \"$1\", \"instance\", \"(.*)\"), \"where\", \"$1 (TLS probe)\", \"component\", \"(.*)\")) or max by (certificate, where) (label_replace(label_replace(time() + kubelet_certificate_manager_client_ttl_seconds, \"certificate\", \"kubelet client $1\", \"instance\", \"(.*)\"), \"where\", \"kubelet\", \"\", \"\")))",
+          "instant": true,
+          "range": false,
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "textMode": "value",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 0,
+          "noValue": "No data",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 1203,
+      "type": "stat",
+      "title": "Expire in < 30 days",
+      "description": "cert-manager renews its certificates 30 days before expiry, so they rarely show here; others need action.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 5,
+        "x": 4,
+        "y": 1
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "count(((max by (certificate, where) (label_replace(label_join(certmanager_certificate_expiration_timestamp_seconds, \"certificate\", \"/\", \"namespace\", \"name\"), \"where\", \"cert-manager\", \"\", \"\")) or max by (certificate, where) (label_replace(label_replace(probe_ssl_earliest_cert_expiry{job=\"blackbox\"}, \"certificate\", \"$1\", \"instance\", \"(.*)\"), \"where\", \"$1 (TLS probe)\", \"component\", \"(.*)\")) or max by (certificate, where) (label_replace(label_replace(time() + kubelet_certificate_manager_client_ttl_seconds, \"certificate\", \"kubelet client $1\", \"instance\", \"(.*)\"), \"where\", \"kubelet\", \"\", \"\"))) - time()) / 86400 < 30) or vector(0)",
+          "instant": true,
+          "range": false,
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "textMode": "value",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 0,
+          "noValue": "0",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "#EAB839",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 1204,
+      "type": "stat",
+      "title": "Expire in < 7 days",
+      "description": "Act now: see the table below for which ones.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 5,
+        "x": 9,
+        "y": 1
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "count(((max by (certificate, where) (label_replace(label_join(certmanager_certificate_expiration_timestamp_seconds, \"certificate\", \"/\", \"namespace\", \"name\"), \"where\", \"cert-manager\", \"\", \"\")) or max by (certificate, where) (label_replace(label_replace(probe_ssl_earliest_cert_expiry{job=\"blackbox\"}, \"certificate\", \"$1\", \"instance\", \"(.*)\"), \"where\", \"$1 (TLS probe)\", \"component\", \"(.*)\")) or max by (certificate, where) (label_replace(label_replace(time() + kubelet_certificate_manager_client_ttl_seconds, \"certificate\", \"kubelet client $1\", \"instance\", \"(.*)\"), \"where\", \"kubelet\", \"\", \"\"))) - time()) / 86400 < 7) or vector(0)",
+          "instant": true,
+          "range": false,
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "textMode": "value",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 0,
+          "noValue": "0",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 1205,
+      "type": "stat",
+      "title": "Not ready / unreachable",
+      "description": "cert-manager certificates not Ready plus TLS endpoints the probe could not reach.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 5,
+        "x": 14,
+        "y": 1
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "(count(certmanager_certificate_ready_status{condition=\"True\"} == 0) or vector(0)) + (count(probe_success{job=\"blackbox\"} == 0) or vector(0))",
+          "instant": true,
+          "range": false,
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "textMode": "value",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 0,
+          "noValue": "0",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 1206,
+      "type": "stat",
+      "title": "Lab CA expires in",
+      "description": "The CA your machine trusts (README \"Host setup\"). When it changes, every lab site needs the new CA trusted again.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 5,
+        "x": 19,
+        "y": 1
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "(max(certmanager_certificate_expiration_timestamp_seconds{name=\"lab-ca\"}) - time()) / 86400",
+          "instant": true,
+          "range": false,
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "textMode": "value",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "suffix: days",
+          "decimals": 0,
+          "noValue": "No data",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "#EAB839",
+                "value": 30
+              },
+              {
+                "color": "green",
+                "value": 90
+              }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 1207,
+      "type": "table",
+      "title": "Certificates by expiry",
+      "description": "Soonest first. where: who issues/serves it. TLS probes read the certificate the endpoint actually presents.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 5
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "((max by (certificate, where) (label_replace(label_join(certmanager_certificate_expiration_timestamp_seconds, \"certificate\", \"/\", \"namespace\", \"name\"), \"where\", \"cert-manager\", \"\", \"\")) or max by (certificate, where) (label_replace(label_replace(probe_ssl_earliest_cert_expiry{job=\"blackbox\"}, \"certificate\", \"$1\", \"instance\", \"(.*)\"), \"where\", \"$1 (TLS probe)\", \"component\", \"(.*)\")) or max by (certificate, where) (label_replace(label_replace(time() + kubelet_certificate_manager_client_ttl_seconds, \"certificate\", \"kubelet client $1\", \"instance\", \"(.*)\"), \"where\", \"kubelet\", \"\", \"\"))) - time()) / 86400",
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "(max by (certificate, where) (label_replace(label_join(certmanager_certificate_expiration_timestamp_seconds, \"certificate\", \"/\", \"namespace\", \"name\"), \"where\", \"cert-manager\", \"\", \"\")) or max by (certificate, where) (label_replace(label_replace(probe_ssl_earliest_cert_expiry{job=\"blackbox\"}, \"certificate\", \"$1\", \"instance\", \"(.*)\"), \"where\", \"$1 (TLS probe)\", \"component\", \"(.*)\")) or max by (certificate, where) (label_replace(label_replace(time() + kubelet_certificate_manager_client_ttl_seconds, \"certificate\", \"kubelet client $1\", \"instance\", \"(.*)\"), \"where\", \"kubelet\", \"\", \"\"))) * 1000",
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "refId": "B"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "indexByName": {
+              "certificate": 0,
+              "where": 1,
+              "Value #B": 2,
+              "Value #A": 3
+            },
+            "renameByName": {
+              "certificate": "Certificate",
+              "where": "Where",
+              "Value #A": "Days left",
+              "Value #B": "Expires"
+            }
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "sort": [
+              {
+                "field": "Days left",
+                "desc": false
+              }
+            ]
+          }
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            }
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Days left"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "none"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background",
+                  "mode": "basic"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    },
+                    {
+                      "color": "#EAB839",
+                      "value": 7
+                    },
+                    {
+                      "color": "green",
+                      "value": 30
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Expires"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "dateTimeAsIso"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -1,7 +1,16 @@
 require 'yaml'
 settings = YAML.load_file(File.join(File.dirname(__FILE__), 'settings.yaml'))
 
-# Mapeamento de nomes para exibição no VirtualBox
+# The provisioner config is the single source of truth for the lab domain and
+# the versions of what runs on the storage node outside the cluster.
+provisioner_config = YAML.load_file(File.join(File.dirname(__FILE__), '..', 'config.yaml'))
+LAB_DOMAIN      = provisioner_config.dig('dns', 'domain').to_s.empty? ? 'lab.internal' : provisioner_config.dig('dns', 'domain')
+ETCD_VERSION    = provisioner_config.dig('versions', 'etcd') || 'v3.7.3'
+COREDNS_VERSION = provisioner_config.dig('versions', 'coredns') || '1.15.0'
+LAB_TIMEZONE    = provisioner_config.dig('cluster', 'timezone').to_s.empty? ? 'UTC' : provisioner_config.dig('cluster', 'timezone')
+LAB_HOSTS       = settings['vm'].map { |v| "#{v['ip']} #{v['name']}" }.join("\n")
+
+# Display-name mapping for VirtualBox
 DISPLAY_NAMES = {
   "storage" => "Storage",
   "controlplane" => "Master",
@@ -38,7 +47,7 @@ Vagrant.configure("2") do |config|
       vm.vm.hostname = vm_config['name']
       vm.vm.network "private_network", ip: vm_config['ip']
 
-      # Synced folders (apenas para VMs Kubernetes)
+      # Synced folders (Kubernetes VMs only)
       if vm_role != "storage"
         vm.vm.synced_folder ".", "/vagrant", type: "virtualbox"
         vm.vm.synced_folder "..", "/opt/k8s-provisioner", type: "virtualbox"
@@ -52,7 +61,7 @@ Vagrant.configure("2") do |config|
         vb.customize ["modifyvm", :id, "--nicpromisc2", "allow-all"]
       end
 
-      # Garantir modo promíscuo após VM iniciar (up, reload, resume)
+      # Ensure promiscuous mode after the VM starts (up, reload, resume)
       [:up, :reload, :resume].each do |action|
         vm.trigger.after action do |trigger|
           trigger.name = "Enable promiscuous mode for #{vm_display_name}"
@@ -61,9 +70,11 @@ Vagrant.configure("2") do |config|
         end
       end
 
-      # Provisionamento base: /etc/hosts e ferramentas
+      # Base provisioning: timezone, /etc/hosts and tools. The timezone is set
+      # here so the storage node (not provisioned by the Go binary) gets it too.
       vm.vm.provision "shell", inline: <<-SHELL
         set -e
+        timedatectl set-timezone '#{LAB_TIMEZONE}'
         apt-get update -y
         apt-get install -y curl netcat-openbsd nfs-common vim bash-completion
 
@@ -73,7 +84,7 @@ Vagrant.configure("2") do |config|
         echo "192.168.56.11 node01" >> /etc/hosts
         echo "192.168.56.12 node02" >> /etc/hosts
 
-        # Configurar vim para YAML/Kubernetes
+        # Configure vim for YAML/Kubernetes
         cat > /etc/vim/vimrc.local <<'VIMRC'
 " Kubernetes/YAML friendly vim configuration
 syntax on
@@ -89,26 +100,26 @@ filetype plugin indent on
 autocmd FileType yaml setlocal ts=2 sts=2 sw=2 expandtab
 VIMRC
 
-        # Copiar para usuário vagrant
+        # Copy to the vagrant user
         mkdir -p /home/vagrant
         cp /etc/vim/vimrc.local /home/vagrant/.vimrc
         chown vagrant:vagrant /home/vagrant/.vimrc
 
-        # Copiar para root
+        # Copy to root
         cp /etc/vim/vimrc.local /root/.vimrc
       SHELL
 
-      # Provisionamento específico por role
+      # Role-specific provisioning
       case vm_role
       when "storage"
         vm.vm.provision "shell", inline: <<-SHELL
           set -e
-          echo "=== Configurando NFS Server ==="
+          echo "=== Configuring NFS Server ==="
 
-          # Instalar NFS server
+          # Install NFS server
           apt-get install -y nfs-kernel-server
 
-          # Criar diretórios de export
+          # Create export directories
           mkdir -p /exports/k8s-volumes
           mkdir -p /exports/k8s-volumes/pv01
           mkdir -p /exports/k8s-volumes/pv02
@@ -118,26 +129,26 @@ VIMRC
           mkdir -p /exports/k8s-volumes/ollama
           chmod -R 777 /exports
 
-          # Configurar exports
+          # Configure exports
           cat > /etc/exports <<EOF
 /exports/k8s-volumes 192.168.56.0/24(rw,sync,no_subtree_check,no_root_squash)
 EOF
 
-          # Reiniciar NFS
+          # Restart NFS
           exportfs -ra
           systemctl restart nfs-kernel-server
           systemctl enable nfs-kernel-server
 
-          echo "=== NFS Server configurado ==="
+          echo "=== NFS Server configured ==="
           echo "Exports:"
           exportfs -v
         SHELL
 
         vm.vm.provision "shell", inline: <<-SHELL
           set -e
-          echo "=== Instalando HashiCorp Vault ==="
+          echo "=== Installing HashiCorp Vault ==="
 
-          VAULT_VERSION="2.0.0"
+          VAULT_VERSION="2.2.1"
           VM_ARCH=$(dpkg --print-architecture)
           apt-get install -y unzip curl
 
@@ -148,24 +159,62 @@ EOF
           chmod +x /usr/local/bin/vault
           vault --version
 
-          # Usuário e diretórios
+          # User and directories
           useradd --system --home /etc/vault.d --shell /bin/false vault 2>/dev/null || true
           mkdir -p /etc/vault.d /opt/vault/data
           chown -R vault:vault /opt/vault
 
-          # Configuração do Vault
+          # TLS: a dedicated CA for Vault, generated here because Vault starts before
+          # the cluster (and its cert-manager lab CA) exists. Only generated once, so
+          # re-provisioning keeps the CA the host and the cluster already trust.
+          # The server cert stays within Apple's 825-day limit for private CAs.
+          TLS_DIR=/etc/vault.d/tls
+          mkdir -p $TLS_DIR
+          if [ ! -f $TLS_DIR/ca.crt ]; then
+            apt-get install -y openssl
+            openssl req -x509 -newkey rsa:4096 -sha256 -days 3650 -nodes \
+              -keyout $TLS_DIR/ca.key -out $TLS_DIR/ca.crt \
+              -subj "/CN=k8s-lab Vault CA" \
+              -addext "basicConstraints=critical,CA:TRUE" \
+              -addext "keyUsage=critical,keyCertSign,cRLSign"
+            openssl req -newkey rsa:2048 -sha256 -nodes \
+              -keyout $TLS_DIR/vault.key -out /tmp/vault.csr \
+              -subj "/CN=storage"
+            cat > /tmp/vault-ext.cnf <<'EXT'
+subjectAltName=IP:#{NFS_SERVER_IP},IP:127.0.0.1,DNS:storage,DNS:storage.#{LAB_DOMAIN},DNS:vault.#{LAB_DOMAIN},DNS:localhost
+extendedKeyUsage=serverAuth
+keyUsage=critical,digitalSignature,keyEncipherment
+basicConstraints=critical,CA:FALSE
+EXT
+            openssl x509 -req -in /tmp/vault.csr -sha256 -days 825 \
+              -CA $TLS_DIR/ca.crt -CAkey $TLS_DIR/ca.key -CAcreateserial \
+              -out $TLS_DIR/vault.crt -extfile /tmp/vault-ext.cnf
+            rm -f /tmp/vault.csr /tmp/vault-ext.cnf
+          fi
+          chown root:root $TLS_DIR/ca.key && chmod 600 $TLS_DIR/ca.key
+          chown vault:vault $TLS_DIR/vault.key $TLS_DIR/vault.crt && chmod 600 $TLS_DIR/vault.key
+          chmod 644 $TLS_DIR/ca.crt $TLS_DIR/vault.crt
+
+          # Vault CLI defaults on this node
+          cat > /etc/profile.d/vault.sh <<'VAULTENV'
+export VAULT_ADDR=https://127.0.0.1:8200
+export VAULT_CACERT=/etc/vault.d/tls/ca.crt
+VAULTENV
+
+          # Vault configuration
           cat > /etc/vault.d/vault.hcl <<'VAULTCONF'
 storage "file" {
   path = "/opt/vault/data"
 }
 
 listener "tcp" {
-  address     = "0.0.0.0:8200"
-  tls_disable = 1
+  address       = "0.0.0.0:8200"
+  tls_cert_file = "/etc/vault.d/tls/vault.crt"
+  tls_key_file  = "/etc/vault.d/tls/vault.key"
 }
 
-api_addr     = "http://192.168.56.20:8200"
-cluster_addr = "http://192.168.56.20:8201"
+api_addr     = "https://#{NFS_SERVER_IP}:8200"
+cluster_addr = "https://#{NFS_SERVER_IP}:8201"
 ui           = true
 VAULTCONF
           chown vault:vault /etc/vault.d/vault.hcl
@@ -201,40 +250,49 @@ VAULTSERVICE
           systemctl enable vault
           systemctl start vault
 
-          echo "=== Vault iniciado em http://192.168.56.20:8200 ==="
-          echo "=== UI disponível em http://192.168.56.20:8200/ui ==="
+          echo "=== Vault started at https://#{NFS_SERVER_IP}:8200 (CA: /etc/vault.d/tls/ca.crt) ==="
+          echo "=== UI available at https://#{NFS_SERVER_IP}:8200/ui ==="
         SHELL
 
+        # Lab DNS: etcd + CoreDNS serving #{LAB_DOMAIN} (records from ExternalDNS)
+        vm.vm.provision "lab-dns", type: "shell", path: "scripts/storage-dns.sh", env: {
+          "DOMAIN"          => LAB_DOMAIN,
+          "STORAGE_IP"      => NFS_SERVER_IP,
+          "ETCD_VERSION"    => ETCD_VERSION,
+          "COREDNS_VERSION" => COREDNS_VERSION,
+          "LAB_HOSTS"       => LAB_HOSTS
+        }
+
       when "controlplane", "worker"
-        # Montar NFS nos nodes Kubernetes
+        # Mount NFS on the Kubernetes nodes
         vm.vm.provision "shell", inline: <<-SHELL
           set -e
-          echo "=== Montando NFS ==="
+          echo "=== Mounting NFS ==="
 
-          # Aguardar NFS server estar disponível
+          # Wait for the NFS server to become available
           for i in {1..30}; do
             if showmount -e #{NFS_SERVER_IP} &>/dev/null; then
-              echo "NFS server disponível!"
+              echo "NFS server available!"
               break
             fi
-            echo "Aguardando NFS server... ($i/30)"
+            echo "Waiting for NFS server... ($i/30)"
             sleep 5
           done
 
-          # Criar ponto de montagem
+          # Create mount point
           mkdir -p /mnt/nfs-storage
 
-          # Montar NFS
+          # Mount NFS
           mount -t nfs #{NFS_SERVER_IP}:/exports/k8s-volumes /mnt/nfs-storage
 
-          # Adicionar ao fstab para montar no boot
+          # Add to fstab to mount at boot
           echo "#{NFS_SERVER_IP}:/exports/k8s-volumes /mnt/nfs-storage nfs defaults 0 0" >> /etc/fstab
 
-          echo "=== NFS montado em /mnt/nfs-storage ==="
+          echo "=== NFS mounted at /mnt/nfs-storage ==="
           df -h /mnt/nfs-storage
         SHELL
 
-        # Provisionamento Kubernetes com binário Go
+        # Kubernetes provisioning with the Go binary
         vm.vm.provision "shell", inline: <<-SHELL
           set -e
           cp /opt/k8s-provisioner/build/k8s-provisioner-linux-#{ARCH} /usr/local/bin/k8s-provisioner
@@ -312,12 +370,12 @@ VAULTSERVICE
           SHELL
         end
 
-        # Configurar kubectl autocomplete e aliases
+        # Configure kubectl autocomplete and aliases
         vm.vm.provision "shell", inline: <<-SHELL
           set -e
-          echo "=== Configurando kubectl autocomplete e aliases ==="
+          echo "=== Configuring kubectl autocomplete and aliases ==="
 
-          # Configuração para usuário vagrant
+          # Configuration for the vagrant user
           cat >> /home/vagrant/.bashrc <<'BASHRC'
 
 # Kubectl autocomplete
@@ -336,10 +394,10 @@ alias kx='kubectl exec -it'
 alias ka='kubectl apply -f'
 alias kdel='kubectl delete -f'
 
-# Autocomplete para alias k
+# Autocomplete for the k alias
 complete -o default -F __start_kubectl k
 
-# Namespace rápido
+# Quick namespace switch
 alias kn='kubectl config set-context --current --namespace'
 
 # Dry-run helper
@@ -347,7 +405,7 @@ export do='--dry-run=client -o yaml'
 BASHRC
           chown vagrant:vagrant /home/vagrant/.bashrc
 
-          # Mesma configuração para root
+          # Same configuration for root
           cat >> /root/.bashrc <<'BASHRC'
 
 # Kubectl autocomplete
@@ -366,17 +424,17 @@ alias kx='kubectl exec -it'
 alias ka='kubectl apply -f'
 alias kdel='kubectl delete -f'
 
-# Autocomplete para alias k
+# Autocomplete for the k alias
 complete -o default -F __start_kubectl k
 
-# Namespace rápido
+# Quick namespace switch
 alias kn='kubectl config set-context --current --namespace'
 
 # Dry-run helper
 export do='--dry-run=client -o yaml'
 BASHRC
 
-          echo "=== Autocomplete e aliases configurados ==="
+          echo "=== Autocomplete and aliases configured ==="
         SHELL
       end
     end

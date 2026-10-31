@@ -1,4 +1,4 @@
-# Namespace com injeção automática do Istio
+# Namespace with automatic Istio sidecar injection
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -6,7 +6,7 @@ metadata:
   labels:
     istio-injection: enabled
 ---
-# Deployment da aplicação
+# Application Deployment
 apiVersion: apps/v1
 kind: Deployment
 metadata:
