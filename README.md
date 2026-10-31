@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/logo/k8s-provisioner-logo.svg" alt="k8s-provisioner" width="320">
+</p>
+
 # k8s-provisioner
 
 Kubernetes cluster provisioner written in Go for lab environments. Supports macOS, Linux and Windows.
