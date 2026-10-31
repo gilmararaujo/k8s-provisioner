@@ -117,7 +117,7 @@ spec:
 
 	neVersion := m.config.Versions.NodeExporter
 	if neVersion == "" {
-		neVersion = "v1.11.1"
+		neVersion = "v1.12.1"
 	}
 	nodeExporter = fmt.Sprintf(nodeExporter, neVersion)
 
@@ -175,11 +175,37 @@ rules:
 - apiGroups: ["networking.k8s.io"]
   resources:
   - ingresses
+  - networkpolicies
   verbs: ["list", "watch"]
 - apiGroups: ["storage.k8s.io"]
   resources:
   - storageclasses
   - volumeattachments
+  verbs: ["list", "watch"]
+- apiGroups: ["policy"]
+  resources:
+  - poddisruptionbudgets
+  verbs: ["list", "watch"]
+- apiGroups: ["certificates.k8s.io"]
+  resources:
+  - certificatesigningrequests
+  verbs: ["list", "watch"]
+- apiGroups: ["discovery.k8s.io"]
+  resources:
+  - endpointslices
+  verbs: ["list", "watch"]
+- apiGroups: ["coordination.k8s.io"]
+  resources:
+  - leases
+  verbs: ["list", "watch"]
+- apiGroups: ["admissionregistration.k8s.io"]
+  resources:
+  - mutatingadmissionpolicies
+  - mutatingadmissionpolicybindings
+  - mutatingwebhookconfigurations
+  - validatingadmissionpolicies
+  - validatingadmissionpolicybindings
+  - validatingwebhookconfigurations
   verbs: ["list", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -275,11 +301,14 @@ spec:
       app: kube-state-metrics
   endpoints:
   - port: http-metrics
-    interval: 30s`
+    interval: 30s
+    # KSM reports on other objects: keep their namespace/pod labels instead of
+    # overwriting them with the KSM pod's own (which renames them exported_*).
+    honorLabels: true`
 
 	ksmVersion := m.config.Versions.KubeStateMetrics
 	if ksmVersion == "" {
-		ksmVersion = "v2.18.0"
+		ksmVersion = "v2.20.0"
 	}
 	ksm = fmt.Sprintf(ksm, ksmVersion)
 

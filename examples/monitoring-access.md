@@ -17,14 +17,9 @@ Grafana is exposed via Istio Ingress Gateway.
 ### Via Istio Ingress (recommended)
 
 ```bash
-# Get Istio Ingress IP
-INGRESS_IP=$(kubectl get svc -n istio-system istio-ingressgateway -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
-
-# Add to /etc/hosts
-echo "$INGRESS_IP grafana.local" | sudo tee -a /etc/hosts
-
-# Access
-open http://grafana.local
+# Resolved by the lab DNS on the storage node (README "Lab DNS"); one-time on macOS:
+#   echo "nameserver 192.168.56.20" | sudo tee /etc/resolver/lab.internal
+open https://grafana.lab.internal
 ```
 
 ### Via Port Forward (alternative)
@@ -37,21 +32,22 @@ kubectl port-forward -n monitoring svc/grafana 3000:3000
 ## Grafana Credentials
 
 - **Username:** admin
-- **Password:** gerada automaticamente e armazenada no Vault
+- **Password:** generated automatically and stored in Vault
 
-Para recuperar a senha:
+To retrieve the password:
 
 ```bash
-# Via CLI do projeto (na máquina host)
-export VAULT_ADDR=http://192.168.56.20:8200
+# With the Vault CLI (on the host machine)
+export VAULT_ADDR=https://192.168.56.20:8200
+export VAULT_CACERT=vagrant/certs/k8s-lab-vault-ca.crt   # exported by vagrant up; or trust it system-wide (README "Host setup")
 export VAULT_TOKEN=$(vagrant ssh storage -c 'sudo cat /etc/vault.d/vault-init.json' | jq -r .root_token)
-vault kv get -field=grafana_admin_password secret/k8s-provisioner/api-keys
+vault kv get -field=password secret/k8s-provisioner/grafana/admin
 
-# Ou diretamente via CLI do projeto
-./build/k8s-provisioner-darwin-arm64 vault get-secret k8s-provisioner/api-keys
+# Or directly with the project CLI
+./build/k8s-provisioner-darwin-arm64 vault get k8s-provisioner/grafana/admin password
 ```
 
-> Se o Vault não estiver habilitado (`vault.enabled: false` no config.yaml), a senha padrão é `admin123`.
+> If Vault is disabled (`vault.enabled: false` in config.yaml), the password is generated randomly and written to `/etc/k8s-provisioner/grafana-credentials.txt` (mode `0600`) on the controlplane.
 
 ## Accessing Prometheus
 

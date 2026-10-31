@@ -2,6 +2,7 @@ package installer
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/techiescamp/k8s-provisioner/internal/config"
@@ -22,7 +23,7 @@ func (c *CertManager) Install() error {
 
 	version := c.config.Versions.CertManager
 	if version == "" {
-		version = "v1.16.3"
+		version = "v1.21.2"
 	}
 	url := fmt.Sprintf("https://github.com/cert-manager/cert-manager/releases/download/%s/cert-manager.yaml", version)
 	if _, err := c.exec.RunShell(fmt.Sprintf("kubectl apply -f %s", url)); err != nil {
@@ -39,15 +40,8 @@ func (c *CertManager) Install() error {
 		return fmt.Errorf("issuer creation failed: %w", err)
 	}
 
-	fmt.Println("Creating TLS certificates for lab domains...")
-	if err := c.createCertificates(); err != nil {
-		return fmt.Errorf("certificate creation failed: %w", err)
-	}
-
-	fmt.Println("Waiting for certificates to be ready...")
-	if err := c.waitForCerts(certReadyTimeout); err != nil {
-		fmt.Printf("Warning: certificates may not be ready yet: %v\n", err)
-	}
+	// Gateway certificates are issued by each component installer next to its
+	// Gateway (see ensureGatewayCert), not here.
 
 	// NOTE: the cert-manager ServiceMonitor + PrometheusRule are created by the
 	// Monitoring installer (installCertManagerMonitoring), not here. They depend
@@ -97,6 +91,10 @@ metadata:
 spec:
   isCA: true
   commonName: k8s-lab-ca
+  # Users trust this CA on their machines; cert-manager's 90-day default would
+  # renew it into a new CA after ~60 days and break that trust. Leaf
+  # certificates keep the short default and renew silently under it.
+  duration: 87600h # 10 years
   secretName: lab-ca-secret
   privateKey:
     algorithm: ECDSA
@@ -139,45 +137,46 @@ spec:
 	return fmt.Errorf("timeout waiting for lab CA secret")
 }
 
-func (c *CertManager) createCertificates() error {
-	manifest := `apiVersion: cert-manager.io/v1
+// ensureGatewayCert issues a certificate from the lab CA covering only the given
+// hosts, stored in istio-system/<name>-tls for an Istio Gateway's credentialName,
+// and waits until it is Ready. It returns the secret name.
+//
+// One certificate per Gateway on purpose: browsers reuse an HTTP/2 connection
+// for any host its certificate covers, while Istio picks the Gateway by the SNI
+// the connection was opened with. A certificate shared across Gateways (e.g. a
+// wildcard) therefore sends requests to the wrong Gateway, which answers 404.
+func ensureGatewayCert(exec executor.ShellExecutor, name string, hosts ...string) (string, error) {
+	secret := name + "-tls"
+	var dnsNames strings.Builder
+	for _, h := range hosts {
+		fmt.Fprintf(&dnsNames, "\n  - %q", h)
+	}
+	manifest := fmt.Sprintf(`apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
-  name: lab-tls
+  name: %[1]s
   namespace: istio-system
 spec:
-  secretName: lab-tls-secret
+  secretName: %[1]s
   issuerRef:
     name: lab-ca-issuer
     kind: ClusterIssuer
-  dnsNames:
-  - grafana.local
-  - prometheus.local
-  - alertmanager.local
-  - keycloak.local
-  - kiali.local
-  - karpor.local
-  - otel-demo.local`
-
-	if err := executor.WriteFile("/tmp/lab-certs.yaml", manifest); err != nil {
-		return err
+  dnsNames:%[2]s`, secret, dnsNames.String())
+	if _, err := exec.RunShellWithStdin("kubectl apply -f -", manifest); err != nil {
+		return "", fmt.Errorf("create certificate %s: %w", secret, err)
 	}
-	_, err := c.exec.RunShell("kubectl apply -f /tmp/lab-certs.yaml")
-	return err
-}
 
-func (c *CertManager) waitForCerts(timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
+	deadline := time.Now().Add(certReadyTimeout)
 	for time.Now().Before(deadline) {
-		out, _ := c.exec.RunShell(
-			"kubectl get certificate lab-tls -n istio-system -o jsonpath='{.status.conditions[?(@.type==\"Ready\")].status}' 2>/dev/null")
-		if out == "True" {
-			return nil
+		out, _ := exec.RunShell(fmt.Sprintf(
+			"kubectl get certificate %s -n istio-system -o jsonpath='{.status.conditions[?(@.type==\"Ready\")].status}' 2>/dev/null", secret))
+		if strings.TrimSpace(out) == "True" {
+			return secret, nil
 		}
-		fmt.Println("Waiting for TLS certificate...")
-		time.Sleep(defaultPollInterval)
+		fmt.Printf("Waiting for TLS certificate %s...\n", secret)
+		time.Sleep(shortPollInterval)
 	}
-	return fmt.Errorf("timeout waiting for lab-tls certificate")
+	return "", fmt.Errorf("timeout waiting for certificate %s", secret)
 }
 
 // ExportCA extracts the CA certificate from the cluster and returns it as PEM.

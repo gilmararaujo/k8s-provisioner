@@ -46,9 +46,11 @@ func planNames(p *Provisioner) []string {
 func TestWorkloadPlan_AllEnabled(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Components.Monitoring = "prometheus-stack"
+	cfg.Components.Logging = "loki"
 	cfg.Components.Tracing = "otel-tempo"
 	cfg.Components.VPA = "enabled"
 	cfg.Components.KEDA = "enabled"
+	cfg.Components.ExternalDNS = "enabled"
 	cfg.Components.Keycloak = "enabled"
 	cfg.Components.Karpor = "enabled"
 	cfg.KarporAI.Enabled = true
@@ -66,6 +68,7 @@ func TestWorkloadPlan_AllEnabled(t *testing.T) {
 		"NFS Storage Provisioner",
 		"Vault (secrets management)",
 		"Vault Secrets Operator",
+		"ExternalDNS",
 		"Monitoring Stack",
 		"Loki Stack",
 		"Tracing Stack (Tempo + OpenTelemetry)",
@@ -108,9 +111,31 @@ func TestWorkloadPlan_TracingRequiresMonitoring(t *testing.T) {
 	}
 }
 
+func TestWorkloadPlan_LoggingNoneSkipsLoki(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Components.Monitoring = "prometheus-stack"
+	cfg.Components.Logging = "none"
+	cfg.Components.Tracing = "otel-tempo"
+	p := NewWithExecutor(cfg, &mockExecutor{}, false)
+
+	names := planNames(p)
+	assert.NotContains(t, names, "Loki Stack", "logging: none must skip Loki/Alloy")
+	assert.Contains(t, names, "Monitoring Stack")
+	assert.Contains(t, names, "Tracing Stack (Tempo + OpenTelemetry)", "tracing does not depend on Loki")
+}
+
+func TestWorkloadPlan_LoggingRequiresMonitoring(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Components.Logging = "loki"
+	p := NewWithExecutor(cfg, &mockExecutor{}, false)
+
+	assert.NotContains(t, planNames(p), "Loki Stack")
+}
+
 func TestWorkloadPlan_FatalPolicy(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Components.Monitoring = "prometheus-stack"
+	cfg.Components.Logging = "loki"
 	cfg.Components.Tracing = "otel-tempo"
 	cfg.Components.Keycloak = "enabled"
 	cfg.Components.Karpor = "enabled"
@@ -173,4 +198,24 @@ func TestRefreshCalicoAfterKeycloak(t *testing.T) {
 	require.NotEmpty(t, mock.shellCmds)
 	assert.Contains(t, mock.shellCmds[0], "rollout restart daemonset/calico-node")
 	assert.Contains(t, mock.shellCmds[len(mock.shellCmds)-1], "rollout status daemonset/calico-node")
+}
+
+func TestClusterCorefile_ForwardsLabDomainToStorage(t *testing.T) {
+	cfg := &config.Config{Nodes: []config.NodeConfig{{Name: "storage", Role: "storage", IP: "192.168.56.20"}}}
+	corefile := clusterCorefile(cfg)
+
+	assert.Contains(t, corefile, "kubernetes cluster.local", "cluster DNS stays intact")
+	assert.Contains(t, corefile, "lab.internal:53 {\n    errors\n    prometheus :9153\n    cache 30\n    forward . 192.168.56.20\n}")
+}
+
+func TestClusterCorefile_NoStorageNodeNoStubZone(t *testing.T) {
+	assert.NotContains(t, clusterCorefile(&config.Config{}), "lab.internal")
+}
+
+func TestNodeResolvConf(t *testing.T) {
+	cfg := &config.Config{Nodes: []config.NodeConfig{{Name: "storage", Role: "storage", IP: "192.168.56.20"}}}
+	assert.Equal(t, "nameserver 192.168.56.20\nnameserver 8.8.8.8\nnameserver 1.1.1.1\noptions timeout:2 attempts:2\n",
+		nodeResolvConf(cfg), "lab DNS first, public resolvers as fallback")
+
+	assert.True(t, strings.HasPrefix(nodeResolvConf(&config.Config{}), "nameserver 8.8.8.8\n"))
 }

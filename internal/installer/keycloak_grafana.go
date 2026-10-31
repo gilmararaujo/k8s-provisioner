@@ -14,7 +14,7 @@ func (k *Keycloak) configureGrafanaOAuth(cpIP string, creds keycloakCreds) error
 		return fmt.Errorf("grafana-oidc secret not ready: %w", err)
 	}
 
-	// Lab CA that signs https://keycloak.local, so Grafana can verify TLS to the
+	// Lab CA that signs the Keycloak issuer cert, so Grafana can verify TLS to the
 	// OIDC issuer instead of skipping verification.
 	labCA, err := k.labCABase64()
 	if err != nil {
@@ -30,10 +30,10 @@ func (k *Keycloak) configureGrafanaOAuth(cpIP string, creds keycloakCreds) error
 		"client_id = grafana",
 		"client_secret = ${GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET}",
 		"scopes = openid email profile groups",
-		"auth_url = https://keycloak.local/realms/k8s/protocol/openid-connect/auth",
+		"auth_url = https://" + k.config.Host("keycloak") + "/realms/k8s/protocol/openid-connect/auth",
 		"token_url = http://keycloak.keycloak.svc.cluster.local:8080/realms/k8s/protocol/openid-connect/token",
 		"api_url = http://keycloak.keycloak.svc.cluster.local:8080/realms/k8s/protocol/openid-connect/userinfo",
-		"redirect_uri = https://grafana.local/login/generic_oauth",
+		"redirect_uri = https://" + k.config.Host("grafana") + "/login/generic_oauth",
 		"role_attribute_path = contains(groups[*], 'k8s-admins') && 'Admin' || 'Viewer'",
 		"role_attribute_strict = true",
 		"allow_assign_grafana_admin = true",
@@ -45,8 +45,8 @@ func (k *Keycloak) configureGrafanaOAuth(cpIP string, creds keycloakCreds) error
 		"use_refresh_token = true",
 		"",
 		"[server]",
-		"domain = grafana.local",
-		"root_url = https://grafana.local/",
+		"domain = " + k.config.Host("grafana"),
+		"root_url = https://" + k.config.Host("grafana") + "/",
 		"serve_from_sub_path = false",
 		"",
 		// Harden the grafana_session cookie and browser transport. Grafana is served
@@ -103,8 +103,7 @@ binaryData:
   {"op":"add","path":"/spec/template/spec/volumes/-","value":{"name":"grafana-ini","configMap":{"name":"grafana-ini"}}},
   {"op":"add","path":"/spec/template/spec/volumes/-","value":{"name":"keycloak-ca","configMap":{"name":"keycloak-ca"}}},
   {"op":"add","path":"/spec/template/spec/containers/0/volumeMounts/-","value":{"name":"grafana-ini","mountPath":"/etc/grafana/grafana.ini","subPath":"grafana.ini"}},
-  {"op":"add","path":"/spec/template/spec/containers/0/volumeMounts/-","value":{"name":"keycloak-ca","mountPath":"/etc/grafana/keycloak-ca"}},
-  {"op":"add","path":"/spec/template/spec/containers/0/env/-","value":{"name":"GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET","valueFrom":{"secretKeyRef":{"name":"grafana-oidc","key":"client-secret"}}}}
+  {"op":"add","path":"/spec/template/spec/containers/0/volumeMounts/-","value":{"name":"keycloak-ca","mountPath":"/etc/grafana/keycloak-ca"}}
 ]`
 		if err := executor.WriteFile("/tmp/grafana-oidc-patch.json", patch); err != nil {
 			return err
@@ -114,6 +113,13 @@ binaryData:
 		}
 	} else {
 		fmt.Println("Grafana deployment already patched for OAuth, skipping")
+	}
+
+	// Always (re)point the env var at the secret key, so a deployment patched by an
+	// older version (key client-secret) is fixed too. Yields
+	// GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET from grafana-oidc/client_secret.
+	if _, err := k.exec.RunShell("kubectl set env deployment/grafana -n monitoring --from=secret/grafana-oidc --keys=client_secret --prefix=GF_AUTH_GENERIC_OAUTH_"); err != nil {
+		return fmt.Errorf("set Grafana OAuth client secret env: %w", err)
 	}
 
 	_, err = k.exec.RunShell("kubectl rollout restart deployment/grafana -n monitoring")

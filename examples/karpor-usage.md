@@ -17,14 +17,9 @@ Karpor is a Kubernetes Explorer that provides intelligent search and insight cap
 ### Via Istio Ingress (recommended)
 
 ```bash
-# Get Istio Ingress IP
-INGRESS_IP=$(kubectl get svc -n istio-system istio-ingressgateway -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
-
-# Add to /etc/hosts
-echo "$INGRESS_IP karpor.local" | sudo tee -a /etc/hosts
-
-# Access
-open http://karpor.local
+# Resolved by the lab DNS on the storage node (README "Lab DNS"); one-time on macOS:
+#   echo "nameserver 192.168.56.20" | sudo tee /etc/resolver/lab.internal
+open https://karpor.lab.internal
 ```
 
 ### Via Port Forward (alternative)

@@ -1,9 +1,19 @@
 package installer
 
-import "github.com/techiescamp/k8s-provisioner/internal/executor"
+import (
+	"fmt"
+
+	"github.com/techiescamp/k8s-provisioner/internal/executor"
+)
 
 func (k *Keycloak) createGateway() error {
-	gateway := `apiVersion: networking.istio.io/v1beta1
+	host := k.config.Host("keycloak")
+	tlsSecret, err := ensureGatewayCert(k.exec, "keycloak", host)
+	if err != nil {
+		return err
+	}
+
+	gateway := fmt.Sprintf(`apiVersion: networking.istio.io/v1beta1
 kind: Gateway
 metadata:
   name: keycloak-gateway
@@ -17,7 +27,7 @@ spec:
       name: http
       protocol: HTTP
     hosts:
-    - keycloak.local
+    - %[1]s
     tls:
       httpsRedirect: true
   - port:
@@ -26,9 +36,9 @@ spec:
       protocol: HTTPS
     tls:
       mode: SIMPLE
-      credentialName: lab-tls-secret
+      credentialName: %[2]s
     hosts:
-    - keycloak.local
+    - %[1]s
 ---
 apiVersion: networking.istio.io/v1beta1
 kind: VirtualService
@@ -37,7 +47,7 @@ metadata:
   namespace: keycloak
 spec:
   hosts:
-  - keycloak.local
+  - %[1]s
   gateways:
   - keycloak-gateway
   http:
@@ -45,13 +55,13 @@ spec:
     - destination:
         host: keycloak.keycloak.svc.cluster.local
         port:
-          number: 8080`
+          number: 8080`, host, tlsSecret)
 
 	if err := executor.WriteFile("/tmp/keycloak-gateway.yaml", gateway); err != nil {
 		return err
 	}
 
-	_, err := k.exec.RunShell("kubectl apply -f /tmp/keycloak-gateway.yaml")
+	_, err = k.exec.RunShell("kubectl apply -f /tmp/keycloak-gateway.yaml")
 	return err
 }
 

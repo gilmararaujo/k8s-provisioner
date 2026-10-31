@@ -1,6 +1,7 @@
 package provisioner
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -298,6 +299,13 @@ func (p *Provisioner) workloadSteps() []workloadStep {
 			},
 		},
 		{
+			// Before any Istio Gateway, so each lab host is published as soon as its Gateway exists.
+			enabled: (*config.Config).ExternalDNSEnabled,
+			build: func(c *config.Config, e executor.CommandExecutor) installer.Installer {
+				return installer.NewExternalDNS(c, e)
+			},
+		},
+		{
 			enabled: enabledMonitoring,
 			build: func(c *config.Config, e executor.CommandExecutor) installer.Installer {
 				return installer.NewMonitoring(c, e)
@@ -305,7 +313,8 @@ func (p *Provisioner) workloadSteps() []workloadStep {
 			fatal: true,
 		},
 		{
-			enabled: enabledMonitoring,
+			// Logging (Loki + Alloy) requires the monitoring stack and logging: loki.
+			enabled: func(c *config.Config) bool { return enabledMonitoring(c) && c.Components.Logging == "loki" },
 			build: func(c *config.Config, e executor.CommandExecutor) installer.Installer {
 				return installer.NewLoki(c, e)
 			},
@@ -403,6 +412,7 @@ func (p *Provisioner) InstallWorkloads() error {
 	}
 
 	p.printSuccess()
+	p.printHostSetup()
 	return nil
 }
 
@@ -517,9 +527,51 @@ func (p *Provisioner) waitForAPIServer(ip string, timeout time.Duration) error {
 }
 
 func (p *Provisioner) patchCoreDNS() error {
-	patch := `'[{"op":"replace","path":"/data/Corefile","value":".:53 {\n    errors\n    health {\n       lameduck 5s\n    }\n    ready\n    kubernetes cluster.local in-addr.arpa ip6.arpa {\n       pods insecure\n       fallthrough in-addr.arpa ip6.arpa\n       ttl 30\n    }\n    prometheus :9153\n    forward . 8.8.8.8 1.1.1.1\n    cache 30\n    loop\n    reload\n    loadbalance\n}\n"}]'`
-	_, err := p.exec.RunShell(fmt.Sprintf("kubectl patch configmap coredns -n kube-system --type=json -p %s", patch))
+	patch, err := json.Marshal([]map[string]string{{
+		"op": "replace", "path": "/data/Corefile", "value": clusterCorefile(p.config),
+	}})
+	if err != nil {
+		return err
+	}
+	_, err = p.exec.RunShellWithStdin("kubectl patch configmap coredns -n kube-system --type=json --patch-file=/dev/stdin", string(patch))
 	return err
+}
+
+// clusterCorefile renders the in-cluster CoreDNS config: public upstreams for
+// everything, plus a stub zone sending the lab domain to the storage node DNS
+// so pods resolve the same <name>.<domain> hostnames as the nodes and the host.
+func clusterCorefile(cfg *config.Config) string {
+	corefile := `.:53 {
+    errors
+    health {
+       lameduck 5s
+    }
+    ready
+    kubernetes cluster.local in-addr.arpa ip6.arpa {
+       pods insecure
+       fallthrough in-addr.arpa ip6.arpa
+       ttl 30
+    }
+    prometheus :9153
+    forward . 8.8.8.8 1.1.1.1
+    cache 30
+    loop
+    reload
+    loadbalance
+}
+`
+	if dnsIP := cfg.StorageIP(); dnsIP != "" {
+		// prometheus: without it, pod lookups of lab hosts go uncounted (metrics
+		// are per server block; the listener is shared with the block above).
+		corefile += fmt.Sprintf(`%s:53 {
+    errors
+    prometheus :9153
+    cache 30
+    forward . %s
+}
+`, cfg.Domain(), dnsIP)
+	}
+	return corefile
 }
 
 func (p *Provisioner) printSuccess() {
@@ -527,11 +579,11 @@ func (p *Provisioner) printSuccess() {
 	fmt.Println("\n" + strings.Repeat("=", 50))
 	fmt.Println("   Control plane configured successfully!")
 	fmt.Println(strings.Repeat("=", 50))
-	fmt.Println("\nTo access the cluster from MacBook:")
+	fmt.Println("\nTo access the cluster from your machine (run from the vagrant/ directory):")
 	fmt.Println("\n  1. Copy kubeconfig:")
 	fmt.Printf("     vagrant ssh controlplane -c 'sudo cat /etc/kubernetes/admin.conf' > ~/.kube/config-lab\n")
 	fmt.Println("\n  2. Adjust server IP:")
-	fmt.Printf("     sed -i '' 's/127.0.0.1/%s/' ~/.kube/config-lab\n", cfg.Network.ControlPlaneIP)
+	fmt.Printf("     sed -i.bak 's/127.0.0.1/%s/' ~/.kube/config-lab   # works with GNU and BSD/macOS sed\n", cfg.Network.ControlPlaneIP)
 	fmt.Println("\n  3. Use the config:")
 	fmt.Println("     export KUBECONFIG=~/.kube/config-lab")
 	fmt.Println("\n  4. Test:")

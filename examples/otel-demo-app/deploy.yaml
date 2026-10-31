@@ -144,6 +144,21 @@ spec:
       - name: tmp
         emptyDir: {}
 ---
+# Own certificate (lab CA) covering only this Gateway's host: a certificate
+# shared across Gateways makes browsers reuse connections into the wrong one (404).
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: otel-demo-tls
+  namespace: istio-system
+spec:
+  secretName: otel-demo-tls
+  issuerRef:
+    name: lab-ca-issuer
+    kind: ClusterIssuer
+  dnsNames:
+  - otel-demo.lab.internal
+---
 apiVersion: networking.istio.io/v1beta1
 kind: Gateway
 metadata:
@@ -158,7 +173,7 @@ spec:
       name: http
       protocol: HTTP
     hosts:
-    - otel-demo.local
+    - otel-demo.lab.internal
     tls:
       httpsRedirect: true
   - port:
@@ -167,9 +182,9 @@ spec:
       protocol: HTTPS
     tls:
       mode: SIMPLE
-      credentialName: lab-tls-secret
+      credentialName: otel-demo-tls
     hosts:
-    - otel-demo.local
+    - otel-demo.lab.internal
 ---
 apiVersion: networking.istio.io/v1beta1
 kind: VirtualService
@@ -178,7 +193,7 @@ metadata:
   namespace: otel-demo
 spec:
   hosts:
-  - otel-demo.local
+  - otel-demo.lab.internal
   gateways:
   - otel-demo-gateway
   http:

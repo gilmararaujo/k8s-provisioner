@@ -10,8 +10,15 @@
 # token is auto-read from /etc/k8s-provisioner/vault-init.json if left empty
 vault:
   enabled: true
-  addr: ""   # Empty = derived as http://<storage-node-ip>:8200 from nodes:. Set to override.
-  token: ""  # env K8S_PROV_VAULT_TOKEN; empty = auto-resolve from vault-init.json. Never commit a real token.
+  addr: ""     # Empty = derived as https://<storage-node-ip>:8200 from nodes:. Set to override.
+  token: ""    # env K8S_PROV_VAULT_TOKEN; empty = auto-resolve from vault-init.json. Never commit a real token.
+  ca_cert: ""  # env VAULT_CACERT; empty = /etc/k8s-provisioner/vault-ca.crt (fetched from the storage node).
+
+# Lab DNS: CoreDNS + etcd on the storage node serve <name>.<domain> for every
+# Istio Gateway host (records published by ExternalDNS) plus the lab nodes.
+# On the host, point the domain at the storage node once (see README "Lab DNS").
+dns:
+  domain: "lab.internal"  # Base domain: grafana.lab.internal, keycloak.lab.internal, ...
 
 # Node-to-node SSH used to copy Vault init data from controlplane to the storage
 # node. Defaults target the Vagrant lab box. For non-lab use, set ssh_key_path
@@ -25,27 +32,36 @@ cluster:
   name: "k8s-lab"
   pod_cidr: "10.244.0.0/16"
   service_cidr: "10.96.0.0/12"
+  timezone: "America/Sao_Paulo"   # IANA name; every node (incl. storage) and Grafana. Empty = UTC
 
 versions:
-  kubernetes: "1.34"
-  crio: "v1.34"
-  calico: "3.31.5"
-  metallb: "0.15.3"
-  istio: "1.29.2"
-  karpor: "0.7.6"
-  grafana: "13.0.1"
-  loki: "3.7.1"
-  alloy: "v1.15.1"
-  tempo: "2.10.4"
-  otel_collector: "0.149.0"
-  keycloak: "26.2"
-  postgres: "16"
-  kiali: "v2.24.0"
-  node_exporter: "v1.11.1"
-  kube_state_metrics: "v2.18.0"
-  metrics_server: "v0.7.2"
-  prometheus_operator: "v0.90.1"
-  cert_manager: "v1.16.3"
+  kubernetes: "1.37"
+  crio: "v1.37"
+  calico: "3.33.0"
+  metallb: "0.16.0"
+  istio: "1.31.3"
+  karpor: "0.7.8"
+  grafana: "13.2.4"
+  loki: "3.7.9"
+  alloy: "v1.21.1"
+  tempo: "3.1.1"
+  otel_collector: "0.163.2"
+  keycloak: "26.8.1"
+  postgres: "18"
+  kiali: "v2.33.0"
+  node_exporter: "v1.12.1"
+  kube_state_metrics: "v2.20.0"
+  metrics_server: "v0.9.0"
+  prometheus_operator: "v0.94.1"
+  cert_manager: "v1.21.2"
+  prometheus: "v3.15.1"
+  alertmanager: "v0.34.1"
+  vpa: "0.15.0"          # Helm chart version (app 1.8.1)
+  coredns: "1.15.0"       # Lab DNS on the storage node (read by vagrant/Vagrantfile)
+  etcd: "v3.7.3"          # DNS record store on the storage node (read by vagrant/Vagrantfile)
+  external_dns: "v0.23.0"
+  blackbox_exporter: "v0.29.1"   # TLS certificate expiry probes (lab dashboard)
+  resource_dashboard: "982c301aaeb251c07c75476922c80a8090b05e35"  # workload resources dashboard + rules: upstream commit (no release tags)
 
 network:
   interface: "eth1"
@@ -78,12 +94,13 @@ components:
   load_balancer: "metallb"
   service_mesh: "istio"
   monitoring: "prometheus-stack"  # Options: prometheus-stack, none
-  logging: "loki"                 # Options: loki, none (installed with monitoring)
-  tracing: "otel-tempo"           # Options: otel-tempo, none (requires monitoring+logging)
+  logging: "loki"                 # Options: loki, none (requires monitoring)
+  tracing: "otel-tempo"           # Options: otel-tempo, none (requires monitoring; trace→log links need logging)
   karpor: "none"                  # Options: none, enabled (requires extra resources: ~1.5 CPU, ~2GB RAM)
   keycloak: "enabled"             # Options: enabled, none (OIDC identity provider for kubectl + Grafana SSO)
   vpa: "enabled"                  # Options: enabled, none (Vertical Pod Autoscaler — adjusts CPU/Memory per pod)
   keda: "enabled"                 # Options: enabled, none (Event-driven autoscaling — scale to zero, Prometheus triggers)
+  external_dns: "enabled"         # Options: enabled, none (publishes Gateway hosts to the lab DNS on the storage node)
 
 # Karpor AI configuration (optional)
 # When backend is "ollama", Ollama will be installed inside the cluster automatically
