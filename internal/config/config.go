@@ -199,6 +199,24 @@ func applyEnvSecrets(cfg *Config) {
 	}
 }
 
+// validateLabDNS checks the lab domain, the timezone and the lab DNS host.
+func (c *Config) validateLabDNS() []string {
+	var errors []string
+	// The timezone is passed to timedatectl and Grafana: accept IANA names only.
+	if c.Cluster.Timezone != "" && !ianaTimezone.MatchString(c.Cluster.Timezone) {
+		errors = append(errors, fmt.Sprintf("cluster.timezone '%s' is not an IANA timezone name (e.g. America/Sao_Paulo)", c.Cluster.Timezone))
+	}
+	// The domain ends up in certificates, Istio Gateways and the Keycloak issuer
+	// URL, so reject anything that is not a plain DNS name.
+	if c.DNS.Domain != "" && !isValidDomain(c.DNS.Domain) {
+		errors = append(errors, fmt.Sprintf("dns.domain '%s' is not a valid domain name", c.DNS.Domain))
+	}
+	if c.Components.ExternalDNS == "enabled" && c.StorageIP() == "" {
+		errors = append(errors, "components.external_dns is enabled but no storage node with an ip hosts the lab DNS")
+	}
+	return errors
+}
+
 // Validate checks all required fields and formats
 func (c *Config) Validate() error {
 	var errors []string
@@ -252,18 +270,7 @@ func (c *Config) Validate() error {
 		errors = append(errors, "vault.enabled is true but no address could be resolved (set vault.addr or define a storage node with an ip)")
 	}
 
-	// DNS validation: the domain ends up in certificates, Istio Gateways and the
-	// Keycloak issuer URL, so reject anything that is not a plain DNS name.
-	// The timezone is passed to timedatectl and Grafana: accept IANA names only.
-	if c.Cluster.Timezone != "" && !ianaTimezone.MatchString(c.Cluster.Timezone) {
-		errors = append(errors, fmt.Sprintf("cluster.timezone '%s' is not an IANA timezone name (e.g. America/Sao_Paulo)", c.Cluster.Timezone))
-	}
-	if c.DNS.Domain != "" && !isValidDomain(c.DNS.Domain) {
-		errors = append(errors, fmt.Sprintf("dns.domain '%s' is not a valid domain name", c.DNS.Domain))
-	}
-	if c.Components.ExternalDNS == "enabled" && c.StorageIP() == "" {
-		errors = append(errors, "components.external_dns is enabled but no storage node with an ip hosts the lab DNS")
-	}
+	errors = append(errors, c.validateLabDNS()...)
 
 	// Provisioning validation
 	if err := validateSSHPassword(c.Provisioning.SSHPassword); err != nil {

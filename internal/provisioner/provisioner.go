@@ -299,9 +299,8 @@ func (p *Provisioner) workloadSteps() []workloadStep {
 			},
 		},
 		{
-			// Before any Istio Gateway is created, so every lab hostname is
-			// published to the storage-node DNS as soon as its Gateway exists.
-			enabled: func(c *config.Config) bool { return c.ExternalDNSEnabled() },
+			// Before any Istio Gateway, so each lab host is published as soon as its Gateway exists.
+			enabled: (*config.Config).ExternalDNSEnabled,
 			build: func(c *config.Config, e executor.CommandExecutor) installer.Installer {
 				return installer.NewExternalDNS(c, e)
 			},
