@@ -38,7 +38,7 @@ Kubernetes cluster provisioner written in Go for lab environments. Supports macO
 | VirtualBox | 7.0+ | [Download](https://www.virtualbox.org/wiki/Downloads) |
 | Vagrant | 2.4+ | [Download](https://developer.hashicorp.com/vagrant/downloads) |
 | kubectl | 1.37+ | [Install Guide](https://kubernetes.io/docs/tasks/tools/) |
-| Go | 1.22+ | [Download](https://go.dev/dl/) (only for building) |
+| Go | 1.27+ | [Download](https://go.dev/dl/) (`vagrant up` builds the binary from source) |
 
 ### macOS (Homebrew)
 
@@ -2143,7 +2143,7 @@ The init data (root token + unseal keys) is saved automatically to both nodes du
 sudo cat /etc/k8s-provisioner/vault-init.json
 
 # On the storage node
-vagrant ssh storage -c 'sudo cat /etc/k8s-provisioner/vault-init.json'
+vagrant ssh storage -c 'sudo cat /etc/vault.d/vault-init.json'
 ```
 
 Output example:
@@ -2290,10 +2290,8 @@ vault kv get secret/k8s-provisioner/keycloak/users/k8sadmin
 Two commands to get full cluster access from your Mac:
 
 ```bash
-# 1. Copy kubeconfig and fix the API server address
-vagrant ssh controlplane -c "cat /etc/kubernetes/admin.conf" \
-  | sed 's|https://.*:6443|https://192.168.56.10:6443|' \
-  > ~/.kube/k8s-lab.conf
+# 1. Copy the admin kubeconfig (it already points at https://192.168.56.10:6443)
+vagrant ssh controlplane -c 'sudo cat /etc/kubernetes/admin.conf' > ~/.kube/k8s-lab.conf
 
 # 2. Use it
 export KUBECONFIG=~/.kube/k8s-lab.conf
@@ -2329,8 +2327,9 @@ Access is group-based — no Kubernetes changes needed. Just create the user in 
 ```bash
 # Get admin token
 KCADM="kubectl exec -n keycloak deploy/keycloak -- /opt/keycloak/bin/kcadm.sh"
+ADMIN_PW=$(sudo k8s-provisioner vault get k8s-provisioner/keycloak/admin password)
 $KCADM config credentials --server http://localhost:8080 --realm master \
-  --user "$KEYCLOAK_ADMIN" --password "$KEYCLOAK_ADMIN_PASSWORD"
+  --user admin --password "$ADMIN_PW"
 
 # Create user and add to group
 NEW_UID=$($KCADM create users -r k8s \
@@ -2446,7 +2445,7 @@ To protect a new application with Keycloak SSO, create a client in the `k8s` rea
 kubectl exec -n keycloak deployment/keycloak -- bash -c '
 KCADM=/opt/keycloak/bin/kcadm.sh
 $KCADM config credentials --server http://localhost:8080 \
-  --realm master --user admin --password Admin@Keycloak123
+  --realm master --user admin --password "$KC_BOOTSTRAP_ADMIN_PASSWORD"
 
 # Confidential client (server-side apps)
 $KCADM create clients -r k8s \
@@ -2472,7 +2471,7 @@ $KCADM create clients -r k8s \
 kubectl exec -n keycloak deployment/keycloak -- bash -c '
 KCADM=/opt/keycloak/bin/kcadm.sh
 $KCADM config credentials --server http://localhost:8080 \
-  --realm master --user admin --password Admin@Keycloak123
+  --realm master --user admin --password "$KC_BOOTSTRAP_ADMIN_PASSWORD"
 
 # Get the groups scope ID
 SCOPE_ID=$($KCADM get client-scopes -r k8s --fields id,name \
@@ -2729,10 +2728,10 @@ make version
 
 Example output:
 ```
-k8s-provisioner v1.0.0
-  Git Commit: 10ab11f
-  Build Date: 2026-01-22T02:28:06Z
-  Go Version: go1.22
+k8s-provisioner v2.4.0
+  Git Commit: 8894bff
+  Build Date: 2026-10-31T12:00:00Z
+  Go Version: go1.27.3
   Platform:   darwin/arm64
 ```
 
