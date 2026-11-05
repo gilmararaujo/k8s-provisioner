@@ -1494,7 +1494,7 @@ The cluster includes Loki 3.x for log aggregation with Grafana Alloy as the log 
 | Component | Description |
 |-----------|-------------|
 | Loki 3.x | Log aggregation and storage (TSDB schema v13) |
-| Grafana Alloy | Log collector DaemonSet — replaces Promtail, collects pod logs and Kubernetes events |
+| Grafana Alloy | Single log collector (Deployment) — replaces Promtail, reads pod logs and Kubernetes events through the Kubernetes API, so each line is shipped once |
 
 ### Accessing Logs
 

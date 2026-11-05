@@ -94,8 +94,8 @@ rules:
 // and could crashloop the API server). %s = advertise address, %s = pod subnet.
 //
 // audit-log-path is "-" (stdout): audit events become part of the kube-apiserver
-// container's stdout, so the existing (non-root, hardened) Alloy DaemonSet collects
-// them via the Kubernetes API — the same path as every other pod log — and ships
+// container's stdout, so the existing (non-root, hardened) Alloy collector picks them
+// up via the Kubernetes API — the same path as every other pod log — and ships
 // them to Loki. No file on disk, no privileged log shipper, no host mount for logs.
 // Only the read-only audit-policy volume is needed. (Rotation flags are file-only
 // and therefore omitted; the container runtime handles stdout log rotation.)

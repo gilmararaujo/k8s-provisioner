@@ -226,6 +226,27 @@ spec:
 }
 
 func (l *Loki) installAlloy() error {
+	if err := executor.WriteFile("/tmp/alloy.yaml", l.alloyManifest()); err != nil {
+		return err
+	}
+
+	// Alloy used to run as a DaemonSet, and every instance tailed every pod in
+	// the cluster, so each log line was shipped once per node. Remove it before
+	// applying the single-collector Deployment that replaces it.
+	if _, err := l.exec.RunShell("kubectl delete daemonset alloy -n monitoring --ignore-not-found"); err != nil {
+		return err
+	}
+
+	_, err := l.exec.RunShell("kubectl apply -f /tmp/alloy.yaml")
+	return err
+}
+
+// alloyManifest renders the Alloy log collector. It reads pod logs and events
+// through the Kubernetes API (loki.source.kubernetes), not from node files, so
+// one replica sees the whole cluster — control plane pods included — and needs
+// no host access or control-plane toleration. More replicas, or a DaemonSet,
+// would ship every line once per collector.
+func (l *Loki) alloyManifest() string {
 	alloy := `apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -330,13 +351,18 @@ data:
     }
 ---
 apiVersion: apps/v1
-kind: DaemonSet
+kind: Deployment
 metadata:
   name: alloy
   namespace: monitoring
   labels:
     app: alloy
 spec:
+  # Exactly one collector: a second one would tail the same pods again.
+  # Recreate keeps a rollout from running old and new side by side.
+  replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: alloy
@@ -376,11 +402,6 @@ spec:
           mountPath: /var/lib/alloy/data
         - name: tmp
           mountPath: /tmp
-        env:
-        - name: HOSTNAME
-          valueFrom:
-            fieldRef:
-              fieldPath: spec.nodeName
         resources:
           requests:
             memory: 64Mi
@@ -388,9 +409,6 @@ spec:
           limits:
             memory: 256Mi
             cpu: 200m
-      tolerations:
-      - effect: NoSchedule
-        operator: Exists
       volumes:
       - name: config
         configMap:
@@ -420,14 +438,7 @@ spec:
 	if alloyVersion == "" {
 		alloyVersion = "v1.21.1"
 	}
-	alloy = fmt.Sprintf(alloy, alloyVersion, alloyVersion)
-
-	if err := executor.WriteFile("/tmp/alloy.yaml", alloy); err != nil {
-		return err
-	}
-
-	_, err := l.exec.RunShell("kubectl apply -f /tmp/alloy.yaml")
-	return err
+	return fmt.Sprintf(alloy, alloyVersion, alloyVersion)
 }
 
 func (l *Loki) configureLokiDatasource() error {
