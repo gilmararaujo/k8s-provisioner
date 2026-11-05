@@ -61,7 +61,9 @@ func TestAuditAlertRules(t *testing.T) {
 	}
 	assert.Contains(t, rules["AuditClusterAdminGranted"].Expr, "`\"name\":\"cluster-admin\"`")
 	assert.Contains(t, rules["AuditForbiddenBurst"].Expr, "> 10")
-	assert.Contains(t, rules["AuditPrivilegedWorkload"].Expr, "\"hostPath\":\\{")
+	assert.Contains(t, rules["AuditPrivilegedWorkload"].Expr, "\":true` or `\"hostPath\":\\{`",
+		"separate filters: Loki loosens a single alternation into word matches")
+	assert.Contains(t, rules["AuditPodExec"].Expr, kialiPortForward, "Kiali's port-forwards to istiod are routine")
 }
 
 func TestNotFromControlPlane_NoControlPlaneNoFilter(t *testing.T) {

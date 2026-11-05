@@ -473,7 +473,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "1 - sum(rate(apiserver_request_duration_seconds_bucket{job=\"apiserver\",le=\"1\",verb!~\"WATCH|CONNECT\"}[$__rate_interval])) / sum(rate(apiserver_request_duration_seconds_count{job=\"apiserver\",verb!~\"WATCH|CONNECT\"}[$__rate_interval]))",
+          "expr": "1 - sum(rate(apiserver_request_duration_seconds_bucket{job=\"apiserver\",le=~\"1|1.0\",verb!~\"WATCH|CONNECT\"}[$__rate_interval])) / sum(rate(apiserver_request_duration_seconds_count{job=\"apiserver\",verb!~\"WATCH|CONNECT\"}[$__rate_interval]))",
           "refId": "A",
           "legendFormat": "slower than 1s"
         }

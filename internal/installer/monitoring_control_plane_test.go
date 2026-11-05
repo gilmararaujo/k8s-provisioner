@@ -59,7 +59,7 @@ func TestControlPlaneScrapes_SelectStaticPods(t *testing.T) {
 	}
 	assert.Contains(t, controlPlaneScrapes, "caFile: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt\n      serverName: kubernetes",
 		"the apiserver's cluster-CA certificate is verified")
-	assert.Contains(t, controlPlaneScrapes, `apiserver_request_duration_seconds_bucket;(1|\+Inf)`,
+	assert.Contains(t, controlPlaneScrapes, `apiserver_request_duration_seconds_bucket;(1|1\.0|\+Inf)`,
 		"only the buckets the slow-request alert reads are kept")
 }
 
@@ -92,7 +92,7 @@ func TestControlPlaneRules(t *testing.T) {
 		"EtcdProposalsFailing", "KubeControlPlaneNoLeader", "KubePodsUnschedulable"} {
 		assert.Contains(t, exprs, alert)
 	}
-	assert.Contains(t, exprs["KubeAPISlowRequests"], `le="1"`, "reads the bucket the scrape keeps")
+	assert.Contains(t, exprs["KubeAPISlowRequests"], `le=~"1|1.0"`, "reads the bucket the scrape keeps, in either spelling")
 }
 
 func TestInstallControlPlaneMonitoring_AppliesScrapesAndRules(t *testing.T) {

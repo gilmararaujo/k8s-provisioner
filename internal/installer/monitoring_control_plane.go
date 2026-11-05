@@ -102,8 +102,9 @@ spec:
     metricRelabelings:
     # Two latency buckets (1s and +Inf) are enough for "share of requests
     # slower than 1s"; the full histogram is most of the apiserver's series.
+    # Prometheus 3 normalizes le="1" to "1.0" before relabeling.
     - sourceLabels: [__name__, le]
-      regex: (apiserver_request_total|apiserver_request_duration_seconds_count|apiserver_current_inflight_requests|apiserver_flowcontrol_rejected_requests_total|process_resident_memory_bytes);.*|apiserver_request_duration_seconds_bucket;(1|\+Inf)
+      regex: (apiserver_request_total|apiserver_request_duration_seconds_count|apiserver_current_inflight_requests|apiserver_flowcontrol_rejected_requests_total|process_resident_memory_bytes);.*|apiserver_request_duration_seconds_bucket;(1|1\.0|\+Inf)
       action: keep
 ---
 apiVersion: monitoring.coreos.com/v1
@@ -170,7 +171,7 @@ func controlPlaneRules() (string, error) {
 			"10m", "warning", "More than 5% of API requests fail with a server error",
 			"5xx responses from the API server over the last 5 minutes; check its logs and etcd."),
 		rule("KubeAPISlowRequests",
-			fmt.Sprintf(`1 - sum(rate(apiserver_request_duration_seconds_bucket{job=%[1]q,le="1",verb!~"WATCH|CONNECT"}[5m])) / sum(rate(apiserver_request_duration_seconds_count{job=%[1]q,verb!~"WATCH|CONNECT"}[5m])) > 0.05`, apiServerJob),
+			fmt.Sprintf(`1 - sum(rate(apiserver_request_duration_seconds_bucket{job=%[1]q,le=~"1|1.0",verb!~"WATCH|CONNECT"}[5m])) / sum(rate(apiserver_request_duration_seconds_count{job=%[1]q,verb!~"WATCH|CONNECT"}[5m])) > 0.05`, apiServerJob),
 			"10m", "warning", "More than 5% of API requests take longer than 1 second",
 			"Long-running verbs (WATCH, CONNECT) excluded. Slow etcd disk or an overloaded API server are the usual causes."),
 		rule("EtcdNoLeader",

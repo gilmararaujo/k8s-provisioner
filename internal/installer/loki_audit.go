@@ -34,6 +34,15 @@ const (
 		`objectRef_subresource="objectRef.subresource", objectRef_namespace="objectRef.namespace", ` +
 		`objectRef_name="objectRef.name", responseStatus_code="responseStatus.code"`
 	auditWindow = "5m"
+	// kialiPortForward drops Kiali reading istiod's debug endpoints, a
+	// port-forward every few seconds its Role allows only in istio-system.
+	kialiPortForward = `user_username != "system:serviceaccount:istio-system:kiali" or ` +
+		`objectRef_subresource != "portforward" or objectRef_namespace != "istio-system"`
+	// privilegedSpec matches a privileged pod spec. Two filters joined by "or",
+	// not one alternation: Loki simplifies `"(a|b)":true|"c"` into a match on
+	// any of the words, which every Istio-injected pod (`"privileged":false`)
+	// satisfies.
+	privilegedSpec = "|~ `\"(privileged|hostPID|hostNetwork|hostIPC)\":true` or `\"hostPath\":\\{`"
 )
 
 // auditRulesConfigMap is mounted into Loki as its "fake" tenant's rule file
@@ -73,7 +82,7 @@ func auditAlertRules(cfg *config.Config) (string, error) {
 	rules := []promRule{
 		alert("AuditPodExec", "info",
 			auditCount("user, target_namespace, pod", auditSelector+" |~ `\"subresource\":\"(exec|attach|portforward)\"`"+notCP+
-				` | `+auditFields+` | objectRef_subresource=~"exec|attach|portforward" | `+auditActor+
+				` | `+auditFields+` | objectRef_subresource=~"exec|attach|portforward" | `+auditActor+` | `+kialiPortForward+
 				` | label_format user="{{.user_username}}", target_namespace="{{.objectRef_namespace}}", pod="{{.objectRef_name}}"`)+" > 0",
 			"{{ $labels.user }} opened a shell or tunnel into {{ $labels.target_namespace }}/{{ $labels.pod }}",
 			"exec, attach or port-forward into a pod. Expected when you debug; otherwise someone is running commands inside a workload."),
@@ -101,7 +110,7 @@ func auditAlertRules(cfg *config.Config) (string, error) {
 			"{{ $labels.user }} read secrets in {{ $labels.target_namespace }}",
 			"A person read Secret values (an empty namespace means all namespaces). Workloads read secrets through their service accounts, which are not logged."),
 		alert("AuditPrivilegedWorkload", "warning",
-			auditCount("user, kind, target_namespace, name", auditSelector+" |~ `\"(privileged|hostPID|hostNetwork|hostIPC)\":true|\"hostPath\":\\{`"+notCP+
+			auditCount("user, kind, target_namespace, name", auditSelector+" "+privilegedSpec+notCP+
 				` | `+auditFields+` | verb=~"create|update|patch" | objectRef_resource=~"pods|deployments|daemonsets|statefulsets|replicasets|jobs|cronjobs" | responseStatus_code=~"2.." | `+auditActor+
 				` | label_format user="{{.user_username}}", kind="{{.objectRef_resource}}", target_namespace="{{.objectRef_namespace}}", name="{{.objectRef_name}}"`)+" > 0",
 			"{{ $labels.user }} created or changed a privileged {{ $labels.kind }} {{ $labels.target_namespace }}/{{ $labels.name }}",

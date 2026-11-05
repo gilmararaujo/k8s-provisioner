@@ -1644,7 +1644,7 @@ Alertmanager config with a real receiver in Vault (`alertmanager_config`).
 kubectl -n default run audit-test --image=busybox:1.37 --restart=Never -- sleep 3600
 kubectl -n default exec audit-test -- id                     # AuditPodExec
 kubectl -n monitoring get secrets                            # AuditSecretsRead
-kubectl create clusterrolebinding audit-test --clusterrole=cluster-admin --user=nobody   # AuditClusterAdminGranted
+kubectl create clusterrolebinding audit-test --clusterrole=cluster-admin --user=audit-test   # AuditClusterAdminGranted
 kubectl -n default run audit-priv --image=busybox:1.37 --restart=Never \
   --overrides='{"spec":{"hostPID":true}}' -- sleep 60        # AuditPrivilegedWorkload
 kubectl --kubeconfig ~/.kube/config-lab get nodes             # AuditAdminCredentialUsed (admin.conf copy)
@@ -1654,7 +1654,8 @@ for i in $(seq 12); do kubectl --as=nobody get pods >/dev/null 2>&1; done   # Au
 kubectl delete clusterrolebinding audit-test; kubectl -n default delete pod audit-test audit-priv
 ```
 
-`--as=nobody` impersonates a user without permissions. The audit event keeps you as `user` and
+`--as=nobody` impersonates a user without permissions (the binding above goes to another user,
+or the burst would be allowed). The audit event keeps you as `user` and
 `nobody` as `impersonatedUser`, so the alert names you.
 
 ### Control Plane Monitoring
