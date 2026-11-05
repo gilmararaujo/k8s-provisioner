@@ -20,6 +20,10 @@ var (
 	labDNSLogsSection []byte
 	//go:embed dashboards/certificates.json
 	certificatesSection []byte
+	//go:embed dashboards/control-plane.json
+	controlPlaneSection []byte
+	//go:embed dashboards/security.json
+	securitySection []byte
 )
 
 // The lab dashboard: one screen, one collapsible row per concern. The Resources
@@ -66,15 +70,20 @@ func (m *Monitoring) installLabDashboard() error {
 
 // labDashboardSections returns the lab sections that have data to show in
 // this cluster, in screen order: DNS SLOs, cluster DNS, the lab DNS when it
-// exists, certificates, and the (collapsed) DNS change log last, only with Loki.
+// exists, certificates, the control plane, the audit (security) section when
+// Loki collects the logs, and the (collapsed) DNS change log last.
 func (m *Monitoring) labDashboardSections() [][]byte {
 	sections := [][]byte{slosSection, clusterDNSSection}
 	labDNS := m.config.StorageIP() != ""
 	if labDNS {
 		sections = append(sections, labDNSSection)
 	}
-	sections = append(sections, certificatesSection)
-	if labDNS && m.config.ExternalDNSEnabled() && m.config.Components.Logging == "loki" {
+	sections = append(sections, certificatesSection, controlPlaneSection)
+	loki := m.config.Components.Logging == "loki"
+	if loki {
+		sections = append(sections, securitySection)
+	}
+	if labDNS && m.config.ExternalDNSEnabled() && loki {
 		sections = append(sections, labDNSLogsSection)
 	}
 	return sections
@@ -115,8 +124,8 @@ func buildLabDashboard(resourceReview []byte, timezone string, sections ...[]byt
 	d["panels"] = panels
 	d["uid"] = labDashboardUID
 	d["title"] = "k8s-lab"
-	d["tags"] = []string{"k8s-lab", "kubernetes", "resources", "dns", "certificates"}
-	d["description"] = "Lab overview: workload resources, DNS SLOs, cluster and lab DNS, certificate expiry."
+	d["tags"] = []string{"k8s-lab", "kubernetes", "resources", "dns", "certificates", "control-plane", "security"}
+	d["description"] = "Lab overview: workload resources, DNS SLOs, cluster and lab DNS, certificate expiry, control plane health and API server audit."
 	// The lab is rebuilt often; a week-long default range is mostly empty.
 	d["time"] = map[string]string{"from": "now-6h", "to": "now"}
 	// The lab's timezone, not the viewer's browser (upstream: "browser").
@@ -141,6 +150,8 @@ func kubernetesDocsLinks() []any {
 		link("DNS for Services and Pods", "https://kubernetes.io/docs/concepts/services-networking/dns-pod-service/"),
 		link("PKI certificates and requirements", "https://kubernetes.io/docs/setup/best-practices/certificates/"),
 		link("Certificate management with kubeadm", "https://kubernetes.io/docs/tasks/administer-cluster/kubeadm/kubeadm-certs/"),
+		link("Operating etcd clusters for Kubernetes", "https://kubernetes.io/docs/tasks/administer-cluster/configure-upgrade-etcd/"),
+		link("Auditing", "https://kubernetes.io/docs/tasks/debug/debug-cluster/audit/"),
 	}
 }
 

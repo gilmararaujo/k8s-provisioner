@@ -162,10 +162,12 @@ are decisions, not oversights — and would need hardening before handling real 
   certificate from its own CA, generated on the storage node; the CA private key stays
   on that node and there is no automated rotation (the server cert lasts 825 days).
   *Hardening path:* issue the Vault certificate from a managed PKI and rotate it.
-- **The TLS probes skip chain verification.** blackbox_exporter only reads the expiry
-  date of each certificate it probes, so it does not verify the chain. The lab DNS etcd is
-  not probed, since that would need its client certificate. Kubelet traffic *is* verified
-  (see [Kubelet TLS](#kubelet-tls)).
+- **Some monitoring traffic skips TLS verification.** blackbox_exporter only reads the expiry
+  date of each certificate it probes, so it does not verify the chain; the lab DNS etcd is not
+  probed, since that would need its client certificate. The controller manager and scheduler
+  serve self-signed certificates kubeadm does not issue from the CA, so their scrape is not
+  verified either (it still needs the Prometheus token), and etcd's metrics port is plain HTTP
+  (metrics only). Kubelet and apiserver traffic *is* verified (see [Kubelet TLS](#kubelet-tls)).
 - **No database backups, audit logging, or retention/erasure policy**, and the Keycloak
   app uses the owning Postgres account (no least-privilege runtime role). Appropriate for
   ephemeral lab data; not for production.
@@ -1364,6 +1366,10 @@ concern:
                  + CoreDNS on the storage node (queries, failures, latency, cache)
 ▼ Certificates   every certificate by days left: cert-manager, kubelet client certs,
                  and TLS probes of the apiserver, kubelets, Vault and each lab host
+▼ Control plane  API server, controller manager, scheduler and etcd: up/down, etcd leader,
+                 unschedulable pods, request codes, slow requests, etcd disk latency, memory
+▼ Security       API server audit (Loki): requests by verb, 403s by user, changes by user,
+                 log of exec / secret access / RBAC changes / denied requests
 ▶ DNS changes    ExternalDNS "A record added/removed" log lines (Loki; collapsed)
 ```
 
@@ -1378,6 +1384,8 @@ cover the whole lab and ignore those filters. Rows only appear when their source
 | DNS — cluster | CoreDNS `:9153` in `kube-system` (job `kube-dns`) | The zone `lab.internal.` shows pod lookups forwarded to the storage node. |
 | DNS — lab | ExternalDNS `:7979` (job `external-dns`), CoreDNS on storage `:9153` (job `lab-dns`) | **Unpublished hosts > 0** means a Gateway host is not resolvable yet. |
 | Certificates | cert-manager, kubelet `/metrics`, blackbox_exporter TLS probes (job `blackbox`) | Probes read the certificate each endpoint presents, so a renewed-but-not-reloaded certificate shows up. **Lab CA expires in** is the CA your machine trusts. |
+| Control plane | jobs `apiserver`, `kube-controller-manager`, `kube-scheduler`, `kube-etcd` | See [Control Plane Monitoring](#control-plane-monitoring) |
+| Security | API server audit events in Loki | Only with `logging: loki`. See [Security Alerts](#security-alerts-from-the-audit-log) |
 
 **Adding your own row:** drop a `{"panels": [...]}` file (a `row` panel first, `y` from 0)
 in `internal/installer/dashboards/`, embed it in `monitoring_dashboard.go` and add it to
@@ -1556,25 +1564,30 @@ privileged log shipper.
 
 | What | Level |
 |------|-------|
-| `get`/`list`/`watch`, health/version/metrics endpoints | `None` (dropped — high volume, low value) |
-| `secrets`, `serviceaccounts`, RBAC roles/bindings (mutations) | `RequestResponse` (full body) |
+| health/version/metrics endpoints; leases, events, endpoints, endpointslices | `None` (high volume, no security value) |
+| reads (`get`/`list`/`watch`) by the admin credential (`kubernetes-admin`, `kubernetes-super-admin`) | `Metadata`: break-glass use is fully visible |
+| reads by service accounts, nodes and the control plane components | `None` (informer traffic) |
+| every other read: people signed in through OIDC, anonymous requests | `Metadata`: shows secret reads and denied (403) probing |
+| RBAC roles and bindings | `RequestResponse`: the role a binding grants is on record |
 | `pods/exec`, `pods/attach`, `pods/portforward` | `Request` |
-| every other create/update/delete/patch | `Metadata` |
+| create/update/patch of pods, Deployments, DaemonSets, StatefulSets, ReplicaSets, Jobs, CronJobs | `Request`: the pod spec shows privileged or host-namespace pods |
+| everything else, **secrets included** | `Metadata` |
 
-> Note: reads of secrets are *not* logged (matched by the `get/list/watch = None` rule first)
-> to bound volume. Reorder the policy if secret reads must be audited.
+> Secrets are never logged above `Metadata`: `Request` or `RequestResponse` would copy their
+> values into the audit log and from there into Loki.
 
-**View in Grafana (Explore → Loki):**
+**View in Grafana:** the **Security** row of the `k8s-lab` dashboard (audited requests by verb,
+403s by user, changes by user, and a log of security-relevant requests), or Explore → Loki:
 
 ```logql
 # All API server audit events
-{container="kube-apiserver"} | json | kind = "Event"
+{container="kube-apiserver"} |= "audit.k8s.io/v1" | json
 
-# Secret/RBAC mutations only
-{container="kube-apiserver"} | json | objectRef_resource =~ "secrets|roles|rolebindings|clusterroles|clusterrolebindings"
+# Secret access and RBAC changes
+{container="kube-apiserver"} |= "audit.k8s.io/v1" | json | objectRef_resource =~ "secrets|roles|rolebindings|clusterroles|clusterrolebindings"
 
 # Who exec'd into a pod
-{container="kube-apiserver"} | json | objectRef_subresource = "exec"
+{container="kube-apiserver"} |= "audit.k8s.io/v1" | json | objectRef_subresource = "exec"
 ```
 
 **View on the node (raw):**
@@ -1587,13 +1600,95 @@ kubectl logs -n kube-system kube-apiserver-controlplane | grep '"audit.k8s.io/v1
 
 ```bash
 kubectl create secret generic audit-test --from-literal=k=v
-# then query Loki/Grafana — a RequestResponse event for 'create secrets' should appear
+# then query Loki/Grafana — a Metadata event for 'create secrets' should appear (no secret value)
 ```
 
 > Trade-off (lab): audit events are interleaved with the API server's operational logs (filter
 > by `{container="kube-apiserver"}`), and there is no separate on-node audit file. In exchange,
 > audit is shipped off-node to Loki with zero extra infrastructure. For stricter setups, switch
 > `--audit-log-path` to a file with rotation and add a dedicated (privileged) log shipper.
+
+### Security Alerts (from the audit log)
+
+The Loki **ruler** evaluates LogQL rules over the audit events every minute and sends what
+fires to **Alertmanager**. Each rule looks back 5 minutes, so an alert stays active for about
+5 minutes after the last matching request. The rules live in the `loki-rules` ConfigMap
+(`internal/installer/loki_audit.go`).
+
+| Alert | Severity | Fires when |
+|-------|----------|------------|
+| `AuditPodExec` | info | someone runs `exec`, `attach` or `port-forward` into a pod |
+| `AuditClusterAdminGranted` | critical | a (Cluster)RoleBinding to `cluster-admin` is created or changed |
+| `AuditAdminCredentialUsed` | info | the admin credential (`admin.conf`) is used from outside the control plane |
+| `AuditForbiddenBurst` | warning | one identity is denied (403) more than 10 times in 5 minutes |
+| `AuditSecretsRead` | info | a person reads Secrets |
+| `AuditPrivilegedWorkload` | warning | a pod or workload is created/changed with `privileged`, `hostPID`, `hostNetwork`, `hostIPC` or a `hostPath` volume |
+
+Two filters keep the lab's own activity out:
+
+- **The cluster's identities**: nodes, control plane components, `kube-system` service accounts
+  and the Calico operator. Every other service account still counts: a stolen token is the usual
+  way in.
+- **Requests sent from a control plane node**, where the provisioner runs `kubectl` with the
+  admin credential while it installs the lab. Except for `AuditForbiddenBurst`, which counts
+  403s from anywhere.
+
+**Where to see them:** `https://alertmanager.lab.internal` (every firing alert, metric or
+audit), or Grafana → **Alerting → Alert rules** (rules and state, per data source). No
+notification is sent: the Alertmanager receiver is `"null"` by default. To notify, store an
+Alertmanager config with a real receiver in Vault (`alertmanager_config`).
+
+**Trigger them** (from your machine, signed in through OIDC):
+
+```bash
+kubectl -n default run audit-test --image=busybox:1.37 --restart=Never -- sleep 3600
+kubectl -n default exec audit-test -- id                     # AuditPodExec
+kubectl -n monitoring get secrets                            # AuditSecretsRead
+kubectl create clusterrolebinding audit-test --clusterrole=cluster-admin --user=nobody   # AuditClusterAdminGranted
+kubectl -n default run audit-priv --image=busybox:1.37 --restart=Never \
+  --overrides='{"spec":{"hostPID":true}}' -- sleep 60        # AuditPrivilegedWorkload
+kubectl --kubeconfig ~/.kube/config-lab get nodes             # AuditAdminCredentialUsed (admin.conf copy)
+for i in $(seq 12); do kubectl --as=nobody get pods >/dev/null 2>&1; done   # AuditForbiddenBurst
+
+# clean up
+kubectl delete clusterrolebinding audit-test; kubectl -n default delete pod audit-test audit-priv
+```
+
+`--as=nobody` impersonates a user without permissions. The audit event keeps you as `user` and
+`nobody` as `impersonatedUser`, so the alert names you.
+
+### Control Plane Monitoring
+
+Prometheus scrapes every control plane component. kubeadm binds the controller manager and the
+scheduler to `127.0.0.1` and etcd's metrics listener to `127.0.0.1:2381`; the generated
+`ClusterConfiguration` makes them listen on all addresses. A selector Service per component in
+`kube-system` matches the static pods on every control plane node, so more control plane nodes
+are picked up without changes.
+
+| Job | Target | TLS |
+|-----|--------|-----|
+| `apiserver` | `default/kubernetes` Service, `:6443` | verified against the cluster CA |
+| `kube-controller-manager` | `:10257` | self-signed (kubeadm does not issue one): not verified; the ServiceAccount token is still required |
+| `kube-scheduler` | `:10259` | same as the controller manager |
+| `kube-etcd` | `:2381` | plain HTTP: metrics and health only, never data |
+
+Only the series the dashboard and alerts read are kept (the full apiserver and etcd metrics are
+tens of thousands of series).
+
+| Alert | Severity | Fires when |
+|-------|----------|------------|
+| `KubeAPIServerDown`, `KubeControllerManagerDown`, `KubeSchedulerDown`, `EtcdDown` | critical | the component answers no scrape for 5 minutes |
+| `KubeAPIErrorsHigh` | warning | more than 5% of API requests return 5xx for 10 minutes |
+| `KubeAPISlowRequests` | warning | more than 5% of API requests (WATCH/CONNECT excluded) take over 1s for 10 minutes |
+| `EtcdNoLeader` | critical | an etcd member has no leader for 1 minute |
+| `EtcdSlowDisk` | warning | etcd WAL fsync p99 above 500ms for 10 minutes |
+| `EtcdProposalsFailing` | warning | etcd failed to commit proposals in the last 15 minutes |
+| `KubeControlPlaneNoLeader` | critical | no controller manager or scheduler instance holds leadership for 5 minutes |
+| `KubePodsUnschedulable` | warning | pods stay unschedulable for 15 minutes |
+
+The **Control plane** row of the `k8s-lab` dashboard shows component status, etcd leadership,
+unschedulable pods, the etcd database size, firing control plane alerts, API requests by code,
+the share of slow requests, etcd disk latency and control plane memory.
 
 ### Kubelet TLS
 

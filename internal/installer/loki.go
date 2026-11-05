@@ -21,6 +21,9 @@ func (l *Loki) Install() error {
 	fmt.Println("Installing Loki Stack (Loki + Grafana Alloy)...")
 
 	fmt.Println("Installing Loki...")
+	if err := l.installAuditAlerts(); err != nil {
+		fmt.Printf("Warning: Failed to publish audit alert rules: %v\n", err)
+	}
 	if err := l.installLoki(); err != nil {
 		return err
 	}
@@ -78,7 +81,7 @@ data:
       storage:
         filesystem:
           chunks_directory: /data/loki/chunks
-          rules_directory: /data/loki/rules
+          rules_directory: /var/loki-rules
       replication_factor: 1
       ring:
         kvstore:
@@ -112,6 +115,19 @@ data:
       retention_period: 168h
       allow_structured_metadata: true
       volume_enabled: true
+
+    # Evaluates the audit alert rules (installAuditAlerts) and sends what fires
+    # to Alertmanager. Rules are read from the loki-rules ConfigMap, mounted as
+    # the "fake" tenant (the tenant Loki uses when auth is off).
+    ruler:
+      alertmanager_url: http://alertmanager-operated.monitoring.svc:9093
+      enable_api: true
+      evaluation_interval: 1m
+      rule_path: /tmp/loki-ruler
+      storage:
+        type: local
+        local:
+          directory: /var/loki-rules
 
     analytics:
       reporting_enabled: false
@@ -169,6 +185,9 @@ spec:
           mountPath: /etc/loki
         - name: storage
           mountPath: /data/loki
+        - name: rules
+          mountPath: /var/loki-rules/fake
+          readOnly: true
         - name: tmp
           mountPath: /tmp
         readinessProbe:
@@ -191,6 +210,10 @@ spec:
       - name: storage
         persistentVolumeClaim:
           claimName: loki-pvc
+      - name: rules
+        configMap:
+          name: loki-rules
+          optional: true
       - name: tmp
         emptyDir: {}
 ---
