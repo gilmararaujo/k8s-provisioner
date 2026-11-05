@@ -162,14 +162,10 @@ are decisions, not oversights — and would need hardening before handling real 
   certificate from its own CA, generated on the storage node; the CA private key stays
   on that node and there is no automated rotation (the server cert lasts 825 days).
   *Hardening path:* issue the Vault certificate from a managed PKI and rotate it.
-- **Monitoring skips TLS verification in two places.** Prometheus scrapes the kubelets
-  (cAdvisor and certificate metrics) and blackbox_exporter probes TLS endpoints without
-  verifying the chain: kubeadm issues each kubelet a self-signed serving certificate, so
-  there is no CA to verify against. Both still authenticate where it matters (Prometheus
-  presents its ServiceAccount token; the probes only read expiry dates). The lab DNS etcd
-  is not probed, since that would need its client certificate. *Hardening path:*
-  `serverTLSBootstrap: true` in the kubelet config so kubelet certificates are signed by
-  the cluster CA.
+- **The TLS probes skip chain verification.** blackbox_exporter only reads the expiry
+  date of each certificate it probes, so it does not verify the chain. The lab DNS etcd is
+  not probed, since that would need its client certificate. Kubelet traffic *is* verified
+  (see [Kubelet TLS](#kubelet-tls)).
 - **No database backups, audit logging, or retention/erasure policy**, and the Keycloak
   app uses the owning Postgres account (no least-privilege runtime role). Appropriate for
   ephemeral lab data; not for production.
@@ -1598,6 +1594,43 @@ kubectl create secret generic audit-test --from-literal=k=v
 > by `{container="kube-apiserver"}`), and there is no separate on-node audit file. In exchange,
 > audit is shipped off-node to Loki with zero extra infrastructure. For stricter setups, switch
 > `--audit-log-path` to a file with rotation and add a dedicated (privileged) log shipper.
+
+### Kubelet TLS
+
+The apiserver and the kubelets authenticate each other with certificates from the cluster
+CA, in both directions:
+
+| Direction | Credential | Verified by |
+|-----------|------------|-------------|
+| apiserver → kubelet (`logs`, `exec`, `port-forward`, metrics) | client cert `apiserver-kubelet-client` | kubelet (`authentication.x509.clientCAFile`; anonymous access off, authorization by webhook) |
+| kubelet → apiserver | client cert `system:node:<name>`, rotated | apiserver (`Node,RBAC` authorization) |
+| kubelet serving cert on `:10250` | signed by the cluster CA (`serverTLSBootstrap: true`) | apiserver (`--kubelet-certificate-authority`), Metrics Server and Prometheus |
+
+By default kubeadm gives each kubelet a self-signed serving certificate, and the apiserver
+connects without checking it, so anything answering on a node's IP could pose as its
+kubelet. Here every kubelet requests its serving certificate from the cluster CA instead.
+kubeadm does not approve those requests, so the provisioner does: it approves a
+`kubernetes.io/kubelet-serving` CSR only when it comes from that node's own credentials and
+asks for exactly its name and the IP in `config.yaml`. Anything else is reported and left
+pending.
+
+**Check it:**
+
+```bash
+kubectl get csr                     # kubelet-serving CSRs: Approved,Issued
+echo | openssl s_client -connect 192.168.56.11:10250 2>/dev/null \
+  | openssl x509 -noout -issuer      # issuer=CN=kubernetes (the cluster CA)
+```
+
+**Renewal:** the certificates last one year (the kube-controller-manager default). Near the
+end the kubelet asks for a new one, which nobody approves automatically. Until it is
+approved that node keeps serving its current certificate; once that expires, `kubectl
+logs/exec` and metrics on the node stop. Check the request before approving it:
+
+```bash
+kubectl get csr --field-selector spec.signerName=kubernetes.io/kubelet-serving
+kubectl certificate approve <csr-name>
+```
 
 ## Tracing Stack (OpenTelemetry + Grafana Tempo)
 

@@ -11,9 +11,11 @@ import (
 )
 
 // mockExecutor records shell invocations so orchestration can be asserted
-// without touching the host. It satisfies executor.CommandExecutor.
+// without touching the host. It satisfies executor.CommandExecutor. outputs
+// maps a command substring to the stdout RunShell returns for it.
 type mockExecutor struct {
 	shellCmds []string
+	outputs   map[string]string
 }
 
 func (m *mockExecutor) Run(name string, args ...string) (string, error) { return "", nil }
@@ -28,6 +30,11 @@ func (m *mockExecutor) RunShellWithStdin(c, s string) (string, error) {
 }
 func (m *mockExecutor) RunShell(command string) (string, error) {
 	m.shellCmds = append(m.shellCmds, command)
+	for sub, out := range m.outputs {
+		if strings.Contains(command, sub) {
+			return out, nil
+		}
+	}
 	return "", nil
 }
 

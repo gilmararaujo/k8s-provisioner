@@ -3,6 +3,7 @@ package provisioner
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -99,6 +100,14 @@ rules:
 // them to Loki. No file on disk, no privileged log shipper, no host mount for logs.
 // Only the read-only audit-policy volume is needed. (Rotation flags are file-only
 // and therefore omitted; the container runtime handles stdout log rotation.)
+//
+// Kubelet serving TLS: by default each kubelet serves port 10250 with a
+// self-signed certificate and the apiserver connects without verifying it.
+// serverTLSBootstrap makes every kubelet (kubeadm shares this
+// KubeletConfiguration with joining nodes) request its serving certificate from
+// the cluster CA instead, and kubelet-certificate-authority makes the apiserver
+// reject any kubelet that does not present one. kubeadm does not approve those
+// CSRs, so approveKubeletServingCSRs does, after checking name and IP.
 const kubeadmConfigTemplate = `apiVersion: kubeadm.k8s.io/v1beta4
 kind: InitConfiguration
 localAPIEndpoint:
@@ -117,12 +126,18 @@ apiServer:
     value: /etc/kubernetes/audit/policy.yaml
   - name: audit-log-path
     value: "-"
+  - name: kubelet-certificate-authority
+    value: /etc/kubernetes/pki/ca.crt
   extraVolumes:
   - name: audit-policy
     hostPath: /etc/kubernetes/audit
     mountPath: /etc/kubernetes/audit
     readOnly: true
     pathType: DirectoryOrCreate
+---
+apiVersion: kubelet.config.k8s.io/v1beta1
+kind: KubeletConfiguration
+serverTLSBootstrap: true
 `
 
 // writeKubeadmConfig writes the API server audit policy and the kubeadm config to
@@ -206,6 +221,11 @@ func (p *Provisioner) InitCluster() error {
 
 	fmt.Println("\n>>> Waiting for node to be ready...")
 	if err := p.waitForNode("controlplane", nodeReadyTimeout); err != nil {
+		return err
+	}
+
+	fmt.Println("\n>>> Approving the control plane's kubelet serving certificate...")
+	if err := p.approveKubeletServingCSRs([]string{"controlplane"}, kubeletServingTimeout); err != nil {
 		return err
 	}
 
@@ -369,6 +389,24 @@ func (p *Provisioner) InstallWorkloads() error {
 
 	if p.dryRun {
 		return p.printWorkloadPlan()
+	}
+
+	// Every worker has joined by now. Their kubelets cannot serve logs, exec or
+	// metrics until their serving certificates are approved (Metrics Server,
+	// below, depends on it).
+	fmt.Println("\n>>> Approving kubelet serving certificates...")
+	if p.kubeletServingBootstrapEnabled() {
+		var kubelets []string
+		for name := range kubeletNodes(cfg) {
+			kubelets = append(kubelets, name)
+		}
+		slices.Sort(kubelets)
+		if err := p.approveKubeletServingCSRs(kubelets, kubeletServingTimeout); err != nil {
+			return err
+		}
+	} else {
+		fmt.Println("Warning: this cluster's kubelets serve self-signed certificates (it predates serverTLSBootstrap); " +
+			"recreate it to get cluster-CA kubelet certificates. Metrics Server cannot verify them meanwhile.")
 	}
 
 	// Keep the Keycloak installer to configure Grafana OAuth2 after every other
