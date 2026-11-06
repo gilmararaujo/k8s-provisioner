@@ -28,6 +28,12 @@ func TestInstallResourceMonitoring_ScrapesCadvisorAndPinsUpstream(t *testing.T) 
 	assert.Contains(t, sh.calls[2], "delete prometheusrule resource-review-mixin", "no duplicate recordings from the old name")
 }
 
+func TestKubeletServiceMonitor_VerifiesKubeletCertificates(t *testing.T) {
+	assert.NotContains(t, kubeletServiceMonitor, "insecureSkipVerify", "kubelets serve cluster-CA certificates")
+	assert.Equal(t, 2, strings.Count(kubeletServiceMonitor, "caFile: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt"),
+		"both kubelet endpoints (cAdvisor and /metrics) verify against the cluster CA")
+}
+
 func TestResourceReviewURL_RejectsNonCommit(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Versions.ResourceDashboard = "main; rm -rf /"

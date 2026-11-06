@@ -21,6 +21,9 @@ func (l *Loki) Install() error {
 	fmt.Println("Installing Loki Stack (Loki + Grafana Alloy)...")
 
 	fmt.Println("Installing Loki...")
+	if err := l.installAuditAlerts(); err != nil {
+		fmt.Printf("Warning: Failed to publish audit alert rules: %v\n", err)
+	}
 	if err := l.installLoki(); err != nil {
 		return err
 	}
@@ -78,7 +81,7 @@ data:
       storage:
         filesystem:
           chunks_directory: /data/loki/chunks
-          rules_directory: /data/loki/rules
+          rules_directory: /var/loki-rules
       replication_factor: 1
       ring:
         kvstore:
@@ -112,6 +115,19 @@ data:
       retention_period: 168h
       allow_structured_metadata: true
       volume_enabled: true
+
+    # Evaluates the audit alert rules (installAuditAlerts) and sends what fires
+    # to Alertmanager. Rules are read from the loki-rules ConfigMap, mounted as
+    # the "fake" tenant (the tenant Loki uses when auth is off).
+    ruler:
+      alertmanager_url: http://alertmanager-operated.monitoring.svc:9093
+      enable_api: true
+      evaluation_interval: 1m
+      rule_path: /tmp/loki-ruler
+      storage:
+        type: local
+        local:
+          directory: /var/loki-rules
 
     analytics:
       reporting_enabled: false
@@ -169,6 +185,9 @@ spec:
           mountPath: /etc/loki
         - name: storage
           mountPath: /data/loki
+        - name: rules
+          mountPath: /var/loki-rules/fake
+          readOnly: true
         - name: tmp
           mountPath: /tmp
         readinessProbe:
@@ -191,6 +210,10 @@ spec:
       - name: storage
         persistentVolumeClaim:
           claimName: loki-pvc
+      - name: rules
+        configMap:
+          name: loki-rules
+          optional: true
       - name: tmp
         emptyDir: {}
 ---
@@ -226,6 +249,27 @@ spec:
 }
 
 func (l *Loki) installAlloy() error {
+	if err := executor.WriteFile("/tmp/alloy.yaml", l.alloyManifest()); err != nil {
+		return err
+	}
+
+	// Alloy used to run as a DaemonSet, and every instance tailed every pod in
+	// the cluster, so each log line was shipped once per node. Remove it before
+	// applying the single-collector Deployment that replaces it.
+	if _, err := l.exec.RunShell("kubectl delete daemonset alloy -n monitoring --ignore-not-found"); err != nil {
+		return err
+	}
+
+	_, err := l.exec.RunShell("kubectl apply -f /tmp/alloy.yaml")
+	return err
+}
+
+// alloyManifest renders the Alloy log collector. It reads pod logs and events
+// through the Kubernetes API (loki.source.kubernetes), not from node files, so
+// one replica sees the whole cluster — control plane pods included — and needs
+// no host access or control-plane toleration. More replicas, or a DaemonSet,
+// would ship every line once per collector.
+func (l *Loki) alloyManifest() string {
 	alloy := `apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -330,13 +374,18 @@ data:
     }
 ---
 apiVersion: apps/v1
-kind: DaemonSet
+kind: Deployment
 metadata:
   name: alloy
   namespace: monitoring
   labels:
     app: alloy
 spec:
+  # Exactly one collector: a second one would tail the same pods again.
+  # Recreate keeps a rollout from running old and new side by side.
+  replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: alloy
@@ -376,11 +425,6 @@ spec:
           mountPath: /var/lib/alloy/data
         - name: tmp
           mountPath: /tmp
-        env:
-        - name: HOSTNAME
-          valueFrom:
-            fieldRef:
-              fieldPath: spec.nodeName
         resources:
           requests:
             memory: 64Mi
@@ -388,9 +432,6 @@ spec:
           limits:
             memory: 256Mi
             cpu: 200m
-      tolerations:
-      - effect: NoSchedule
-        operator: Exists
       volumes:
       - name: config
         configMap:
@@ -420,14 +461,7 @@ spec:
 	if alloyVersion == "" {
 		alloyVersion = "v1.21.1"
 	}
-	alloy = fmt.Sprintf(alloy, alloyVersion, alloyVersion)
-
-	if err := executor.WriteFile("/tmp/alloy.yaml", alloy); err != nil {
-		return err
-	}
-
-	_, err := l.exec.RunShell("kubectl apply -f /tmp/alloy.yaml")
-	return err
+	return fmt.Sprintf(alloy, alloyVersion, alloyVersion)
 }
 
 func (l *Loki) configureLokiDatasource() error {

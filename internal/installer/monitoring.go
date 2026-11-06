@@ -95,6 +95,11 @@ metadata:
 		fmt.Printf("Warning: Failed to create cert-manager monitoring resources: %v\n", err)
 	}
 
+	fmt.Println("Creating control plane scrape targets + alerts (apiserver, controller manager, scheduler, etcd)...")
+	if err := m.installControlPlaneMonitoring(); err != nil {
+		fmt.Printf("Warning: Failed to create control plane monitoring: %v\n", err)
+	}
+
 	fmt.Println("Creating kubelet/cAdvisor scrape target + workload resource rules...")
 	if err := m.installResourceMonitoring(); err != nil {
 		fmt.Printf("Warning: Failed to create resource monitoring: %v\n", err)

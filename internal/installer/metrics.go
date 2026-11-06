@@ -32,12 +32,9 @@ func (m *MetricsServer) Install() error {
 		return fmt.Errorf("failed to download metrics-server manifest: %w", err)
 	}
 
-	// Inject --kubelet-insecure-tls for lab environments (self-signed kubelet certs).
-	// The pattern targets the args list in the metrics-server container spec.
-	patchCmd := `sed -i '/- --metric-resolution=/i\        - --kubelet-insecure-tls' /tmp/metrics-server.yaml`
-	if _, err := m.exec.RunShell(patchCmd); err != nil {
-		return fmt.Errorf("failed to patch metrics-server manifest: %w", err)
-	}
+	// The upstream manifest is applied as is, without --kubelet-insecure-tls:
+	// kubelets serve certificates signed by the cluster CA (serverTLSBootstrap),
+	// which metrics-server verifies with its in-cluster CA.
 
 	// --validate=false is required because the APIService object in the manifest
 	// has triggered client-side validation errors in some kubectl versions even though it is valid.

@@ -52,7 +52,8 @@ func TestBuildLabDashboard_RejectsEmpty(t *testing.T) {
 }
 
 func TestBuildLabDashboard_StacksSectionsBelowResources(t *testing.T) {
-	out, err := buildLabDashboard([]byte(upstreamDashboard), "UTC", slosSection, clusterDNSSection, labDNSSection, certificatesSection, labDNSLogsSection)
+	out, err := buildLabDashboard([]byte(upstreamDashboard), "UTC", slosSection, clusterDNSSection, labDNSSection, certificatesSection,
+		controlPlaneSection, securitySection, labDNSLogsSection)
 	require.NoError(t, err)
 
 	var d struct {
@@ -77,8 +78,8 @@ func TestBuildLabDashboard_StacksSectionsBelowResources(t *testing.T) {
 			rows = append(rows, i)
 		}
 	}
-	require.Len(t, rows, 6, "Resources, SLOs, cluster DNS, lab DNS, Certificates, DNS logs")
-	dnsRow, logsRow := d.Panels[rows[1]], d.Panels[rows[5]]
+	require.Len(t, rows, 8, "Resources, SLOs, cluster DNS, lab DNS, Certificates, Control plane, Security, DNS logs")
+	dnsRow, logsRow := d.Panels[rows[1]], d.Panels[rows[7]]
 	assert.Equal(t, 62, dnsRow.GridPos["y"], "DNS starts right below the last Resources panel (y 51 + h 11)")
 	assert.Greater(t, logsRow.GridPos["y"], dnsRow.GridPos["y"])
 	require.NotEmpty(t, logsRow.Panels, "a collapsed row carries its panels")
@@ -88,14 +89,15 @@ func TestBuildLabDashboard_StacksSectionsBelowResources(t *testing.T) {
 func TestLabDashboardSections_FollowConfig(t *testing.T) {
 	cfg := externalDNSConfig()
 	m := NewMonitoring(cfg, &fakeShell{})
-	assert.Equal(t, [][]byte{slosSection, clusterDNSSection, labDNSSection, certificatesSection}, m.labDashboardSections(), "no Loki, no change log")
+	assert.Equal(t, [][]byte{slosSection, clusterDNSSection, labDNSSection, certificatesSection, controlPlaneSection}, m.labDashboardSections(),
+		"no Loki: no audit section, no change log")
 
 	cfg.Components.Logging = "loki"
-	assert.Equal(t, [][]byte{slosSection, clusterDNSSection, labDNSSection, certificatesSection, labDNSLogsSection}, m.labDashboardSections(),
-		"the collapsed change log goes last")
+	assert.Equal(t, [][]byte{slosSection, clusterDNSSection, labDNSSection, certificatesSection, controlPlaneSection, securitySection, labDNSLogsSection},
+		m.labDashboardSections(), "the collapsed change log goes last")
 
 	cfg.Nodes = nil // no storage node, no lab DNS
-	assert.Equal(t, [][]byte{slosSection, clusterDNSSection, certificatesSection}, m.labDashboardSections())
+	assert.Equal(t, [][]byte{slosSection, clusterDNSSection, certificatesSection, controlPlaneSection, securitySection}, m.labDashboardSections())
 }
 
 func TestLabDNSSection_SelectsLabDNSJobs(t *testing.T) {
