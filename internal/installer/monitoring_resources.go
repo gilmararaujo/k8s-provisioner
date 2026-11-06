@@ -17,9 +17,10 @@ var commitSHA = regexp.MustCompile(`^[0-9a-f]{7,40}$`)
 // (--kubelet-service). The job ("kubelet") and metrics_path labels match what
 // kube-prometheus produces, which the upstream Resources rules select on.
 //
-// Kubelet serving certificates are self-signed per node by kubeadm, so there is
-// no CA to verify against; the scrape still authenticates with the Prometheus
-// ServiceAccount token (RBAC: nodes/metrics).
+// Kubelets serve certificates signed by the cluster CA (serverTLSBootstrap, see
+// the provisioner's kubeadm config), so the scrape verifies them with the
+// in-cluster CA and authenticates with the Prometheus ServiceAccount token
+// (RBAC: nodes/metrics).
 //
 // metricRelabelings mirror kube-prometheus-stack's cAdvisor volume filters,
 // except container_cpu_cfs_throttled_seconds_total, which the throttling panels
@@ -43,7 +44,7 @@ spec:
     honorLabels: true
     bearerTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
     tlsConfig:
-      insecureSkipVerify: true
+      caFile: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
     relabelings:
     - sourceLabels: [__metrics_path__]
       targetLabel: metrics_path
@@ -82,7 +83,7 @@ spec:
     honorLabels: true
     bearerTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
     tlsConfig:
-      insecureSkipVerify: true
+      caFile: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
     relabelings:
     - sourceLabels: [__metrics_path__]
       targetLabel: metrics_path

@@ -1,0 +1,203 @@
+{
+  "panels": [
+    {
+      "id": 1601,
+      "type": "row",
+      "title": "Security — API server audit (who did what)",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "panels": []
+    },
+    {
+      "id": 1602,
+      "type": "timeseries",
+      "title": "Audited requests by verb",
+      "description": "Every request the audit policy records: all writes, reads by people and by the admin credential. Service account, node and control plane reads are not recorded.",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki-uid"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 1
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "loki-uid"
+          },
+          "expr": "sum by (verb) (count_over_time({namespace=\"kube-system\", container=\"kube-apiserver\"} |= \"audit.k8s.io/v1\" | json verb=\"verb\", user_username=\"user.username\", objectRef_resource=\"objectRef.resource\", objectRef_subresource=\"objectRef.subresource\", objectRef_namespace=\"objectRef.namespace\", objectRef_name=\"objectRef.name\", responseStatus_code=\"responseStatus.code\" [$__auto]))",
+          "refId": "A",
+          "legendFormat": "{{verb}}"
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 1603,
+      "type": "timeseries",
+      "title": "Denied requests (403) by user",
+      "description": "Requests refused by RBAC. A burst from one identity usually means it is probing what it may do (alert: AuditForbiddenBurst).",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki-uid"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 1
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "loki-uid"
+          },
+          "expr": "sum by (user) (count_over_time({namespace=\"kube-system\", container=\"kube-apiserver\"} |= \"audit.k8s.io/v1\" |= `\"code\":403` | json verb=\"verb\", user_username=\"user.username\", objectRef_resource=\"objectRef.resource\", objectRef_subresource=\"objectRef.subresource\", objectRef_namespace=\"objectRef.namespace\", objectRef_name=\"objectRef.name\", responseStatus_code=\"responseStatus.code\" | responseStatus_code=\"403\" | label_format user=\"{{.user_username}}\" [$__auto]))",
+          "refId": "A",
+          "legendFormat": "{{user}}"
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 1604,
+      "type": "bargauge",
+      "title": "Changes by user",
+      "description": "create, update, patch and delete requests over the selected time range.",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki-uid"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 8,
+        "x": 0,
+        "y": 9
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "loki-uid"
+          },
+          "expr": "topk(10, sum by (user) (count_over_time({namespace=\"kube-system\", container=\"kube-apiserver\"} |= \"audit.k8s.io/v1\" | json verb=\"verb\", user_username=\"user.username\", objectRef_resource=\"objectRef.resource\", objectRef_subresource=\"objectRef.subresource\", objectRef_namespace=\"objectRef.namespace\", objectRef_name=\"objectRef.name\", responseStatus_code=\"responseStatus.code\" | verb=~\"create|update|patch|delete\" | label_format user=\"{{.user_username}}\" [$__range])))",
+          "refId": "A",
+          "legendFormat": "{{user}}",
+          "queryType": "instant"
+        }
+      ],
+      "options": {
+        "orientation": "horizontal",
+        "displayMode": "basic",
+        "showUnfilled": true,
+        "valueMode": "color",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 1605,
+      "type": "logs",
+      "title": "Security-relevant requests",
+      "description": "exec, attach and port-forward, secret access, RBAC changes and denied requests: user, verb, resource, namespace/name and response code.",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki-uid"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 16,
+        "x": 8,
+        "y": 9
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "loki-uid"
+          },
+          "expr": "{namespace=\"kube-system\", container=\"kube-apiserver\"} |= \"audit.k8s.io/v1\" | json verb=\"verb\", user_username=\"user.username\", objectRef_resource=\"objectRef.resource\", objectRef_subresource=\"objectRef.subresource\", objectRef_namespace=\"objectRef.namespace\", objectRef_name=\"objectRef.name\", responseStatus_code=\"responseStatus.code\" | objectRef_subresource=~\"exec|attach|portforward\" or objectRef_resource=\"secrets\" or (objectRef_resource=~\"clusterrolebindings|rolebindings|clusterroles|roles\" and verb=~\"create|update|patch|delete\") or responseStatus_code=\"403\" | line_format \"{{.user_username}}  {{.verb}} {{.objectRef_resource}}{{if .objectRef_subresource}}/{{.objectRef_subresource}}{{end}}  {{.objectRef_namespace}}/{{.objectRef_name}}  → {{.responseStatus_code}}\"",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "showTime": true,
+        "wrapLogMessage": true,
+        "sortOrder": "Descending",
+        "enableLogDetails": true
+      }
+    }
+  ]
+}

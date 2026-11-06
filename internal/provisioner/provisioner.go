@@ -3,6 +3,7 @@ package provisioner
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -51,19 +52,27 @@ func NewWithExecutor(cfg *config.Config, exec executor.CommandExecutor, verbose 
 }
 
 // auditPolicy is the kube-apiserver audit policy mounted into the control plane.
-// First match wins: drop read/health noise and high-frequency coordination
-// heartbeats (leases/events/endpoints/endpointslices — huge volume, low value),
-// capture security-sensitive objects at full fidelity, exec/attach at Request, and
-// every other mutation at Metadata. Reads of secrets are intentionally not logged
-// (matched by the get/list/watch=None rule first) to bound volume; reorder if
-// secret reads must be audited.
+// First match wins:
+//
+//   - Health/metrics probes and coordination heartbeats (leases, events,
+//     endpoints, endpointslices): huge volume, no security value.
+//   - Reads (get/list/watch) by the admin credential (admin.conf) are kept, so
+//     break-glass use is fully visible; reads by service accounts, nodes and
+//     the control plane components are dropped (informer traffic). Every other
+//     read — people signed in through OIDC, anonymous requests — is kept at
+//     Metadata, which is what reveals secret reads and permission probing (403).
+//   - RBAC objects at RequestResponse, so the role a binding grants (roleRef) is
+//     on record for create and for edits.
+//   - Secrets stay at Metadata (the catch-all): Request or RequestResponse would
+//     copy secret values into the audit log and Loki.
+//   - exec/attach/portforward, and writes to pods and pod-creating workloads, at
+//     Request: the pod spec is what shows privileged or host-namespace pods.
+//   - Everything else at Metadata.
 const auditPolicy = `apiVersion: audit.k8s.io/v1
 kind: Policy
 omitStages:
   - RequestReceived
 rules:
-  - level: None
-    verbs: ["get", "list", "watch"]
   - level: None
     nonResourceURLs: ["/healthz*", "/livez*", "/readyz*", "/version", "/metrics"]
   - level: None
@@ -74,16 +83,34 @@ rules:
         resources: ["events", "endpoints"]
       - group: "discovery.k8s.io"
         resources: ["endpointslices"]
+  - level: Metadata
+    users: ["kubernetes-admin", "kubernetes-super-admin"]
+    verbs: ["get", "list", "watch"]
+  - level: None
+    userGroups: ["system:serviceaccounts", "system:nodes"]
+    verbs: ["get", "list", "watch"]
+  - level: None
+    users: ["system:kube-controller-manager", "system:kube-scheduler", "system:apiserver"]
+    verbs: ["get", "list", "watch"]
+  - level: Metadata
+    verbs: ["get", "list", "watch"]
   - level: RequestResponse
     resources:
-      - group: ""
-        resources: ["secrets", "serviceaccounts"]
       - group: "rbac.authorization.k8s.io"
         resources: ["roles", "rolebindings", "clusterroles", "clusterrolebindings"]
   - level: Request
     resources:
       - group: ""
         resources: ["pods/exec", "pods/attach", "pods/portforward"]
+  - level: Request
+    verbs: ["create", "update", "patch"]
+    resources:
+      - group: ""
+        resources: ["pods"]
+      - group: "apps"
+        resources: ["deployments", "daemonsets", "statefulsets", "replicasets"]
+      - group: "batch"
+        resources: ["jobs", "cronjobs"]
   - level: Metadata
 `
 
@@ -94,11 +121,25 @@ rules:
 // and could crashloop the API server). %s = advertise address, %s = pod subnet.
 //
 // audit-log-path is "-" (stdout): audit events become part of the kube-apiserver
-// container's stdout, so the existing (non-root, hardened) Alloy DaemonSet collects
-// them via the Kubernetes API — the same path as every other pod log — and ships
+// container's stdout, so the existing (non-root, hardened) Alloy collector picks them
+// up via the Kubernetes API — the same path as every other pod log — and ships
 // them to Loki. No file on disk, no privileged log shipper, no host mount for logs.
 // Only the read-only audit-policy volume is needed. (Rotation flags are file-only
 // and therefore omitted; the container runtime handles stdout log rotation.)
+//
+// Kubelet serving TLS: by default each kubelet serves port 10250 with a
+// self-signed certificate and the apiserver connects without verifying it.
+// serverTLSBootstrap makes every kubelet (kubeadm shares this
+// KubeletConfiguration with joining nodes) request its serving certificate from
+// the cluster CA instead, and kubelet-certificate-authority makes the apiserver
+// reject any kubelet that does not present one. kubeadm does not approve those
+// CSRs, so approveKubeletServingCSRs does, after checking name and IP.
+//
+// Control plane metrics: kubeadm binds kube-controller-manager and
+// kube-scheduler to 127.0.0.1 and etcd's metrics listener to 127.0.0.1:2381, out
+// of Prometheus' reach. They listen on all addresses here. The controller
+// manager and scheduler still require an authorized token for /metrics; etcd's
+// metrics port serves metrics and health only, over plain HTTP, never data.
 const kubeadmConfigTemplate = `apiVersion: kubeadm.k8s.io/v1beta4
 kind: InitConfiguration
 localAPIEndpoint:
@@ -117,12 +158,31 @@ apiServer:
     value: /etc/kubernetes/audit/policy.yaml
   - name: audit-log-path
     value: "-"
+  - name: kubelet-certificate-authority
+    value: /etc/kubernetes/pki/ca.crt
   extraVolumes:
   - name: audit-policy
     hostPath: /etc/kubernetes/audit
     mountPath: /etc/kubernetes/audit
     readOnly: true
     pathType: DirectoryOrCreate
+controllerManager:
+  extraArgs:
+  - name: bind-address
+    value: 0.0.0.0
+scheduler:
+  extraArgs:
+  - name: bind-address
+    value: 0.0.0.0
+etcd:
+  local:
+    extraArgs:
+    - name: listen-metrics-urls
+      value: http://0.0.0.0:2381
+---
+apiVersion: kubelet.config.k8s.io/v1beta1
+kind: KubeletConfiguration
+serverTLSBootstrap: true
 `
 
 // writeKubeadmConfig writes the API server audit policy and the kubeadm config to
@@ -206,6 +266,11 @@ func (p *Provisioner) InitCluster() error {
 
 	fmt.Println("\n>>> Waiting for node to be ready...")
 	if err := p.waitForNode("controlplane", nodeReadyTimeout); err != nil {
+		return err
+	}
+
+	fmt.Println("\n>>> Approving the control plane's kubelet serving certificate...")
+	if err := p.approveKubeletServingCSRs([]string{"controlplane"}, kubeletServingTimeout); err != nil {
 		return err
 	}
 
@@ -369,6 +434,24 @@ func (p *Provisioner) InstallWorkloads() error {
 
 	if p.dryRun {
 		return p.printWorkloadPlan()
+	}
+
+	// Every worker has joined by now. Their kubelets cannot serve logs, exec or
+	// metrics until their serving certificates are approved (Metrics Server,
+	// below, depends on it).
+	fmt.Println("\n>>> Approving kubelet serving certificates...")
+	if p.kubeletServingBootstrapEnabled() {
+		var kubelets []string
+		for name := range kubeletNodes(cfg) {
+			kubelets = append(kubelets, name)
+		}
+		slices.Sort(kubelets)
+		if err := p.approveKubeletServingCSRs(kubelets, kubeletServingTimeout); err != nil {
+			return err
+		}
+	} else {
+		fmt.Println("Warning: this cluster's kubelets serve self-signed certificates (it predates serverTLSBootstrap); " +
+			"recreate it to get cluster-CA kubelet certificates. Metrics Server cannot verify them meanwhile.")
 	}
 
 	// Keep the Keycloak installer to configure Grafana OAuth2 after every other
