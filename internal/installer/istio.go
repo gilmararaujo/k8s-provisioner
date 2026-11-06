@@ -47,6 +47,13 @@ func (i *Istio) Install() error {
 kind: IstioOperator
 spec:
   profile: default
+  components:
+    pilot:
+      k8s:
+        resources:
+          requests:
+            cpu: 500m     # profile default; kept explicit because this block replaces it and istiod's HPA needs it
+            memory: 1Gi   # the default profile reserves 2Gi; a lab istiod uses a few hundred Mi
   meshConfig:
     enableTracing: true
     extensionProviders:
