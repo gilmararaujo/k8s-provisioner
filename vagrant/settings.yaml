@@ -15,6 +15,7 @@ vm:
   role: "controlplane"
 - name: "node01"
   ip: "192.168.56.11"
+  # 6 GB fits the default stack; raise to 8192+ when karpor_ai runs Ollama locally (~2 GB model)
   memory: "6144"
   cpus: "2"
   role: "worker"
