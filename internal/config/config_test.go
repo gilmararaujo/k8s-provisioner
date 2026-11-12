@@ -577,3 +577,30 @@ func TestTimezone(t *testing.T) {
 		assert.ErrorContains(t, cfg.Validate(), "is not an IANA timezone name", tz)
 	}
 }
+
+func TestEtcdEncryptionEnabled(t *testing.T) {
+	assert.True(t, (&Config{Components: ComponentsConfig{EtcdEncryption: "vault-kms"}}).EtcdEncryptionEnabled())
+	assert.False(t, (&Config{Components: ComponentsConfig{EtcdEncryption: "none"}}).EtcdEncryptionEnabled())
+	assert.False(t, (&Config{}).EtcdEncryptionEnabled(), "empty is off")
+}
+
+func TestValidate_EtcdEncryptionRequiresVault(t *testing.T) {
+	cfg := &Config{
+		Cluster:    ClusterConfig{Name: "t", PodCIDR: "10.244.0.0/16", ServiceCIDR: "10.96.0.0/12"},
+		Versions:   VersionsConfig{Kubernetes: "1.32", CriO: "v1.32"},
+		Network:    NetworkConfig{Interface: "eth1", ControlPlaneIP: "192.168.56.10"},
+		Storage:    StorageConfig{NFSPath: "/exports"},
+		Nodes:      []NodeConfig{{Name: "cp", Role: "controlplane"}},
+		Vault:      VaultConfig{Enabled: false}, // KMS needs Vault
+		Components: ComponentsConfig{EtcdEncryption: "vault-kms"},
+	}
+	err := cfg.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "etcd_encryption")
+
+	// With Vault enabled and resolvable, the KMS complaint is gone.
+	cfg.Vault = VaultConfig{Enabled: true, Addr: "https://192.168.56.20:8200"}
+	if err := cfg.Validate(); err != nil {
+		assert.NotContains(t, err.Error(), "etcd_encryption")
+	}
+}

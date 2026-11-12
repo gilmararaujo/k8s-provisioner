@@ -32,4 +32,5 @@ const (
 	caSecretWaitTimeout    = 60 * time.Second // wait for the lab CA secret to exist
 	certReadyTimeout       = 2 * time.Minute  // wait for the lab TLS certificate
 	vaultReadyTimeout      = 3 * time.Minute  // wait for Vault to be reachable
+	kmsPollInterval        = 3 * time.Second  // between KMS socket/health and apiserver checks
 )

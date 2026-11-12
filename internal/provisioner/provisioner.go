@@ -307,7 +307,7 @@ type workloadStep struct {
 func (p *Provisioner) workloadSteps() []workloadStep {
 	enabledMonitoring := func(c *config.Config) bool { return c.Components.Monitoring == "prometheus-stack" }
 
-	return []workloadStep{
+	return append([]workloadStep{
 		{
 			build: func(c *config.Config, e executor.CommandExecutor) installer.Installer {
 				return installer.NewMetalLB(c, e)
@@ -361,6 +361,15 @@ func (p *Provisioner) workloadSteps() []workloadStep {
 			// VSO syncs Vault secrets into K8s Secrets before components start.
 			build: func(c *config.Config, e executor.CommandExecutor) installer.Installer {
 				return installer.NewVaultSecretsOperator(c, e)
+			},
+		},
+		{
+			// etcd encryption at rest (Vault KMS): turned on early so Secrets created
+			// by later components are encrypted from birth. Not fatal — a failure
+			// leaves Secrets unencrypted with a warning rather than aborting the run.
+			enabled: (*config.Config).EtcdEncryptionEnabled,
+			build: func(c *config.Config, e executor.CommandExecutor) installer.Installer {
+				return installer.NewEtcdEncryption(c, e)
 			},
 		},
 		{
@@ -423,6 +432,32 @@ func (p *Provisioner) workloadSteps() []workloadStep {
 				return installer.NewKarpor(c, e)
 			},
 			fatal: true,
+		},
+	}, p.backupSteps()...)
+}
+
+// backupSteps are the backup installers, split out so workloadSteps stays within
+// the function-length limit. They run after the other workloads: Velero needs
+// every namespace it backs up to already exist, and the etcd backup only needs
+// the storage node and Vault. Order between the two does not matter — each
+// resolves the shared SeaweedFS S3 credentials independently.
+func (p *Provisioner) backupSteps() []workloadStep {
+	return []workloadStep{
+		{
+			// etcd snapshot backup to the SeaweedFS S3 store on the storage node.
+			// Not fatal — a failure skips scheduled backups rather than aborting.
+			enabled: (*config.Config).EtcdBackupEnabled,
+			build: func(c *config.Config, e executor.CommandExecutor) installer.Installer {
+				return installer.NewEtcdBackup(c, e)
+			},
+		},
+		{
+			// Velero backs up cluster resources + PV data to the SeaweedFS S3 store.
+			// Not fatal — a failure skips backups rather than aborting the run.
+			enabled: (*config.Config).VeleroEnabled,
+			build: func(c *config.Config, e executor.CommandExecutor) installer.Installer {
+				return installer.NewVelero(c, e)
+			},
 		},
 	}
 }

@@ -96,8 +96,109 @@ func (v *VaultInstaller) Install() error {
 		fmt.Printf("Warning: failed to store secrets in Vault: %v\n", err)
 	}
 
+	if v.config.EtcdEncryptionEnabled() {
+		fmt.Println("Configuring Transit + AppRole for etcd encryption at rest...")
+		if err := v.configureEtcdKMS(rootToken); err != nil {
+			fmt.Printf("Warning: failed to configure etcd KMS in Vault: %v\n", err)
+		}
+	}
+
 	v.printAccessInfo()
 	return nil
+}
+
+// configureEtcdKMS sets up Vault as the KMS for API server encryption at rest:
+// the Transit engine and a key encryption key, a minimal policy, and an AppRole
+// the KMS plugin authenticates with. It then writes the plugin's credentials and
+// Vault CA to the control plane (kmsEnvFile), where the EtcdEncryption installer
+// picks them up. All steps are idempotent; the credentials are generated once.
+func (v *VaultInstaller) configureEtcdKMS(token string) error {
+	// Transit engine + the key encryption key (idempotent).
+	if _, err := v.vaultPost("/v1/sys/mounts/transit", token, map[string]any{"type": "transit"}); err != nil &&
+		!strings.Contains(err.Error(), "already in use") {
+		return fmt.Errorf("enable transit: %w", err)
+	}
+	if _, err := v.vaultPost("/v1/transit/keys/"+kmsTransitKey, token, nil); err != nil {
+		return fmt.Errorf("create transit key: %w", err)
+	}
+
+	// A policy scoped to only encrypt/decrypt with that one key.
+	policy := fmt.Sprintf(`path "transit/encrypt/%[1]s" { capabilities = ["update"] }
+path "transit/decrypt/%[1]s" { capabilities = ["update"] }
+path "transit/rewrap/%[1]s"  { capabilities = ["update"] }
+path "transit/keys/%[1]s"    { capabilities = ["read"] }`, kmsTransitKey)
+	if _, err := v.vaultPut("/v1/sys/policies/acl/"+kmsApproleRole, token, map[string]any{"policy": policy}); err != nil {
+		return fmt.Errorf("write kms policy: %w", err)
+	}
+
+	// AppRole auth + the role the plugin logs in as.
+	if _, err := v.vaultPost("/v1/sys/auth/approle", token, map[string]any{"type": "approle"}); err != nil &&
+		!strings.Contains(err.Error(), "already in use") {
+		return fmt.Errorf("enable approle: %w", err)
+	}
+	if _, err := v.vaultPost("/v1/auth/approle/role/"+kmsApproleRole, token, map[string]any{
+		"token_policies": kmsApproleRole, "token_ttl": "20m", "token_max_ttl": "1h", "secret_id_ttl": 0,
+	}); err != nil {
+		return fmt.Errorf("write approle role: %w", err)
+	}
+
+	return v.writeKMSEnv(token)
+}
+
+// writeKMSEnv generates the plugin's AppRole credentials once and writes the
+// control-plane env file and Vault CA. Existing files are left untouched so a
+// re-run does not rotate the credential out from under the running plugin.
+func (v *VaultInstaller) writeKMSEnv(token string) error {
+	if _, err := os.Stat(kmsEnvFile); err == nil {
+		return nil // already provisioned
+	}
+	roleID, err := v.vaultField("/v1/auth/approle/role/"+kmsApproleRole+"/role-id", token, "GET", "role_id")
+	if err != nil {
+		return fmt.Errorf("read role-id: %w", err)
+	}
+	secretID, err := v.vaultField("/v1/auth/approle/role/"+kmsApproleRole+"/secret-id", token, "POST", "secret_id")
+	if err != nil {
+		return fmt.Errorf("generate secret-id: %w", err)
+	}
+
+	if err := os.MkdirAll("/etc/kms", 0o700); err != nil {
+		return err
+	}
+	ca, err := os.ReadFile(v.config.VaultCACert()) // #nosec G304 -- operator-supplied CA path
+	if err != nil {
+		return fmt.Errorf("read vault CA: %w", err)
+	}
+	if err := os.WriteFile(kmsVaultCAFile, ca, 0o600); err != nil { // #nosec G703 -- CA content from operator-supplied path, constant dest
+		return err
+	}
+	env := fmt.Sprintf(`VAULT_KMS_APPROLE_ROLE_ID=%s
+VAULT_KMS_APPROLE_SECRET_ID=%s
+VAULT_KMS_VAULT_ADDR=%s
+VAULT_KMS_VAULT_CACERT=%s
+VAULT_KMS_AUTH_METHOD=approle
+VAULT_KMS_TRANSIT_MOUNT=transit
+VAULT_KMS_TRANSIT_KEY=%s
+VAULT_KMS_SOCKET=%s
+VAULT_KMS_DISABLE_V1=true
+`, roleID, secretID, v.config.VaultAddress(), kmsVaultCAFile, kmsTransitKey, kmsSocket)
+	return os.WriteFile(kmsEnvFile, []byte(env), 0o600)
+}
+
+// vaultField performs a request and returns one string field from data.
+func (v *VaultInstaller) vaultField(path, token, method, field string) (string, error) {
+	resp, err := v.vaultRequest(method, path, token, nil)
+	if err != nil {
+		return "", err
+	}
+	data, ok := resp["data"].(map[string]any)
+	if !ok {
+		return "", fmt.Errorf("no data in response from %s", path)
+	}
+	val, ok := data[field].(string)
+	if !ok || val == "" {
+		return "", fmt.Errorf("%s missing in response from %s", field, path)
+	}
+	return val, nil
 }
 
 func (v *VaultInstaller) waitForVault(timeout time.Duration) error {

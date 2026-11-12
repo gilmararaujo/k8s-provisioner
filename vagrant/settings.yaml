@@ -4,8 +4,8 @@ vm:
 # Storage VM (NFS Server) - must be created first
 - name: "storage"
   ip: "192.168.56.20"
-  memory: "2048"
-  cpus: "1"
+  memory: "3072"
+  cpus: "2"
   role: "storage"
 # Kubernetes VMs
 - name: "controlplane"

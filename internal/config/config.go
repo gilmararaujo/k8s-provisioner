@@ -23,6 +23,36 @@ type Config struct {
 	Vault        VaultConfig        `yaml:"vault"`
 	DNS          DNSConfig          `yaml:"dns"`
 	Provisioning ProvisioningConfig `yaml:"provisioning"`
+	Backup       BackupConfig       `yaml:"backup"`
+}
+
+// BackupConfig configures the SeaweedFS S3 backup substrate on the storage node
+// (provisioned by vagrant/scripts/storage-seaweedfs.sh) and its consumers. The S3
+// endpoint is derived as http://<storage-node-ip>:<s3_port>.
+type BackupConfig struct {
+	S3Port  int                `yaml:"s3_port"` // SeaweedFS S3 API port (default 8333)
+	Buckets BackupBuckets      `yaml:"buckets"`
+	Etcd    EtcdBackupConfig   `yaml:"etcd"`
+	Velero  VeleroBackupConfig `yaml:"velero"`
+}
+
+type BackupBuckets struct {
+	Etcd   string `yaml:"etcd"`   // bucket for etcd snapshots (default etcd-backups)
+	Velero string `yaml:"velero"` // bucket for Velero backups (default velero)
+}
+
+// EtcdBackupConfig toggles the control-plane etcd snapshot timer and its schedule.
+type EtcdBackupConfig struct {
+	Enabled       bool   `yaml:"enabled"`
+	Schedule      string `yaml:"schedule"`       // systemd OnCalendar (default daily 02:00)
+	RetentionDays int    `yaml:"retention_days"` // snapshots older than this are pruned locally and in S3
+}
+
+// VeleroBackupConfig toggles Velero and its default backup schedule.
+type VeleroBackupConfig struct {
+	Enabled  bool   `yaml:"enabled"`
+	Schedule string `yaml:"schedule"` // cron (Velero uses cron, not OnCalendar); default daily 03:00
+	TTL      string `yaml:"ttl"`      // how long each backup is kept (Go duration); default 168h
 }
 
 // DNSConfig configures the lab DNS served from the storage node (CoreDNS backed
@@ -105,6 +135,10 @@ type VersionsConfig struct {
 	ExternalDNS        string `yaml:"external_dns"`       // ExternalDNS image tag
 	ResourceDashboard  string `yaml:"resource_dashboard"` // upstream commit of the workload resources dashboard + rules (no release tags)
 	BlackboxExporter   string `yaml:"blackbox_exporter"`  // TLS certificate expiry probes
+	VaultKMS           string `yaml:"vault_kms"`          // vault-kubernetes-kms plugin (etcd encryption at rest)
+	Seaweedfs          string `yaml:"seaweedfs"`          // SeaweedFS S3 backup store on the storage node (read by vagrant/Vagrantfile)
+	Velero             string `yaml:"velero"`             // Velero Helm chart version
+	VeleroPluginAWS    string `yaml:"velero_plugin_aws"`  // velero-plugin-for-aws image tag (S3/SeaweedFS object store)
 }
 
 type NetworkConfig struct {
@@ -137,6 +171,11 @@ type ComponentsConfig struct {
 	VPA          string `yaml:"vpa"`          // Options: enabled, disabled
 	KEDA         string `yaml:"keda"`         // Options: enabled, disabled
 	ExternalDNS  string `yaml:"external_dns"` // Options: enabled, none
+
+	// EtcdEncryption: "vault-kms" turns on API server encryption at rest backed
+	// by Vault's Transit engine; "none" (or empty) leaves Secrets unencrypted in
+	// etcd. Requires vault.enabled.
+	EtcdEncryption string `yaml:"etcd_encryption"`
 }
 
 type KarporAIConfig struct {
@@ -268,6 +307,11 @@ func (c *Config) Validate() error {
 	// vault.addr, or a storage node with an ip to derive it from).
 	if c.Vault.Enabled && c.VaultAddress() == "" {
 		errors = append(errors, "vault.enabled is true but no address could be resolved (set vault.addr or define a storage node with an ip)")
+	}
+
+	// etcd encryption at rest is backed by Vault's KMS, so Vault must be enabled.
+	if c.EtcdEncryptionEnabled() && !c.Vault.Enabled {
+		errors = append(errors, "components.etcd_encryption is \"vault-kms\" but vault.enabled is false (the KMS key lives in Vault)")
 	}
 
 	errors = append(errors, c.validateLabDNS()...)
@@ -470,6 +514,89 @@ func (c *Config) VaultCACert() string {
 		return c.Vault.CACert
 	}
 	return DefaultVaultCACert
+}
+
+// EtcdEncryptionEnabled reports whether API server encryption at rest, backed by
+// Vault's KMS, should be configured.
+func (c *Config) EtcdEncryptionEnabled() bool {
+	return c.Components.EtcdEncryption == "vault-kms"
+}
+
+// EtcdBackupEnabled reports whether the control-plane etcd snapshot timer should
+// be installed. It needs a storage node (which runs the SeaweedFS S3 target) and
+// Vault (which holds the S3 credentials).
+func (c *Config) EtcdBackupEnabled() bool {
+	return c.Backup.Etcd.Enabled && c.StorageIP() != "" && c.Vault.Enabled
+}
+
+// BackupS3Port returns the SeaweedFS S3 API port, defaulting to 8333.
+func (c *Config) BackupS3Port() int {
+	if c.Backup.S3Port != 0 {
+		return c.Backup.S3Port
+	}
+	return 8333
+}
+
+// BackupS3Endpoint derives the S3 endpoint from the storage node IP and port.
+func (c *Config) BackupS3Endpoint() string {
+	if ip := c.StorageIP(); ip != "" {
+		return fmt.Sprintf("http://%s:%d", ip, c.BackupS3Port())
+	}
+	return ""
+}
+
+// BackupEtcdBucket returns the bucket for etcd snapshots (default etcd-backups).
+func (c *Config) BackupEtcdBucket() string {
+	if c.Backup.Buckets.Etcd != "" {
+		return c.Backup.Buckets.Etcd
+	}
+	return "etcd-backups"
+}
+
+// BackupVeleroBucket returns the bucket for Velero backups (default velero).
+func (c *Config) BackupVeleroBucket() string {
+	if c.Backup.Buckets.Velero != "" {
+		return c.Backup.Buckets.Velero
+	}
+	return "velero"
+}
+
+// EtcdBackupSchedule returns the systemd OnCalendar expression (default daily 02:00).
+func (c *Config) EtcdBackupSchedule() string {
+	if c.Backup.Etcd.Schedule != "" {
+		return c.Backup.Etcd.Schedule
+	}
+	return "*-*-* 02:00:00"
+}
+
+// EtcdBackupRetentionDays returns how many days of snapshots to keep (default 7).
+func (c *Config) EtcdBackupRetentionDays() int {
+	if c.Backup.Etcd.RetentionDays > 0 {
+		return c.Backup.Etcd.RetentionDays
+	}
+	return 7
+}
+
+// VeleroEnabled reports whether Velero should be installed. Like the etcd backup
+// it needs the storage node (SeaweedFS S3 target) and Vault (S3 credentials).
+func (c *Config) VeleroEnabled() bool {
+	return c.Backup.Velero.Enabled && c.StorageIP() != "" && c.Vault.Enabled
+}
+
+// BackupVeleroSchedule returns the Velero backup cron (default daily 03:00).
+func (c *Config) BackupVeleroSchedule() string {
+	if c.Backup.Velero.Schedule != "" {
+		return c.Backup.Velero.Schedule
+	}
+	return "0 3 * * *"
+}
+
+// BackupVeleroTTL returns how long each Velero backup is kept (default 168h = 7d).
+func (c *Config) BackupVeleroTTL() string {
+	if c.Backup.Velero.TTL != "" {
+		return c.Backup.Velero.TTL
+	}
+	return "168h0m0s"
 }
 
 // Domain returns the lab base domain (dns.domain, else DefaultDomain).
