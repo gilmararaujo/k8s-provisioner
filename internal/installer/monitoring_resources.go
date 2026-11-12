@@ -74,8 +74,10 @@ spec:
     - sourceLabels: [id, pod]
       regex: .+;
       action: drop
-  # The kubelet's own metrics, reduced to its client certificate's remaining
-  # lifetime (Certificates row of the lab dashboard).
+  # The kubelet's own metrics, reduced to two families: its client
+  # certificate's remaining lifetime (Certificates row of the lab dashboard)
+  # and per-PVC volume usage (Storage row + PersistentVolumeFillingUp alert).
+  # Everything else the kubelet exposes is dropped to keep cardinality low.
   - port: https-metrics
     scheme: https
     path: /metrics
@@ -89,7 +91,7 @@ spec:
       targetLabel: metrics_path
     metricRelabelings:
     - sourceLabels: [__name__]
-      regex: kubelet_certificate_manager_.*
+      regex: kubelet_certificate_manager_.*|kubelet_volume_stats_.*
       action: keep`
 
 // installResourceMonitoring adds the per-container CPU/memory evidence the lab

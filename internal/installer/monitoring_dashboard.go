@@ -22,6 +22,8 @@ var (
 	certificatesSection []byte
 	//go:embed dashboards/control-plane.json
 	controlPlaneSection []byte
+	//go:embed dashboards/storage.json
+	storageSection []byte
 	//go:embed dashboards/security.json
 	securitySection []byte
 )
@@ -70,8 +72,9 @@ func (m *Monitoring) installLabDashboard() error {
 
 // labDashboardSections returns the lab sections that have data to show in
 // this cluster, in screen order: DNS SLOs, cluster DNS, the lab DNS when it
-// exists, certificates, the control plane, the audit (security) section when
-// Loki collects the logs, and the (collapsed) DNS change log last.
+// exists, certificates, the control plane, storage when a storage node backs
+// the PVs, the audit (security) section when Loki collects the logs, and the
+// (collapsed) DNS change log last.
 func (m *Monitoring) labDashboardSections() [][]byte {
 	sections := [][]byte{slosSection, clusterDNSSection}
 	labDNS := m.config.StorageIP() != ""
@@ -79,6 +82,11 @@ func (m *Monitoring) labDashboardSections() [][]byte {
 		sections = append(sections, labDNSSection)
 	}
 	sections = append(sections, certificatesSection, controlPlaneSection)
+	// The storage node backs every PV over NFS; without it there is no lab
+	// storage backend to chart (NFS export, node_exporter on storage).
+	if m.config.StorageIP() != "" {
+		sections = append(sections, storageSection)
+	}
 	loki := m.config.Components.Logging == "loki"
 	if loki {
 		sections = append(sections, securitySection)

@@ -32,6 +32,9 @@ var (
 	_ Installer = (*Ollama)(nil)
 	_ Installer = (*Karpor)(nil)
 	_ Installer = (*Calico)(nil)
+	_ Installer = (*EtcdEncryption)(nil)
+	_ Installer = (*EtcdBackup)(nil)
+	_ Installer = (*Velero)(nil)
 )
 
 func (m *MetalLB) Name() string              { return "MetalLB" }
@@ -52,3 +55,6 @@ func (k *Keycloak) Name() string             { return "Keycloak (OIDC)" }
 func (o *Ollama) Name() string               { return "Ollama" }
 func (k *Karpor) Name() string               { return "Karpor" }
 func (c *Calico) Name() string               { return "Calico CNI" }
+func (e *EtcdEncryption) Name() string       { return "etcd encryption at rest (Vault KMS)" }
+func (b *EtcdBackup) Name() string           { return "etcd snapshot backup (SeaweedFS S3)" }
+func (v *Velero) Name() string               { return "Velero (cluster backup to SeaweedFS S3)" }

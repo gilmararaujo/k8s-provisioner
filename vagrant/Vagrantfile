@@ -7,6 +7,11 @@ provisioner_config = YAML.load_file(File.join(File.dirname(__FILE__), '..', 'con
 LAB_DOMAIN      = provisioner_config.dig('dns', 'domain').to_s.empty? ? 'lab.internal' : provisioner_config.dig('dns', 'domain')
 ETCD_VERSION    = provisioner_config.dig('versions', 'etcd') || 'v3.7.3'
 COREDNS_VERSION = provisioner_config.dig('versions', 'coredns') || '1.15.0'
+NODE_EXPORTER_VERSION = provisioner_config.dig('versions', 'node_exporter') || 'v1.12.1'
+SEAWEEDFS_VERSION = provisioner_config.dig('versions', 'seaweedfs') || '4.53'
+S3_PORT       = (provisioner_config.dig('backup', 's3_port') || 8333).to_s
+BUCKET_ETCD   = provisioner_config.dig('backup', 'buckets', 'etcd') || 'etcd-backups'
+BUCKET_VELERO = provisioner_config.dig('backup', 'buckets', 'velero') || 'velero'
 LAB_TIMEZONE    = provisioner_config.dig('cluster', 'timezone').to_s.empty? ? 'UTC' : provisioner_config.dig('cluster', 'timezone')
 LAB_HOSTS       = settings['vm'].map { |v| "#{v['ip']} #{v['name']}" }.join("\n")
 
@@ -250,6 +255,65 @@ VAULTSERVICE
           systemctl enable vault
           systemctl start vault
 
+          # Auto-unseal: after a reboot or suspend/resume Vault comes back sealed.
+          # A timer reads the stored unseal keys and unseals, so the API server's
+          # KMS dependency (etcd encryption at rest) never waits on a manual
+          # unseal. Lab-grade: the keys live on this node (root-only), which does
+          # not widen the threat model the encryption addresses (a stolen etcd
+          # snapshot). Production would use a cloud or Transit auto-unseal seal.
+          cat > /usr/local/bin/vault-unseal.sh <<'VAULTUNSEAL'
+#!/usr/bin/env bash
+set -uo pipefail
+export VAULT_ADDR=https://127.0.0.1:8200
+export VAULT_CACERT=/etc/vault.d/tls/ca.crt
+INIT=/etc/vault.d/vault-init.json
+[ -f "$INIT" ] || { echo "vault-init.json absent; Vault not initialized yet"; exit 0; }
+status() { vault status -format=json 2>/dev/null; }
+field()  { printf '%s' "$1" | python3 -c "import json,sys;print(json.load(sys.stdin)[\"$2\"])" 2>/dev/null; }
+s=""
+for _ in $(seq 1 30); do
+  s=$(status)
+  [ -n "$s" ] && [ -n "$(field "$s" sealed)" ] && break
+  s=""; sleep 2
+done
+[ -n "$s" ] || { echo "vault API not reachable; leaving for the next timer tick"; exit 0; }
+[ "$(field "$s" initialized)" = "True" ] || { echo "vault not initialized yet"; exit 0; }
+[ "$(field "$s" sealed)" = "False" ] && { echo "vault already unsealed"; exit 0; }
+while IFS= read -r key; do
+  vault operator unseal "$key" >/dev/null 2>&1
+  s=$(status)
+  [ "$(field "$s" sealed)" = "False" ] && break
+done < <(python3 -c 'import json;print("\n".join(json.load(open("/etc/vault.d/vault-init.json"))["keys"][:3]))')
+if [ "$(field "$s" sealed)" = "False" ]; then echo "vault unsealed"; else echo "vault still sealed after applying stored keys" >&2; exit 1; fi
+VAULTUNSEAL
+          chmod 755 /usr/local/bin/vault-unseal.sh
+
+          cat > /etc/systemd/system/vault-unseal.service <<'VAULTUNSEALSVC'
+[Unit]
+Description=Auto-unseal the lab Vault
+After=vault.service
+Wants=vault.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/vault-unseal.sh
+VAULTUNSEALSVC
+
+          cat > /etc/systemd/system/vault-unseal.timer <<'VAULTUNSEALTMR'
+[Unit]
+Description=Ensure the lab Vault stays unsealed (boot, resume, crash-restart)
+
+[Timer]
+OnBootSec=15s
+OnUnitActiveSec=30s
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target
+VAULTUNSEALTMR
+
+          systemctl enable --now vault-unseal.timer
+
           echo "=== Vault started at https://#{NFS_SERVER_IP}:8200 (CA: /etc/vault.d/tls/ca.crt) ==="
           echo "=== UI available at https://#{NFS_SERVER_IP}:8200/ui ==="
         SHELL
@@ -261,6 +325,22 @@ VAULTSERVICE
           "ETCD_VERSION"    => ETCD_VERSION,
           "COREDNS_VERSION" => COREDNS_VERSION,
           "LAB_HOSTS"       => LAB_HOSTS
+        }
+
+        # node_exporter: host + NFS-export metrics for the Storage dashboard
+        # (Prometheus job "storage-node"; the storage node is outside the cluster).
+        vm.vm.provision "storage-node-exporter", type: "shell", path: "scripts/storage-node-exporter.sh", env: {
+          "NODE_EXPORTER_VERSION" => NODE_EXPORTER_VERSION
+        }
+
+        # SeaweedFS S3: the backup object store (etcd snapshots + Velero), outside
+        # the cluster so backups survive a `vagrant destroy`.
+        vm.vm.provision "storage-seaweedfs", type: "shell", path: "scripts/storage-seaweedfs.sh", env: {
+          "SEAWEEDFS_VERSION" => SEAWEEDFS_VERSION,
+          "STORAGE_IP"        => NFS_SERVER_IP,
+          "S3_PORT"           => S3_PORT,
+          "BUCKET_ETCD"       => BUCKET_ETCD,
+          "BUCKET_VELERO"     => BUCKET_VELERO
         }
 
       when "controlplane", "worker"

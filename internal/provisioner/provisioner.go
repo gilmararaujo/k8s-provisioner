@@ -364,6 +364,24 @@ func (p *Provisioner) workloadSteps() []workloadStep {
 			},
 		},
 		{
+			// etcd encryption at rest (Vault KMS): turned on early so Secrets created
+			// by later components are encrypted from birth. Not fatal — a failure
+			// leaves Secrets unencrypted with a warning rather than aborting the run.
+			enabled: (*config.Config).EtcdEncryptionEnabled,
+			build: func(c *config.Config, e executor.CommandExecutor) installer.Installer {
+				return installer.NewEtcdEncryption(c, e)
+			},
+		},
+		{
+			// etcd snapshot backup to the SeaweedFS S3 store on the storage node.
+			// Runs before Velero so the shared S3 creds are mirrored into Vault.
+			// Not fatal — a failure skips scheduled backups rather than aborting.
+			enabled: (*config.Config).EtcdBackupEnabled,
+			build: func(c *config.Config, e executor.CommandExecutor) installer.Installer {
+				return installer.NewEtcdBackup(c, e)
+			},
+		},
+		{
 			// Before any Istio Gateway, so each lab host is published as soon as its Gateway exists.
 			enabled: (*config.Config).ExternalDNSEnabled,
 			build: func(c *config.Config, e executor.CommandExecutor) installer.Installer {
@@ -423,6 +441,15 @@ func (p *Provisioner) workloadSteps() []workloadStep {
 				return installer.NewKarpor(c, e)
 			},
 			fatal: true,
+		},
+		{
+			// Velero backs up cluster resources + PV data to the SeaweedFS S3 store.
+			// Last, so every namespace it backs up already exists. Not fatal — a
+			// failure skips backups rather than aborting the run.
+			enabled: (*config.Config).VeleroEnabled,
+			build: func(c *config.Config, e executor.CommandExecutor) installer.Installer {
+				return installer.NewVelero(c, e)
+			},
 		},
 	}
 }
