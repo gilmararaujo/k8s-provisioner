@@ -61,6 +61,10 @@ versions:
   etcd: "v3.7.3"          # DNS record store on the storage node (read by vagrant/Vagrantfile)
   external_dns: "v0.23.0"
   blackbox_exporter: "v0.29.1"   # TLS certificate expiry probes (lab dashboard)
+  vault_kms: "1.4.0"             # vault-kubernetes-kms plugin for etcd encryption at rest (FalcoSuessgott)
+  seaweedfs: "4.53"              # S3 object store on the storage node (backup substrate for etcd snapshots + Velero)
+  velero: "12.2.5"               # Velero Helm chart (app v1.18.2)
+  velero_plugin_aws: "v1.14.1"   # velero-plugin-for-aws (S3/SeaweedFS object store; pairs with Velero 1.18)
   resource_dashboard: "982c301aaeb251c07c75476922c80a8090b05e35"  # workload resources dashboard + rules: upstream commit (no release tags)
 
 network:
@@ -73,6 +77,23 @@ storage:
   nfs_server: "storage"       # Uses hostname from /etc/hosts
   nfs_path: "/exports/k8s-volumes"
   default_dynamic: true       # If true, nfs-dynamic is the default StorageClass (auto-provisioning)
+
+# Backup substrate: SeaweedFS S3 on the storage node (outside the cluster, so
+# backups survive a cluster rebuild). Both etcd snapshots and Velero write here.
+# The S3 endpoint is derived as http://<storage-node-ip>:<s3_port>.
+backup:
+  s3_port: 8333
+  buckets:
+    etcd: "etcd-backups"      # etcd snapshots (control-plane DR)
+    velero: "velero"          # Velero resource + PV-data backups
+  etcd:
+    enabled: true             # install the control-plane etcd snapshot timer
+    schedule: "*-*-* 02:00:00"  # systemd OnCalendar: daily at 02:00 (lab timezone)
+    retention_days: 7         # prune snapshots older than this (locally and in S3)
+  velero:
+    enabled: true             # install Velero (cluster resource + PV-data backups)
+    schedule: "0 3 * * *"     # cron: daily at 03:00
+    ttl: "168h0m0s"           # keep each backup 7 days
 
 # Node definitions - IPs should match vagrant/settings.yaml
 nodes:
@@ -101,6 +122,7 @@ components:
   vpa: "enabled"                  # Options: enabled, none (Vertical Pod Autoscaler — adjusts CPU/Memory per pod)
   keda: "enabled"                 # Options: enabled, none (Event-driven autoscaling — scale to zero, Prometheus triggers)
   external_dns: "enabled"         # Options: enabled, none (publishes Gateway hosts to the lab DNS on the storage node)
+  etcd_encryption: "vault-kms"    # Options: vault-kms, none (encrypts Secrets at rest; KMS key lives in Vault — requires vault.enabled)
 
 # Karpor AI configuration (optional)
 # When backend is "ollama", Ollama will be installed inside the cluster automatically

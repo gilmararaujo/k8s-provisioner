@@ -53,7 +53,7 @@ func TestBuildLabDashboard_RejectsEmpty(t *testing.T) {
 
 func TestBuildLabDashboard_StacksSectionsBelowResources(t *testing.T) {
 	out, err := buildLabDashboard([]byte(upstreamDashboard), "UTC", slosSection, clusterDNSSection, labDNSSection, certificatesSection,
-		controlPlaneSection, securitySection, labDNSLogsSection)
+		controlPlaneSection, storageSection, securitySection, labDNSLogsSection)
 	require.NoError(t, err)
 
 	var d struct {
@@ -78,8 +78,8 @@ func TestBuildLabDashboard_StacksSectionsBelowResources(t *testing.T) {
 			rows = append(rows, i)
 		}
 	}
-	require.Len(t, rows, 8, "Resources, SLOs, cluster DNS, lab DNS, Certificates, Control plane, Security, DNS logs")
-	dnsRow, logsRow := d.Panels[rows[1]], d.Panels[rows[7]]
+	require.Len(t, rows, 9, "Resources, SLOs, cluster DNS, lab DNS, Certificates, Control plane, Storage, Security, DNS logs")
+	dnsRow, logsRow := d.Panels[rows[1]], d.Panels[rows[8]]
 	assert.Equal(t, 62, dnsRow.GridPos["y"], "DNS starts right below the last Resources panel (y 51 + h 11)")
 	assert.Greater(t, logsRow.GridPos["y"], dnsRow.GridPos["y"])
 	require.NotEmpty(t, logsRow.Panels, "a collapsed row carries its panels")
@@ -89,11 +89,11 @@ func TestBuildLabDashboard_StacksSectionsBelowResources(t *testing.T) {
 func TestLabDashboardSections_FollowConfig(t *testing.T) {
 	cfg := externalDNSConfig()
 	m := NewMonitoring(cfg, &fakeShell{})
-	assert.Equal(t, [][]byte{slosSection, clusterDNSSection, labDNSSection, certificatesSection, controlPlaneSection}, m.labDashboardSections(),
+	assert.Equal(t, [][]byte{slosSection, clusterDNSSection, labDNSSection, certificatesSection, controlPlaneSection, storageSection}, m.labDashboardSections(),
 		"no Loki: no audit section, no change log")
 
 	cfg.Components.Logging = "loki"
-	assert.Equal(t, [][]byte{slosSection, clusterDNSSection, labDNSSection, certificatesSection, controlPlaneSection, securitySection, labDNSLogsSection},
+	assert.Equal(t, [][]byte{slosSection, clusterDNSSection, labDNSSection, certificatesSection, controlPlaneSection, storageSection, securitySection, labDNSLogsSection},
 		m.labDashboardSections(), "the collapsed change log goes last")
 
 	cfg.Nodes = nil // no storage node, no lab DNS

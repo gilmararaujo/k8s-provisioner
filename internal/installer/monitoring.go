@@ -108,6 +108,10 @@ metadata:
 	if err := m.installDNSMonitoring(); err != nil {
 		fmt.Printf("Warning: Failed to create DNS monitoring: %v\n", err)
 	}
+	fmt.Println("Creating storage scrape target + alerts (storage node, PVs, PVCs)...")
+	if err := m.installStorageNodeMonitoring(); err != nil {
+		fmt.Printf("Warning: Failed to create storage monitoring: %v\n", err)
+	}
 	fmt.Println("Creating DNS SLO recording rules and burn-rate alerts...")
 	if err := m.installSLOs(); err != nil {
 		fmt.Printf("Warning: Failed to create SLO rules: %v\n", err)
